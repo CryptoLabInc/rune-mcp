@@ -15,7 +15,6 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/envector"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/logio"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
-	"github.com/CryptoLabInc/rune-mcp/internal/bootstrap"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
 )
@@ -97,19 +96,22 @@ func (s *LifecycleService) VaultStatus(ctx context.Context) (*VaultStatusResult,
 // 2. rune_diagnostics — read-only. server.py:L540-684. Spec §2.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// DiagnosticsResult — aggregates 8 sub-sections (env + install + runtime ×6)
+// DiagnosticsResult — aggregates 7 sub-sections (env + runtime ×6). Install
+// state (config.json, runed binary, model file, socket) is a substrate
+// concern owned by the `rune` CLI; agents wanting that visibility shell
+// out to `rune verify` separately. Keeping the MCP server's diagnostics
+// scoped to runtime state mirrors the rune ↔ rune-mcp repo boundary.
 type DiagnosticsResult struct {
-	OK            bool                        `json:"ok"`
-	Environment   EnvInfo                     `json:"environment"`
-	Install       *bootstrap.InstallChecks  `json:"install,omitempty"`
-	State         *string                     `json:"state,omitempty"`
-	DormantReason *string                     `json:"dormant_reason,omitempty"`
-	DormantSince  *string                     `json:"dormant_since,omitempty"`
-	Vault         VaultInfo                   `json:"vault"`
-	Keys          KeysInfo                    `json:"keys"`
-	Pipelines     PipelinesInfo               `json:"pipelines"`
-	Embedding     EmbeddingInfo               `json:"embedding"`
-	Envector      EnvectorInfo                `json:"envector"`
+	OK            bool          `json:"ok"`
+	Environment   EnvInfo       `json:"environment"`
+	State         *string       `json:"state,omitempty"`
+	DormantReason *string       `json:"dormant_reason,omitempty"`
+	DormantSince  *string       `json:"dormant_since,omitempty"`
+	Vault         VaultInfo     `json:"vault"`
+	Keys          KeysInfo      `json:"keys"`
+	Pipelines     PipelinesInfo `json:"pipelines"`
+	Embedding     EmbeddingInfo `json:"embedding"`
+	Envector      EnvectorInfo  `json:"envector"`
 }
 
 // EnvInfo — OS, Go runtime version, cwd.
@@ -189,12 +191,6 @@ func (s *LifecycleService) Diagnostics(ctx context.Context) *DiagnosticsResult {
 		Runtime: runtime.Version(),
 		CWD:     cwd,
 		GOArch:  runtime.GOARCH,
-	}
-
-  // Installation
-	r.Install = bootstrap.RunInstallChecks(ctx)
-	if r.Install != nil && !r.Install.OK {
-		r.OK = false
 	}
 
 	// Config state

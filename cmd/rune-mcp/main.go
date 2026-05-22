@@ -29,7 +29,6 @@ import (
 
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/logio"
-	"github.com/CryptoLabInc/rune-mcp/internal/bootstrap"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
 	"github.com/CryptoLabInc/rune-mcp/internal/mcp"
 	"github.com/CryptoLabInc/rune-mcp/internal/obs"
@@ -142,16 +141,10 @@ func buildDeps() *mcp.Deps {
 	}
 	captureLog := logio.New(filepath.Join(runeDir, logio.DefaultFilename))
 
-	// Boot-failure log under the RUNE_HOME-aware root (bootstrap.Paths, #138)
-	// so it follows the same root override as the rest of rune-mcp state.
-	// Best-effort: if path resolution fails, leave the logger unset and the
-	// boot loop keeps in-memory LastBootError only.
-	if paths, perr := bootstrap.Resolve(); perr == nil {
-		bootLogPath := filepath.Join(paths.RuneHome, "logs", "boot.log")
-		mgr.SetBootLog(lifecycle.NewBootLogger(bootLogPath, lifecycle.DefaultBootLogMaxBytes))
-	} else {
-		slog.Warn("boot_log: path resolve failed — disk persistence disabled", "err", perr)
-	}
+	// Boot-failure log under the same root as the rest of rune-mcp state
+	// (captureLog above uses the same runeDir, so they stay co-located).
+	bootLogPath := filepath.Join(runeDir, "logs", "boot.log")
+	mgr.SetBootLog(lifecycle.NewBootLogger(bootLogPath, lifecycle.DefaultBootLogMaxBytes))
 
 	cap := service.NewCaptureService()
 	cap.State = mgr
