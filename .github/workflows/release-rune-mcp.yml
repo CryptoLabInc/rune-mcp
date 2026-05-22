@@ -1,0 +1,142 @@
+name: Release rune-mcp
+
+# Workflow creates a prerelease when any `v*` tag is pushed; maintainer
+# later promotes prerelease to release via GitHub
+#
+# TODO: envector-go-sdk requires CGO, but native Github hosted runners for
+# Darwin/amd64 and Windows not working well now. We should later check them again
+
+on:
+  push:
+    tags:
+      - 'v*' # trigger on version tags
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Existing git tag to build from (e.g. v0.1.0)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Build and smoke-test but skip publishing prerelease'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # softprops/action-gh-release
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}/${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest,    os: linux,  arch: amd64 }
+          - { runner: ubuntu-24.04-arm, os: linux,  arch: arm64 }
+          - { runner: macos-14,         os: darwin, arch: arm64 }
+    steps:
+      # Setup
+      - name: Resolve version
+        id: version
+        shell: bash
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="$DISPATCH_VERSION"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building $VERSION for ${{ matrix.os }}/${{ matrix.arch }}"
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.version.outputs.version }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Build and test
+      - name: Build binary
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          ASSET="rune-mcp-${{ matrix.os }}-${{ matrix.arch }}"
+          mkdir -p dist
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION}" \
+            -o "dist/${ASSET}" \
+            ./cmd/rune-mcp
+          ls -lh "dist/${ASSET}"
+
+      - name: Test with linux-amd64
+        shell: bash
+        run: |
+          BIN="./dist/rune-mcp-${{ matrix.os }}-${{ matrix.arch }}"
+          chmod +x "$BIN" 2>/dev/null || true
+          HOME="$(mktemp -d)" "$BIN" < /dev/null
+          echo "smoke ok (exit 0 on stdin EOF)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rune-mcp-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/rune-mcp-*
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Publish prerelease
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve version
+        id: version
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="$DISPATCH_VERSION"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - name: List and checksum
+        run: |
+          ls -lh dist/
+          (cd dist && sha256sum rune-mcp-* > checksums.txt)
+          cat dist/checksums.txt
+
+      - name: Publish prerelease
+        if: github.event_name != 'workflow_dispatch' || !inputs.dry_run
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: rune-mcp ${{ steps.version.outputs.version }}
+          prerelease: true
+          files: |
+            dist/rune-mcp-linux-amd64
+            dist/rune-mcp-linux-arm64
+            dist/rune-mcp-darwin-arm64
+            dist/checksums.txt
+          fail_on_unmatched_files: true
+          generate_release_notes: true

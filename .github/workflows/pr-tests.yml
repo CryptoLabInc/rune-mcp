@@ -1,0 +1,51 @@
+name: PR Tests
+
+# Lightweight quality gate:
+#   - gofmt
+#   - go vet
+#   - go build
+#   - go test -race
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          DRIFT="$(gofmt -l .)"
+          if [ -n "$DRIFT" ]; then
+            echo "::error::gofmt drift detected in the following files:"
+            echo "$DRIFT"
+            echo
+            echo "--- diff (run \`gofmt -w .\` locally to fix) ---"
+            gofmt -d $DRIFT
+            exit 1
+          fi
+          echo "gofmt: clean"
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test
+        run: go test -race -count=1 ./...

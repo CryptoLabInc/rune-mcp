@@ -1,0 +1,23 @@
+# Cross-build output
+dist/
+
+# Go test/coverage artifacts
+*.test
+*.out
+coverage.out
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Environment
+.env
+.env.local
+
+# Build outputs
+bin/
