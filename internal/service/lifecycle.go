@@ -133,11 +133,11 @@ type EnvInfo struct {
 //	branch on .kind to fast-fail without manual probing. Nil
 //	when boot has succeeded or no attempt has been made yet.
 type VaultInfo struct {
-	Configured    bool               `json:"configured"`
-	Healthy       bool               `json:"healthy"`
-	Endpoint      string             `json:"endpoint,omitempty"`
-	Error         string             `json:"error,omitempty"`
-	LastBootError *domain.BootError  `json:"last_boot_error,omitempty"`
+	Configured    bool              `json:"configured"`
+	Healthy       bool              `json:"healthy"`
+	Endpoint      string            `json:"endpoint,omitempty"`
+	Error         string            `json:"error,omitempty"`
+	LastBootError *domain.BootError `json:"last_boot_error,omitempty"`
 }
 
 // KeysInfo — memory-resident key state.
@@ -505,10 +505,10 @@ func (s *LifecycleService) DeleteCapture(ctx context.Context, args DeleteCapture
 
 // ReloadPipelinesResult.
 type ReloadPipelinesResult struct {
-	OK                   bool              `json:"ok"`
-	State                string            `json:"state"`
-	ScribeInitialized    bool              `json:"scribe_initialized"`
-	RetrieverInitialized bool              `json:"retriever_initialized"`
+	OK                   bool   `json:"ok"`
+	State                string `json:"state"`
+	ScribeInitialized    bool   `json:"scribe_initialized"`
+	RetrieverInitialized bool   `json:"retriever_initialized"`
 	// LastBootError mirrors VaultInfo.LastBootError so callers (agent, UI)
 	// can fast-fail on this single response — no follow-up diagnostics call
 	// needed for the common case of "reload finished, boot failed, here's

@@ -444,4 +444,3 @@ func whereStr(rawEvent *domain.RawEvent) string {
 	}
 	return rawEvent.Source
 }
-
