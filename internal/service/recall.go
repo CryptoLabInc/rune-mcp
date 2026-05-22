@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/envector/rune-go/internal/adapters/embedder"
-	"github.com/envector/rune-go/internal/adapters/envector"
-	"github.com/envector/rune-go/internal/adapters/vault"
-	"github.com/envector/rune-go/internal/domain"
-	"github.com/envector/rune-go/internal/lifecycle"
-	"github.com/envector/rune-go/internal/policy"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/envector"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
+	"github.com/CryptoLabInc/rune-mcp/internal/domain"
+	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
+	"github.com/CryptoLabInc/rune-mcp/internal/policy"
 )
 
 // RecallService orchestrates the 7-phase recall flow.

@@ -24,11 +24,11 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/envector/rune-go/internal/adapters/embedder"
-	"github.com/envector/rune-go/internal/adapters/envector"
-	"github.com/envector/rune-go/internal/adapters/vault"
-	"github.com/envector/rune-go/internal/lifecycle"
-	"github.com/envector/rune-go/internal/service"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/envector"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
+	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
+	"github.com/CryptoLabInc/rune-mcp/internal/service"
 )
 
 // Deps — injected into all 8 MCP handlers.

@@ -22,8 +22,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/envector/rune-go/internal/domain"
-	"github.com/envector/rune-go/internal/policy"
+	"github.com/CryptoLabInc/rune-mcp/internal/domain"
+	"github.com/CryptoLabInc/rune-mcp/internal/policy"
 )
 
 // fixedNow — a deterministic wall clock for all timestamp arithmetic.

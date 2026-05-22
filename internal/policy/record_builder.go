@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/envector/rune-go/internal/domain"
+	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 )
 
 // Record builder — Python canonical: agents/scribe/record_builder.py (703 LoC).

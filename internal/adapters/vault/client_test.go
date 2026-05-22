@@ -17,7 +17,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/envector/rune-go/internal/adapters/vault"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 )
 
 // fakeServer implements VaultServiceServer + HealthServer for in-process tests.

@@ -14,9 +14,9 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/envector/rune-go/internal/lifecycle"
-	"github.com/envector/rune-go/internal/mcp"
-	"github.com/envector/rune-go/internal/service"
+	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
+	"github.com/CryptoLabInc/rune-mcp/internal/mcp"
+	"github.com/CryptoLabInc/rune-mcp/internal/service"
 )
 
 // expectedTools — alphabetical order matches what the SDK advertises in

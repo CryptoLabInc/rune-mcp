@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/envector/rune-go/internal/adapters/embedder"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
 )
 
 func TestResolveSocketPath_EnvVarWins(t *testing.T) {

@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/envector/rune-go/internal/adapters/config"
-	"github.com/envector/rune-go/internal/adapters/keymanager"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/keymanager"
 )
 
 // withTempHome redirects $HOME to a t.TempDir for the duration of t.

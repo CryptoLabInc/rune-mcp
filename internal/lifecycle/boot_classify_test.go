@@ -12,8 +12,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/envector/rune-go/internal/adapters/vault"
-	"github.com/envector/rune-go/internal/domain"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
+	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 )
 
 func TestClassifyBootError_NilReturnsNil(t *testing.T) {

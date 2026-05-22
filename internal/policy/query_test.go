@@ -19,8 +19,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/envector/rune-go/internal/domain"
-	"github.com/envector/rune-go/internal/policy"
+	"github.com/CryptoLabInc/rune-mcp/internal/domain"
+	"github.com/CryptoLabInc/rune-mcp/internal/policy"
 )
 
 // Intent classification — covers all 7 explicit intents + GENERAL fallback.

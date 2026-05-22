@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/envector/rune-go/internal/domain"
-	"github.com/envector/rune-go/internal/obs"
+	"github.com/CryptoLabInc/rune-mcp/internal/domain"
+	"github.com/CryptoLabInc/rune-mcp/internal/obs"
 )
 
 const DefaultBootLogMaxBytes int64 = 1 << 20 // 1 MiB

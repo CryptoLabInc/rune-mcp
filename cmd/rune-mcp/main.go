@@ -27,13 +27,13 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/envector/rune-go/internal/adapters/config"
-	"github.com/envector/rune-go/internal/adapters/logio"
-	"github.com/envector/rune-go/internal/bootstrap"
-	"github.com/envector/rune-go/internal/lifecycle"
-	"github.com/envector/rune-go/internal/mcp"
-	"github.com/envector/rune-go/internal/obs"
-	"github.com/envector/rune-go/internal/service"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/logio"
+	"github.com/CryptoLabInc/rune-mcp/internal/bootstrap"
+	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
+	"github.com/CryptoLabInc/rune-mcp/internal/mcp"
+	"github.com/CryptoLabInc/rune-mcp/internal/obs"
+	"github.com/CryptoLabInc/rune-mcp/internal/service"
 )
 
 // version is the rune-mcp protocol version surfaced in MCP `initialize`.

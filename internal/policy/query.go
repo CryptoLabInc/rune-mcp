@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/envector/rune-go/internal/domain"
+	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 )
 
 // Query parsing — Python: agents/retriever/query_processor.py (437 LoC).

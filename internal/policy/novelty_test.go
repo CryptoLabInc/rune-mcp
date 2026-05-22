@@ -21,8 +21,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/envector/rune-go/internal/domain"
-	"github.com/envector/rune-go/internal/policy"
+	"github.com/CryptoLabInc/rune-mcp/internal/domain"
+	"github.com/CryptoLabInc/rune-mcp/internal/policy"
 )
 
 // classification — covers all 4 classes with default D11 runtime thresholds

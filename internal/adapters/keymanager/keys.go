@@ -18,7 +18,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/envector/rune-go/internal/adapters/config"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
 )
 
 // SaveEncKey writes the EncKey envelope received from Vault verbatim to

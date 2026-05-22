@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/envector/rune-go/internal/domain"
+	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 )
 
 // Rerank constants — Python: agents/retriever/searcher.py:L31-39.

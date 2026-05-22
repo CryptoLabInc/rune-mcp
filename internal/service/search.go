@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/envector/rune-go/internal/adapters/embedder"
-	"github.com/envector/rune-go/internal/adapters/envector"
-	"github.com/envector/rune-go/internal/adapters/vault"
-	"github.com/envector/rune-go/internal/domain"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/envector"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
+	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 )
 
 // SearchByID — shared helper used by delete_capture (lifecycle §5) and, if

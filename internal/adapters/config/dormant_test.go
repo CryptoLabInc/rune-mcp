@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/envector/rune-go/internal/adapters/config"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
 )
 
 // withTempHome redirects $HOME to a temp dir for the duration of the test.

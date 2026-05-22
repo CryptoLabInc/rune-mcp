@@ -7,8 +7,8 @@ import (
 
 	sdk "github.com/CryptoLabInc/envector-go-sdk"
 
-	"github.com/envector/rune-go/internal/adapters/envector"
-	"github.com/envector/rune-go/internal/lifecycle"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/envector"
+	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
 )
 
 // We cannot easily rely on tranport interceptor since Insert and Score are streaming gRPC

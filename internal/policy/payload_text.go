@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/envector/rune-go/internal/domain"
+	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 )
 
 // Payload text renderer — Python canonical: agents/common/schemas/templates.py (364 LoC).

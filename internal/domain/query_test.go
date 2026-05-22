@@ -7,7 +7,7 @@ package domain_test
 import (
 	"testing"
 
-	"github.com/envector/rune-go/internal/domain"
+	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 )
 
 // SearchHit.IsReliable — Python: searcher.py:SearchResult.is_reliable

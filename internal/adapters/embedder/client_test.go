@@ -16,7 +16,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/envector/rune-go/internal/adapters/embedder"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
 )
 
 // fakeRuned implements RunedServiceServer in-process. Each RPC delegates to

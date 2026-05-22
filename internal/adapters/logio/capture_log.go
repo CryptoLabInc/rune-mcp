@@ -20,7 +20,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/envector/rune-go/internal/domain"
+	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 )
 
 // Path — ~/.rune/capture_log.jsonl.

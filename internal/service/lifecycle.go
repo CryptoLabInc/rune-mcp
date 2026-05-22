@@ -10,14 +10,14 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/envector/rune-go/internal/adapters/config"
-	"github.com/envector/rune-go/internal/adapters/embedder"
-	"github.com/envector/rune-go/internal/adapters/envector"
-	"github.com/envector/rune-go/internal/adapters/logio"
-	"github.com/envector/rune-go/internal/adapters/vault"
-	"github.com/envector/rune-go/internal/bootstrap"
-	"github.com/envector/rune-go/internal/domain"
-	"github.com/envector/rune-go/internal/lifecycle"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/envector"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/logio"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
+	"github.com/CryptoLabInc/rune-mcp/internal/bootstrap"
+	"github.com/CryptoLabInc/rune-mcp/internal/domain"
+	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
 )
 
 // LifecycleService holds the 6 lifecycle/operational tool implementations.

@@ -3,8 +3,8 @@ package mcp
 import (
 	"strings"
 
-	"github.com/envector/rune-go/internal/domain"
-	"github.com/envector/rune-go/internal/lifecycle"
+	"github.com/CryptoLabInc/rune-mcp/internal/domain"
+	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
 )
 
 // State gate — called at every tool handler entry.

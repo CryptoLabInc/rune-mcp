@@ -6,7 +6,7 @@ package policy
 import (
 	"math"
 
-	"github.com/envector/rune-go/internal/domain"
+	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 )
 
 // NoveltyThresholds — runtime defaults per D11 (Python server.py:L102-104).

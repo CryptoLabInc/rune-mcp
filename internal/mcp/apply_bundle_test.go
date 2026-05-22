@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/envector/rune-go/internal/adapters/vault"
-	"github.com/envector/rune-go/internal/mcp"
-	"github.com/envector/rune-go/internal/service"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
+	"github.com/CryptoLabInc/rune-mcp/internal/mcp"
+	"github.com/CryptoLabInc/rune-mcp/internal/service"
 )
 
 func newDepsForApply() *mcp.Deps {

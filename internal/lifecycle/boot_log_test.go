@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/envector/rune-go/internal/domain"
+	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 )
 
 func sampleBootError(detail string) *domain.BootError {

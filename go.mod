@@ -1,4 +1,4 @@
-module github.com/envector/rune-go
+module github.com/CryptoLabInc/rune-mcp
 
 go 1.26.2
 

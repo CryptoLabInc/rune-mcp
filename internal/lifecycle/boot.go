@@ -25,13 +25,13 @@ import (
 
 	"google.golang.org/grpc"
 
-	"github.com/envector/rune-go/internal/adapters/config"
-	"github.com/envector/rune-go/internal/adapters/embedder"
-	"github.com/envector/rune-go/internal/adapters/envector"
-	"github.com/envector/rune-go/internal/adapters/keymanager"
-	"github.com/envector/rune-go/internal/adapters/vault"
-	"github.com/envector/rune-go/internal/domain"
-	"github.com/envector/rune-go/internal/recovery"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/envector"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/keymanager"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
+	"github.com/CryptoLabInc/rune-mcp/internal/domain"
+	"github.com/CryptoLabInc/rune-mcp/internal/recovery"
 )
 
 // BootAdapterInjector decouples lifecycle from mcp.Deps to break the
