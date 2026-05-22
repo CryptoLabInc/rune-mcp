@@ -36,8 +36,8 @@ import (
 )
 
 // version is the rune-mcp protocol version surfaced in MCP `initialize`.
-// Phase A is "0.4.0-alpha" until adapters are wired.
-const version = "0.4.0-alpha"
+// Set at build time via `-ldflags -X main.version=...`
+var version = "0.1.0-alpha"
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
