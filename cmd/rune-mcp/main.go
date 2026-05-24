@@ -3,7 +3,7 @@
 //
 // Spawn model: Claude Code launches one instance per session via stdio.
 // Lifecycle: starting → waiting_for_vault → active ↔ dormant.
-// Tools: 9 MCP tools (capture, recall, batch_capture, capture_history,
+// Tools: 10 MCP tools (capture, recall, batch_capture, capture_history,
 //
 //	delete_capture, vault_status, diagnostics, configure,
 //	reload_pipelines).
