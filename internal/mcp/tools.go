@@ -1,4 +1,4 @@
-// Package mcp wires the 9 MCP tool handlers onto the official Go SDK and
+// Package mcp wires the 10 MCP tool handlers onto the official Go SDK and
 // owns Deps injection + state-aware response shaping.
 //
 // Spec:
@@ -31,7 +31,7 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/service"
 )
 
-// Deps — injected into all 9 MCP handlers.
+// Deps — injected into all 10 MCP handlers.
 //
 // State + 3 services drive request handling. cmd/rune-mcp/main.go constructs
 // Deps after the boot loop has populated adapter clients on the services.
@@ -146,7 +146,7 @@ func (d *Deps) ApplyVaultBundle(b *vault.Bundle) {
 // emptyArgs — input type for tools that take no arguments.
 type emptyArgs struct{}
 
-// Register binds all 9 MCP tools onto the provided SDK server.
+// Register binds all 10 MCP tools onto the provided SDK server.
 //
 // Tool names are bit-identical to Python `mcp/server/server.py`. SDK sorts
 // tools alphabetically in `tools/list` output, so order here is for readability.
@@ -194,6 +194,9 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 	mustAdd(srv, "configure",
 		"Write Vault credentials (endpoint, token, optional ca_cert_path / tls_disable) to $HOME/.rune/config.json and mark state=active.",
 		handleConfigure(deps))
+	mustAdd(srv, "activate",
+		"Pre-check then reload_pipelines. Returns status=configure_required if $HOME/.rune/config.json is missing/empty, status=install_pending if the runed socket is absent, otherwise mirrors reload_pipelines.",
+		handleActivate(deps))
 	mustAdd(srv, "reload_pipelines",
 		"Re-initialize Vault + envector pipelines (BOOT replay) with envector warmup.",
 		handleReloadPipelines(deps))

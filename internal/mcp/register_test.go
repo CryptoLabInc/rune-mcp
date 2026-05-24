@@ -22,6 +22,7 @@ import (
 // expectedTools — alphabetical order matches what the SDK advertises in
 // tools/list (Python rune v0.3.x bit-identical names).
 var expectedTools = []string{
+	"activate",
 	"batch_capture",
 	"capture",
 	"capture_history",
@@ -33,7 +34,7 @@ var expectedTools = []string{
 	"vault_status",
 }
 
-// newSession spins up an in-memory MCP server with all 9 tools registered
+// newSession spins up an in-memory MCP server with all 10 tools registered
 // and returns a connected client session ready for tools/list and tools/call.
 //
 // Deps mirrors a "boot has not progressed past starting" state: the Manager
@@ -237,6 +238,14 @@ func TestRegister_ReadOnlyToolsBypassGate(t *testing.T) {
 				`"vault_reachable":false`,
 				`"probe_error"`,
 			},
+			mustNotContain: []string{
+				"PIPELINE_NOT_READY",
+			},
+		},
+		{
+			name:        "activate",
+			args:        nil,
+			mustContain: []string{`"ok":true`, `"status":"install_pending"`, `"hint"`, "runed socket not found"},
 			mustNotContain: []string{
 				"PIPELINE_NOT_READY",
 			},
