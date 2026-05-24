@@ -25,6 +25,7 @@ var expectedTools = []string{
 	"batch_capture",
 	"capture",
 	"capture_history",
+	"configure",
 	"delete_capture",
 	"diagnostics",
 	"recall",
@@ -82,7 +83,7 @@ func newSession(t *testing.T) *sdkmcp.ClientSession {
 	return cs
 }
 
-func TestRegister_All8ToolsListed(t *testing.T) {
+func TestRegister_AllToolsListed(t *testing.T) {
 	cs := newSession(t)
 
 	res, err := cs.ListTools(t.Context(), &sdkmcp.ListToolsParams{})
@@ -180,6 +181,8 @@ func TestRegister_WriteToolsGated(t *testing.T) {
 // when State == StateStarting. Per rune-mcp.md these tools work
 // degraded so the operator can troubleshoot pre-active.
 func TestRegister_ReadOnlyToolsBypassGate(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // TempDir as $HOME
+
 	cs := newSession(t)
 
 	cases := []struct {
@@ -216,6 +219,24 @@ func TestRegister_ReadOnlyToolsBypassGate(t *testing.T) {
 			name:        "capture_history",
 			args:        map[string]any{"limit": 5.0},
 			mustContain: []string{`"ok":true`},
+			mustNotContain: []string{
+				"PIPELINE_NOT_READY",
+			},
+		},
+		{
+			name: "configure",
+			args: map[string]any{
+				"endpoint": "tcp://test.example:50051",
+				"token":    "test-token",
+			},
+			mustContain: []string{
+				`"ok":true`,
+				`"state":"active"`,
+				`"configured_at"`,
+				`"next_step"`,
+				`"vault_reachable":false`,
+				`"probe_error"`,
+			},
 			mustNotContain: []string{
 				"PIPELINE_NOT_READY",
 			},
