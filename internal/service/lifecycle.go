@@ -592,7 +592,75 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 6. rune_reload_pipelines
+// 6. rune_activate - pre-check + reload
+//
+//  ActivateStatus:
+//	  configure_required  - config.json missing or vault block empty
+//	  install_pending     - runed socket absent (daemon not installed/running)
+//	  active / waiting_for_vault / dormant - passed through from reload
+// ─────────────────────────────────────────────────────────────────────────────
+
+const (
+	ActivateStatusConfigureRequired = "configure_required"
+	ActivateStatusInstallPending    = "install_pending"
+	ActivateStatusActive            = "active"
+	ActivateStatusWaitingForVault   = "waiting_for_vault"
+	ActivateStatusDormant           = "dormant"
+)
+
+// When Status is active / waiting_for_vault / dormant, Reload mirrors ReloadPipilines
+type ActivateResult struct {
+	OK     bool                   `json:"ok"`
+	Status string                 `json:"status"`
+	Hint   string                 `json:"hint,omitempty"`
+	Reload *ReloadPipelinesResult `json:"reload,omitempty"`
+}
+
+func (s *LifecycleService) Activate(ctx context.Context) (*ActivateResult, error) {
+	// Pre-check: config ($HOME/.rune/config.json)
+	cfg, err := config.Load()
+	if err != nil || cfg == nil {
+		return &ActivateResult{
+			OK:     true,
+			Status: ActivateStatusConfigureRequired,
+			Hint:   "Run /rune:configure to write Vault credentials.",
+		}, nil
+	}
+	if cfg.Vault.Endpoint == "" || cfg.Vault.Token == "" {
+		return &ActivateResult{
+			OK:     true,
+			Status: ActivateStatusConfigureRequired,
+			Hint:   "Vault endpoint/token missing in ~/.rune/config.json. Run /rune:configure.",
+		}, nil
+	}
+
+	// Pre-check: runed socker path ($RUNE_EMBEDDER_SOCKER or $HOME/.runed/embedding.sock)
+	socketPath := embedder.ResolveSocketPath("")
+	if socketPath != "" {
+		if _, statErr := os.Stat(socketPath); statErr != nil {
+			return &ActivateResult{
+				OK:     true,
+				Status: ActivateStatusInstallPending,
+				Hint:   fmt.Sprintf("runed socket not found at %s. Run `rune install` (and ensure the daemon is running), then retry /rune:activate.", socketPath),
+			}, nil
+		}
+	}
+
+	// Call reload_pipelines
+	rr, err := s.ReloadPipelines(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reload pipelines: %w", err)
+	}
+
+	return &ActivateResult{
+		OK:     rr.OK,
+		Status: rr.State,
+		Reload: rr,
+	}, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. rune_reload_pipelines
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ReloadPipelinesResult.
