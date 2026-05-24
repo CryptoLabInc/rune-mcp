@@ -1,4 +1,4 @@
-// Package mcp wires the 8 MCP tool handlers onto the official Go SDK and
+// Package mcp wires the 9 MCP tool handlers onto the official Go SDK and
 // owns Deps injection + state-aware response shaping.
 //
 // Spec:
@@ -31,7 +31,7 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/service"
 )
 
-// Deps — injected into all 8 MCP handlers.
+// Deps — injected into all 9 MCP handlers.
 //
 // State + 3 services drive request handling. cmd/rune-mcp/main.go constructs
 // Deps after the boot loop has populated adapter clients on the services.
@@ -146,7 +146,7 @@ func (d *Deps) ApplyVaultBundle(b *vault.Bundle) {
 // emptyArgs — input type for tools that take no arguments.
 type emptyArgs struct{}
 
-// Register binds all 8 MCP tools onto the provided SDK server.
+// Register binds all 9 MCP tools onto the provided SDK server.
 //
 // Tool names are bit-identical to Python `mcp/server/server.py`. SDK sorts
 // tools alphabetically in `tools/list` output, so order here is for readability.

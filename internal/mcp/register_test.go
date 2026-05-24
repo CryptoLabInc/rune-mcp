@@ -33,7 +33,7 @@ var expectedTools = []string{
 	"vault_status",
 }
 
-// newSession spins up an in-memory MCP server with all 8 tools registered
+// newSession spins up an in-memory MCP server with all 9 tools registered
 // and returns a connected client session ready for tools/list and tools/call.
 //
 // Deps mirrors a "boot has not progressed past starting" state: the Manager

@@ -180,7 +180,7 @@ type EnvectorInfo struct {
 // DiagnosticsTimeout — Python ENVECTOR_DIAGNOSIS_TIMEOUT (server.py:L633). 5s.
 const DiagnosticsTimeout = 5 * time.Second
 
-// Diagnostics collects all 8 sections + derives top-level OK.
+// Diagnostics collects all 7 sections + derives top-level OK.
 func (s *LifecycleService) Diagnostics(ctx context.Context) *DiagnosticsResult {
 	r := &DiagnosticsResult{OK: true}
 
