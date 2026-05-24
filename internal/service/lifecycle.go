@@ -500,7 +500,99 @@ func (s *LifecycleService) DeleteCapture(ctx context.Context, args DeleteCapture
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5. rune_reload_pipelines — server.py:L1046-1089. Spec §6.
+// 5. rune_configure — write Vault credentials to $HOME/.rune/config.json.
+// ─────────────────────────────────────────────────────────────────────────────
+
+type ConfigureArgs struct {
+	Endpoint   string `json:"endpoint"`
+	Token      string `json:"token"`
+	CACertPath string `json:"ca_cert_path,omitempty"`
+	TLSDisable bool   `json:"tls_disable,omitempty"`
+}
+
+type ConfigureResult struct {
+	OK           bool   `json:"ok"`
+	Path         string `json:"path"`
+	State        string `json:"state"`
+	ConfiguredAt string `json:"configured_at"`
+	NextStep     string `json:"next_step,omitempty"`
+
+	// Reachable=nil  : skip probe
+	// Reachable-false: HealthCheck failed, ProbeError is the reason
+	VaultReachable *bool  `json:"vault_reachable,omitempty"`
+	ProbeError     string `json:"probe_error,omitempty"`
+}
+
+const ConfigureProbeTimeout = 5 * time.Second
+
+func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*ConfigureResult, error) {
+	if args.Endpoint == "" {
+		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "endpoint is required"}
+	}
+	if args.Token == "" {
+		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "token is required"}
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		cfg = &config.Config{} // fall back to fresh config
+	}
+
+	cfg.Vault = config.VaultConfig{
+		Endpoint:   args.Endpoint,
+		Token:      args.Token,
+		CACert:     args.CACertPath,
+		TLSDisable: args.TLSDisable,
+	}
+	cfg.State = "active"
+	cfg.DormantReason = ""
+	cfg.DormantSince = ""
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	if cfg.Metadata == nil {
+		cfg.Metadata = map[string]any{}
+	}
+	cfg.Metadata["lastUpdated"] = now
+
+	if err := config.Save(cfg); err != nil {
+		return nil, fmt.Errorf("save config: %w", err)
+	}
+
+	path, _ := config.DefaultConfigPath()
+	result := &ConfigureResult{
+		OK:           true,
+		Path:         path,
+		State:        cfg.State,
+		ConfiguredAt: now,
+	}
+
+	// Vault HealthCheck
+	probeCtx, cancel := context.WithTimeout(ctx, ConfigureProbeTimeout)
+	defer cancel()
+
+	vc, probeErr := vault.NewClient(args.Endpoint, args.Token, vault.ClientOpts{
+		CACertPath: args.CACertPath,
+		TLSDisable: args.TLSDisable,
+	})
+	if probeErr == nil {
+		_, probeErr = vc.HealthCheck(probeCtx)
+		_ = vc.Close()
+	}
+
+	reachable := probeErr == nil
+	result.VaultReachable = &reachable
+	if probeErr != nil {
+		result.ProbeError = probeErr.Error()
+		result.NextStep = "Vault unreachable from this host - verify endpoint/token, then run /rune:activate to retry"
+	} else {
+		result.NextStep = "Run /rune:activate to apply the new credentials"
+	}
+
+	return result, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. rune_reload_pipelines
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ReloadPipelinesResult.

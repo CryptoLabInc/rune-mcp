@@ -191,6 +191,9 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 	mustAdd(srv, "diagnostics",
 		"Collect a 7-section health snapshot (env / state / vault / keys / pipelines / embedding / envector).",
 		handleDiagnostics(deps))
+	mustAdd(srv, "configure",
+		"Write Vault credentials (endpoint, token, optional ca_cert_path / tls_disable) to $HOME/.rune/config.json and mark state=active.",
+		handleConfigure(deps))
 	mustAdd(srv, "reload_pipelines",
 		"Re-initialize Vault + envector pipelines (BOOT replay) with envector warmup.",
 		handleReloadPipelines(deps))
