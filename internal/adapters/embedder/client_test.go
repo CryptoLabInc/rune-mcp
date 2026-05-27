@@ -394,6 +394,62 @@ func TestHealth_StatusEnumMapping(t *testing.T) {
 	}
 }
 
+func TestHealth_PhaseEnumMapping(t *testing.T) {
+	cases := []struct {
+		grpcPhase runedv1.HealthResponse_Phase
+		want      string
+	}{
+		{runedv1.HealthResponse_PHASE_UNSPECIFIED, "UNSPECIFIED"},
+		{runedv1.HealthResponse_PHASE_FETCHING_LLAMA_SERVER, "FETCHING_LLAMA_SERVER"},
+		{runedv1.HealthResponse_PHASE_FETCHING_MODEL, "FETCHING_MODEL"},
+		{runedv1.HealthResponse_PHASE_STARTING_LLAMA_SERVER, "STARTING_LLAMA_SERVER"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.want, func(t *testing.T) {
+			fake, c := startFakeRuned(t)
+			fake.healthFn = func(*runedv1.HealthRequest) (*runedv1.HealthResponse, error) {
+				return &runedv1.HealthResponse{
+					Status: runedv1.HealthResponse_STATUS_LOADING,
+					Phase:  tc.grpcPhase,
+				}, nil
+			}
+			snap, err := c.Health(context.Background())
+			if err != nil {
+				t.Fatalf("Health: %v", err)
+			}
+			if snap.Phase != tc.want {
+				t.Errorf("Phase: got %q, want %q", snap.Phase, tc.want)
+			}
+		})
+	}
+}
+
+func TestHealth_BootstrapProgressRoundTrip(t *testing.T) {
+	fake, c := startFakeRuned(t)
+	fake.healthFn = func(*runedv1.HealthRequest) (*runedv1.HealthResponse, error) {
+		return &runedv1.HealthResponse{
+			Status:     runedv1.HealthResponse_STATUS_LOADING,
+			Phase:      runedv1.HealthResponse_PHASE_FETCHING_MODEL,
+			BytesDone:  140_000_000,
+			BytesTotal: 340_000_000,
+			Message:    "downloading qwen3-embedding-0.6b.q6_k.gguf",
+		}, nil
+	}
+	snap, err := c.Health(context.Background())
+	if err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+	if snap.Status != "LOADING" || snap.Phase != "FETCHING_MODEL" {
+		t.Errorf("Status/Phase: got %q / %q", snap.Status, snap.Phase)
+	}
+	if snap.BytesDone != 140_000_000 || snap.BytesTotal != 340_000_000 {
+		t.Errorf("progress: got %d / %d", snap.BytesDone, snap.BytesTotal)
+	}
+	if snap.Message != "downloading qwen3-embedding-0.6b.q6_k.gguf" {
+		t.Errorf("Message: got %q", snap.Message)
+	}
+}
+
 func TestEmbedSingle_RetriesExhaust(t *testing.T) {
 	fake, c := startFakeRuned(t)
 	fake.embedFn = func(*runedv1.EmbedRequest) (*runedv1.EmbedResponse, error) {
