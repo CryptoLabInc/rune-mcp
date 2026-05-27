@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
@@ -33,6 +34,9 @@ type LifecycleService struct {
 	EncKeyLoaded bool
 	KeyID        string
 	AgentDEK     []byte
+
+	bootstrapWatcherMu      sync.Mutex
+	bootstrapWatcherRunning bool
 }
 
 // NewLifecycleService constructs.
@@ -696,19 +700,76 @@ func (s *LifecycleService) probeBootstrap(ctx context.Context) *ActivateResult {
 
 	h, err := s.Embedder.Health(probeCtx)
 	if err != nil || h.Status != "LOADING" {
-		return nil
+		return nil // Health errors are ignored here
 	}
 
+	s.startBootstrapWatcher()
 	return &ActivateResult{
 		OK:     true,
 		Status: ActivateStatusWaitingForBootstrap,
-		Hint:   "runed is bootstrapping (downloading llama-server and/or the embedding model). Retry /rune:activate after the download completes.",
+		Hint:   "runed is bootstrapping (downloading llama-server and/or the embedding model). Activation will complete automatically once the download finishes - no further /rune:activate needed.",
 		Bootstrap: &BootstrapDetail{
 			Phase:      h.Phase,
 			BytesDone:  h.BytesDone,
 			BytesTotal: h.BytesTotal,
 			Message:    h.Message,
 		},
+	}
+}
+
+var bootstrapWatchInterval = 15 * time.Second
+var bootstrapWatcherHealthTimeout = 5 * time.Second
+
+func (s *LifecycleService) startBootstrapWatcher() {
+	s.bootstrapWatcherMu.Lock()
+	if s.bootstrapWatcherRunning { // idempotency
+		s.bootstrapWatcherMu.Unlock()
+		return
+	}
+	s.bootstrapWatcherRunning = true
+	s.bootstrapWatcherMu.Unlock()
+
+	// Goroutine polls runed until it transition out of STATUS_LOADING,
+	// then call State.Retrigger() so boot loop resumes wihtout user interaction
+	go s.runBootstrapWatcher()
+}
+
+func (s *LifecycleService) runBootstrapWatcher() {
+	defer func() {
+		s.bootstrapWatcherMu.Lock()
+		s.bootstrapWatcherRunning = false
+		s.bootstrapWatcherMu.Unlock()
+	}()
+
+	ticker := time.NewTicker(bootstrapWatchInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if s.Embedder == nil {
+			// This case need user's re-activation since Embedder was de-injected for any reason
+			return
+		}
+
+		probeCtx, cancel := context.WithTimeout(context.Background(), bootstrapWatcherHealthTimeout)
+		h, err := s.Embedder.Health(probeCtx)
+		cancel()
+		if err != nil {
+			// Health failure is not recovered here
+			return
+		}
+
+		switch h.Status {
+		case "LOADING": // still bootstrapping
+			continue
+		case "OK": // bootstrap finished
+			if s.State != nil {
+				s.State.Retrigger()
+			}
+			return
+		default:
+			// DEGRADED / SHUTTING_DOWN / UNSPECIFIED status need user interaction
+			return
+		}
 	}
 }
 
