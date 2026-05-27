@@ -39,11 +39,18 @@ type InfoSnapshot struct {
 	MaxBatchSize  int
 }
 
-// HealthSnapshot — OK / LOADING / DEGRADED / SHUTTING_DOWN.
+// Status: OK / LOADING / DEGRADED / SHUTTING_DOWN
+//
+// Phase / BytesDone / BytesTotal / Message are populated by runed during
+// LOADING
 type HealthSnapshot struct {
 	Status        string
 	UptimeSeconds int64
 	TotalRequests int64
+	Phase         string // UNSPECIFIED | FETCHING_LLAMA_SERVER | FETCHING_MODEL | STARTING_LLAMA_SERVER
+	BytesDone     int64
+	BytesTotal    int64 // 0 when not downloading or total unknown
+	Message       string
 }
 
 // Client interface — thin wrapper over generated gRPC stub.
@@ -191,6 +198,10 @@ func (c *client) Health(ctx context.Context) (HealthSnapshot, error) {
 		Status:        statusName(resp.GetStatus()),
 		UptimeSeconds: newUptime,
 		TotalRequests: resp.GetTotalRequests(),
+		Phase:         phaseName(resp.GetPhase()),
+		BytesDone:     resp.GetBytesDone(),
+		BytesTotal:    resp.GetBytesTotal(),
+		Message:       resp.GetMessage(),
 	}, nil
 }
 
@@ -204,6 +215,19 @@ func statusName(s runedv1.HealthResponse_Status) string {
 		return "DEGRADED"
 	case runedv1.HealthResponse_STATUS_SHUTTING_DOWN:
 		return "SHUTTING_DOWN"
+	default:
+		return "UNSPECIFIED"
+	}
+}
+
+func phaseName(p runedv1.HealthResponse_Phase) string {
+	switch p {
+	case runedv1.HealthResponse_PHASE_FETCHING_LLAMA_SERVER:
+		return "FETCHING_LLAMA_SERVER"
+	case runedv1.HealthResponse_PHASE_FETCHING_MODEL:
+		return "FETCHING_MODEL"
+	case runedv1.HealthResponse_PHASE_STARTING_LLAMA_SERVER:
+		return "STARTING_LLAMA_SERVER"
 	default:
 		return "UNSPECIFIED"
 	}

@@ -153,7 +153,10 @@ type PipelinesInfo struct {
 	RetrieverInitialized bool `json:"retriever_initialized"`
 }
 
-// EmbeddingInfo — external embedder info snapshot
+// EmbeddingInfo - external embedder info snapshot
+//
+// Phase / BytesDone / BytesTotal / Message are populated when Status is
+// LOADING
 type EmbeddingInfo struct {
 	Model         string `json:"model"`
 	Mode          string `json:"mode"` // "external gRPC"
@@ -163,6 +166,10 @@ type EmbeddingInfo struct {
 	Status        string `json:"status,omitempty"` // Health: OK / LOADING / DEGRADED / SHUTTING_DOWN
 	UptimeSeconds int64  `json:"uptime_seconds,omitempty"`
 	TotalRequests int64  `json:"total_requests,omitempty"`
+	Phase         string `json:"phase,omitempty"`       // bootstrap sub-phase; meaningful when Status == LOADING
+	BytesDone     int64  `json:"bytes_done,omitempty"`  // download progress
+	BytesTotal    int64  `json:"bytes_total,omitempty"` // 0 when unknown / not downloading
+	Message       string `json:"message,omitempty"`     // free-text detail for end-user display
 	InfoError     string `json:"info_error,omitempty"`
 	HealthError   string `json:"health_error,omitempty"`
 }
@@ -295,6 +302,10 @@ func (s *LifecycleService) collectEmbedding(ctx context.Context, timeout time.Du
 		info.Status = health.Status
 		info.UptimeSeconds = health.UptimeSeconds
 		info.TotalRequests = health.TotalRequests
+		info.Phase = health.Phase
+		info.BytesDone = health.BytesDone
+		info.BytesTotal = health.BytesTotal
+		info.Message = health.Message
 	}
 
 	return info
@@ -601,20 +612,33 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 // ─────────────────────────────────────────────────────────────────────────────
 
 const (
-	ActivateStatusConfigureRequired = "configure_required"
-	ActivateStatusInstallPending    = "install_pending"
-	ActivateStatusActive            = "active"
-	ActivateStatusWaitingForVault   = "waiting_for_vault"
-	ActivateStatusDormant           = "dormant"
+	ActivateStatusConfigureRequired   = "configure_required"
+	ActivateStatusInstallPending      = "install_pending"
+	ActivateStatusActive              = "active"
+	ActivateStatusWaitingForVault     = "waiting_for_vault"
+	ActivateStatusWaitingForBootstrap = "waiting_for_bootstrap"
+	ActivateStatusDormant             = "dormant"
 )
 
-// When Status is active / waiting_for_vault / dormant, Reload mirrors ReloadPipilines
-type ActivateResult struct {
-	OK     bool                   `json:"ok"`
-	Status string                 `json:"status"`
-	Hint   string                 `json:"hint,omitempty"`
-	Reload *ReloadPipelinesResult `json:"reload,omitempty"`
+// Runed reports during STATUS_LOADING
+type BootstrapDetail struct {
+	Phase      string `json:"phase,omitempty"`       // FETCHING_LLAMA_SERVER / FETCHING_MODEL / STARTING_LLAMA_SERVER
+	BytesDone  int64  `json:"bytes_done,omitempty"`  // download progress
+	BytesTotal int64  `json:"bytes_total,omitempty"` // 0 when unknown / not downloading
+	Message    string `json:"message,omitempty"`     // free-text detail for end-user display
 }
+
+// When Status is active / waiting_for_vault / dormant, Reload mirrors ReloadPipilines
+// When Status is waiting_for_bootstrap, Bootstrap mirrors runed's self-bootstrap progress
+type ActivateResult struct {
+	OK        bool                   `json:"ok"`
+	Status    string                 `json:"status"`
+	Hint      string                 `json:"hint,omitempty"`
+	Bootstrap *BootstrapDetail       `json:"bootstrap,omitempty"`
+	Reload    *ReloadPipelinesResult `json:"reload,omitempty"`
+}
+
+const bootstrapProbeTimeout = 2 * time.Second
 
 func (s *LifecycleService) Activate(ctx context.Context) (*ActivateResult, error) {
 	// Pre-check: config ($HOME/.rune/config.json)
@@ -646,6 +670,13 @@ func (s *LifecycleService) Activate(ctx context.Context) (*ActivateResult, error
 		}
 	}
 
+	// Pre-check: runed bootstrap state. Show progress if runed is self-bootstrapping
+	if s.Embedder != nil {
+		if br := s.probeBootstrap(ctx); br != nil {
+			return br, nil
+		}
+	}
+
 	// Call reload_pipelines
 	rr, err := s.ReloadPipelines(ctx)
 	if err != nil {
@@ -657,6 +688,28 @@ func (s *LifecycleService) Activate(ctx context.Context) (*ActivateResult, error
 		Status: rr.State,
 		Reload: rr,
 	}, nil
+}
+
+func (s *LifecycleService) probeBootstrap(ctx context.Context) *ActivateResult {
+	probeCtx, cancel := context.WithTimeout(ctx, bootstrapProbeTimeout)
+	defer cancel()
+
+	h, err := s.Embedder.Health(probeCtx)
+	if err != nil || h.Status != "LOADING" {
+		return nil
+	}
+
+	return &ActivateResult{
+		OK:     true,
+		Status: ActivateStatusWaitingForBootstrap,
+		Hint:   "runed is bootstrapping (downloading llama-server and/or the embedding model). Retry /rune:activate after the download completes.",
+		Bootstrap: &BootstrapDetail{
+			Phase:      h.Phase,
+			BytesDone:  h.BytesDone,
+			BytesTotal: h.BytesTotal,
+			Message:    h.Message,
+		},
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
