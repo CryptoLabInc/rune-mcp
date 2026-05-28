@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
@@ -17,6 +18,7 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
+	"github.com/CryptoLabInc/rune-mcp/internal/spawn"
 )
 
 // LifecycleService holds the 6 lifecycle/operational tool implementations.
@@ -33,6 +35,9 @@ type LifecycleService struct {
 	EncKeyLoaded bool
 	KeyID        string
 	AgentDEK     []byte
+
+	bootstrapWatcherMu      sync.Mutex
+	bootstrapWatcherRunning bool
 }
 
 // NewLifecycleService constructs.
@@ -153,7 +158,10 @@ type PipelinesInfo struct {
 	RetrieverInitialized bool `json:"retriever_initialized"`
 }
 
-// EmbeddingInfo — external embedder info snapshot
+// EmbeddingInfo - external embedder info snapshot
+//
+// Phase / BytesDone / BytesTotal / Message are populated when Status is
+// LOADING
 type EmbeddingInfo struct {
 	Model         string `json:"model"`
 	Mode          string `json:"mode"` // "external gRPC"
@@ -163,6 +171,10 @@ type EmbeddingInfo struct {
 	Status        string `json:"status,omitempty"` // Health: OK / LOADING / DEGRADED / SHUTTING_DOWN
 	UptimeSeconds int64  `json:"uptime_seconds,omitempty"`
 	TotalRequests int64  `json:"total_requests,omitempty"`
+	Phase         string `json:"phase,omitempty"`       // bootstrap sub-phase; meaningful when Status == LOADING
+	BytesDone     int64  `json:"bytes_done,omitempty"`  // download progress
+	BytesTotal    int64  `json:"bytes_total,omitempty"` // 0 when unknown / not downloading
+	Message       string `json:"message,omitempty"`     // free-text detail for end-user display
 	InfoError     string `json:"info_error,omitempty"`
 	HealthError   string `json:"health_error,omitempty"`
 }
@@ -180,7 +192,7 @@ type EnvectorInfo struct {
 // DiagnosticsTimeout — Python ENVECTOR_DIAGNOSIS_TIMEOUT (server.py:L633). 5s.
 const DiagnosticsTimeout = 5 * time.Second
 
-// Diagnostics collects all 8 sections + derives top-level OK.
+// Diagnostics collects all 7 sections + derives top-level OK.
 func (s *LifecycleService) Diagnostics(ctx context.Context) *DiagnosticsResult {
 	r := &DiagnosticsResult{OK: true}
 
@@ -295,6 +307,10 @@ func (s *LifecycleService) collectEmbedding(ctx context.Context, timeout time.Du
 		info.Status = health.Status
 		info.UptimeSeconds = health.UptimeSeconds
 		info.TotalRequests = health.TotalRequests
+		info.Phase = health.Phase
+		info.BytesDone = health.BytesDone
+		info.BytesTotal = health.BytesTotal
+		info.Message = health.Message
 	}
 
 	return info
@@ -500,7 +516,314 @@ func (s *LifecycleService) DeleteCapture(ctx context.Context, args DeleteCapture
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5. rune_reload_pipelines — server.py:L1046-1089. Spec §6.
+// 5. rune_configure — write Vault credentials to $HOME/.rune/config.json.
+// ─────────────────────────────────────────────────────────────────────────────
+
+type ConfigureArgs struct {
+	Endpoint   string `json:"endpoint"`
+	Token      string `json:"token"`
+	CACertPath string `json:"ca_cert_path,omitempty"`
+	TLSDisable bool   `json:"tls_disable,omitempty"`
+}
+
+type ConfigureResult struct {
+	OK           bool   `json:"ok"`
+	Path         string `json:"path"`
+	State        string `json:"state"`
+	ConfiguredAt string `json:"configured_at"`
+	NextStep     string `json:"next_step,omitempty"`
+
+	// Reachable=nil  : skip probe
+	// Reachable-false: HealthCheck failed, ProbeError is the reason
+	VaultReachable *bool  `json:"vault_reachable,omitempty"`
+	ProbeError     string `json:"probe_error,omitempty"`
+}
+
+const ConfigureProbeTimeout = 5 * time.Second
+
+func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*ConfigureResult, error) {
+	if args.Endpoint == "" {
+		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "endpoint is required"}
+	}
+	if args.Token == "" {
+		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "token is required"}
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		cfg = &config.Config{} // fall back to fresh config
+	}
+
+	cfg.Vault = config.VaultConfig{
+		Endpoint:   args.Endpoint,
+		Token:      args.Token,
+		CACert:     args.CACertPath,
+		TLSDisable: args.TLSDisable,
+	}
+	cfg.State = "active"
+	cfg.DormantReason = ""
+	cfg.DormantSince = ""
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	if cfg.Metadata == nil {
+		cfg.Metadata = map[string]any{}
+	}
+	cfg.Metadata["lastUpdated"] = now
+
+	if err := config.Save(cfg); err != nil {
+		return nil, fmt.Errorf("save config: %w", err)
+	}
+
+	path, _ := config.DefaultConfigPath()
+	result := &ConfigureResult{
+		OK:           true,
+		Path:         path,
+		State:        cfg.State,
+		ConfiguredAt: now,
+	}
+
+	// Vault HealthCheck
+	probeCtx, cancel := context.WithTimeout(ctx, ConfigureProbeTimeout)
+	defer cancel()
+
+	vc, probeErr := vault.NewClient(args.Endpoint, args.Token, vault.ClientOpts{
+		CACertPath: args.CACertPath,
+		TLSDisable: args.TLSDisable,
+	})
+	if probeErr == nil {
+		_, probeErr = vc.HealthCheck(probeCtx)
+		_ = vc.Close()
+	}
+
+	reachable := probeErr == nil
+	result.VaultReachable = &reachable
+	if probeErr != nil {
+		result.ProbeError = probeErr.Error()
+		result.NextStep = "Vault unreachable from this host - verify endpoint/token, then run /rune:activate to retry"
+	} else {
+		result.NextStep = "Run /rune:activate to apply the new credentials"
+	}
+
+	return result, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. rune_activate - pre-check + reload
+//
+//  ActivateStatus:
+//	  configure_required  - config.json missing or vault block empty
+//	  install_pending     - runed socket absent (daemon not installed/running)
+//	  active / waiting_for_vault / dormant - passed through from reload
+// ─────────────────────────────────────────────────────────────────────────────
+
+const (
+	ActivateStatusConfigureRequired   = "configure_required"
+	ActivateStatusInstallPending      = "install_pending"
+	ActivateStatusActive              = "active"
+	ActivateStatusWaitingForVault     = "waiting_for_vault"
+	ActivateStatusWaitingForBootstrap = "waiting_for_bootstrap"
+	ActivateStatusDormant             = "dormant"
+)
+
+// Runed reports during STATUS_LOADING
+type BootstrapDetail struct {
+	Phase      string `json:"phase,omitempty"`       // FETCHING_LLAMA_SERVER / FETCHING_MODEL / STARTING_LLAMA_SERVER
+	BytesDone  int64  `json:"bytes_done,omitempty"`  // download progress
+	BytesTotal int64  `json:"bytes_total,omitempty"` // 0 when unknown / not downloading
+	Message    string `json:"message,omitempty"`     // free-text detail for end-user display
+}
+
+// When Status is active / waiting_for_vault / dormant, Reload mirrors ReloadPipilines
+// When Status is waiting_for_bootstrap, Bootstrap mirrors runed's self-bootstrap progress
+type ActivateResult struct {
+	OK        bool                   `json:"ok"`
+	Status    string                 `json:"status"`
+	Hint      string                 `json:"hint,omitempty"`
+	Bootstrap *BootstrapDetail       `json:"bootstrap,omitempty"`
+	Reload    *ReloadPipelinesResult `json:"reload,omitempty"`
+}
+
+const bootstrapProbeTimeout = 2 * time.Second
+
+func (s *LifecycleService) Activate(ctx context.Context) (*ActivateResult, error) {
+	// Pre-check: config ($HOME/.rune/config.json)
+	cfg, err := config.Load()
+	if err != nil || cfg == nil {
+		return &ActivateResult{
+			OK:     true,
+			Status: ActivateStatusConfigureRequired,
+			Hint:   "Run /rune:configure to write Vault credentials.",
+		}, nil
+	}
+	if cfg.Vault.Endpoint == "" || cfg.Vault.Token == "" {
+		return &ActivateResult{
+			OK:     true,
+			Status: ActivateStatusConfigureRequired,
+			Hint:   "Vault endpoint/token missing in ~/.rune/config.json. Run /rune:configure.",
+		}, nil
+	}
+
+	// Pre-check: runed socker path ($RUNE_EMBEDDER_SOCKET or $HOME/.runed/embedding.sock)
+	socketPath := embedder.ResolveSocketPath("")
+	if socketPath != "" {
+		if br := s.ensureDaemon(ctx, socketPath); br != nil {
+			return br, nil
+		}
+	}
+
+	// Pre-check: runed bootstrap state. Show progress if runed is self-bootstrapping
+	if s.Embedder != nil {
+		if br := s.probeBootstrap(ctx); br != nil {
+			return br, nil
+		}
+	}
+
+	// Call reload_pipelines
+	rr, err := s.ReloadPipelines(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reload pipelines: %w", err)
+	}
+
+	return &ActivateResult{
+		OK:     rr.OK,
+		Status: rr.State,
+		Reload: rr,
+	}, nil
+}
+
+// Makes runed reachable at socketPath, spawning if needed
+// On failure, install_pending hint tells agent command to run for recovery (spawn.AgentInstallRecoverHint)
+func (s *LifecycleService) ensureDaemon(ctx context.Context, socketPath string) *ActivateResult {
+	runeBin, err := spawn.ResolveRuneBinary()
+	if err != nil {
+		return &ActivateResult{
+			OK:     true,
+			Status: ActivateStatusInstallPending,
+			Hint:   fmt.Sprintf("rune CLI not found (%v). Agent recovery: invoke %s, then retry /rune:activate.", err, spawn.AgentInstallRecoveryHint()),
+		}
+	}
+
+	paths, err := embedderPaths(socketPath)
+	if err != nil {
+		return &ActivateResult{
+			OK:     true,
+			Status: ActivateStatusInstallPending,
+			Hint:   fmt.Sprintf("could not resolve runed paths: %v", err),
+		}
+	}
+
+	cfg := spawn.Config{
+		RuneBinary:    runeBin,
+		SocketPath:    socketPath,
+		SpawnLockPath: paths.spawnLock,
+	}
+	if err := spawn.EnsureDaemon(ctx, cfg); err != nil {
+		return &ActivateResult{
+			OK:     true,
+			Status: ActivateStatusInstallPending,
+			Hint:   fmt.Sprintf("auto-spawn of runed via `%s runed --detach` failed: %v. Inspect %s for runed startup logs. Agent recovery: invoke %s, then retry /rune:activate.", runeBin, err, paths.logHint, spawn.AgentInstallRecoveryHint()),
+		}
+	}
+	return nil
+}
+
+type runedSpawnPaths struct {
+	spawnLock string
+	logHint   string
+}
+
+func embedderPaths(socketPath string) (runedSpawnPaths, error) {
+	dir := filepath.Dir(socketPath)
+	if dir == "" || dir == "." {
+		return runedSpawnPaths{}, fmt.Errorf("invalid socket path %q", socketPath)
+	}
+	return runedSpawnPaths{
+		spawnLock: filepath.Join(dir, "spawn.lock"),
+		logHint:   filepath.Join(dir, "logs", "daemon.log"),
+	}, nil
+}
+
+func (s *LifecycleService) probeBootstrap(ctx context.Context) *ActivateResult {
+	probeCtx, cancel := context.WithTimeout(ctx, bootstrapProbeTimeout)
+	defer cancel()
+
+	h, err := s.Embedder.Health(probeCtx)
+	if err != nil || h.Status != "LOADING" {
+		return nil // Health errors are ignored here
+	}
+
+	s.startBootstrapWatcher()
+	return &ActivateResult{
+		OK:     true,
+		Status: ActivateStatusWaitingForBootstrap,
+		Hint:   "runed is bootstrapping (downloading llama-server and/or the embedding model). Activation will complete automatically once the download finishes - no further /rune:activate needed.",
+		Bootstrap: &BootstrapDetail{
+			Phase:      h.Phase,
+			BytesDone:  h.BytesDone,
+			BytesTotal: h.BytesTotal,
+			Message:    h.Message,
+		},
+	}
+}
+
+var bootstrapWatchInterval = 15 * time.Second
+var bootstrapWatcherHealthTimeout = 5 * time.Second
+
+func (s *LifecycleService) startBootstrapWatcher() {
+	s.bootstrapWatcherMu.Lock()
+	if s.bootstrapWatcherRunning { // idempotency
+		s.bootstrapWatcherMu.Unlock()
+		return
+	}
+	s.bootstrapWatcherRunning = true
+	s.bootstrapWatcherMu.Unlock()
+
+	// Goroutine polls runed until it transition out of STATUS_LOADING,
+	// then call State.Retrigger() so boot loop resumes wihtout user interaction
+	go s.runBootstrapWatcher()
+}
+
+func (s *LifecycleService) runBootstrapWatcher() {
+	defer func() {
+		s.bootstrapWatcherMu.Lock()
+		s.bootstrapWatcherRunning = false
+		s.bootstrapWatcherMu.Unlock()
+	}()
+
+	ticker := time.NewTicker(bootstrapWatchInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if s.Embedder == nil {
+			// This case need user's re-activation since Embedder was de-injected for any reason
+			return
+		}
+
+		probeCtx, cancel := context.WithTimeout(context.Background(), bootstrapWatcherHealthTimeout)
+		h, err := s.Embedder.Health(probeCtx)
+		cancel()
+		if err != nil {
+			// Health failure is not recovered here
+			return
+		}
+
+		switch h.Status {
+		case "LOADING": // still bootstrapping
+			continue
+		case "OK": // bootstrap finished
+			if s.State != nil {
+				s.State.Retrigger()
+			}
+			return
+		default:
+			// DEGRADED / SHUTTING_DOWN / UNSPECIFIED status need user interaction
+			return
+		}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. rune_reload_pipelines
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ReloadPipelinesResult.

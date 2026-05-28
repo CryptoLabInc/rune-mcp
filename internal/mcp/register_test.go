@@ -22,9 +22,11 @@ import (
 // expectedTools — alphabetical order matches what the SDK advertises in
 // tools/list (Python rune v0.3.x bit-identical names).
 var expectedTools = []string{
+	"activate",
 	"batch_capture",
 	"capture",
 	"capture_history",
+	"configure",
 	"delete_capture",
 	"diagnostics",
 	"recall",
@@ -32,7 +34,7 @@ var expectedTools = []string{
 	"vault_status",
 }
 
-// newSession spins up an in-memory MCP server with all 8 tools registered
+// newSession spins up an in-memory MCP server with all 10 tools registered
 // and returns a connected client session ready for tools/list and tools/call.
 //
 // Deps mirrors a "boot has not progressed past starting" state: the Manager
@@ -82,7 +84,7 @@ func newSession(t *testing.T) *sdkmcp.ClientSession {
 	return cs
 }
 
-func TestRegister_All8ToolsListed(t *testing.T) {
+func TestRegister_AllToolsListed(t *testing.T) {
 	cs := newSession(t)
 
 	res, err := cs.ListTools(t.Context(), &sdkmcp.ListToolsParams{})
@@ -180,6 +182,12 @@ func TestRegister_WriteToolsGated(t *testing.T) {
 // when State == StateStarting. Per rune-mcp.md these tools work
 // degraded so the operator can troubleshoot pre-active.
 func TestRegister_ReadOnlyToolsBypassGate(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // TempDir as $HOME
+	// Empty path returns "rune CLI not found"
+	t.Setenv("RUNE_HOME", t.TempDir())
+	t.Setenv("CLAUDE_PLUGIN_ROOT", "")
+	t.Setenv("PATH", "")
+
 	cs := newSession(t)
 
 	cases := []struct {
@@ -216,6 +224,32 @@ func TestRegister_ReadOnlyToolsBypassGate(t *testing.T) {
 			name:        "capture_history",
 			args:        map[string]any{"limit": 5.0},
 			mustContain: []string{`"ok":true`},
+			mustNotContain: []string{
+				"PIPELINE_NOT_READY",
+			},
+		},
+		{
+			name: "configure",
+			args: map[string]any{
+				"endpoint": "tcp://test.example:50051",
+				"token":    "test-token",
+			},
+			mustContain: []string{
+				`"ok":true`,
+				`"state":"active"`,
+				`"configured_at"`,
+				`"next_step"`,
+				`"vault_reachable":false`,
+				`"probe_error"`,
+			},
+			mustNotContain: []string{
+				"PIPELINE_NOT_READY",
+			},
+		},
+		{
+			name:        "activate",
+			args:        nil,
+			mustContain: []string{`"ok":true`, `"status":"install_pending"`, `"hint"`, "rune CLI not found"},
 			mustNotContain: []string{
 				"PIPELINE_NOT_READY",
 			},
