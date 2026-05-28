@@ -18,6 +18,7 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
+	"github.com/CryptoLabInc/rune-mcp/internal/spawn"
 )
 
 // LifecycleService holds the 6 lifecycle/operational tool implementations.
@@ -681,12 +682,8 @@ func (s *LifecycleService) Activate(ctx context.Context) (*ActivateResult, error
 	// Pre-check: runed socket path ($RUNE_EMBEDDER_SOCKET or $HOME/.runed/embedding.sock)
 	socketPath := embedder.ResolveSocketPath("")
 	if socketPath != "" {
-		if _, statErr := os.Stat(socketPath); statErr != nil {
-			return &ActivateResult{
-				OK:     true,
-				Status: ActivateStatusInstallPending,
-				Hint:   fmt.Sprintf("runed socket not found at %s. Run `rune install` (and ensure the daemon is running), then retry /rune:activate.", socketPath),
-			}, nil
+		if br := s.ensureDaemon(ctx, socketPath); br != nil {
+			return br, nil
 		}
 	}
 
@@ -707,6 +704,58 @@ func (s *LifecycleService) Activate(ctx context.Context) (*ActivateResult, error
 		OK:     rr.OK,
 		Status: rr.State,
 		Reload: rr,
+	}, nil
+}
+
+// Makes runed reachable at socketPath, spawning if needed
+// On failure, install_pending hint tells agent command to run for recovery (spawn.AgentInstallRecoverHint)
+func (s *LifecycleService) ensureDaemon(ctx context.Context, socketPath string) *ActivateResult {
+	runeBin, err := spawn.ResolveRuneBinary()
+	if err != nil {
+		return &ActivateResult{
+			OK:     true,
+			Status: ActivateStatusInstallPending,
+			Hint:   fmt.Sprintf("rune CLI not found (%v). Agent recovery: invoke %s, then retry /rune:activate.", err, spawn.AgentInstallRecoveryHint()),
+		}
+	}
+
+	paths, err := embedderPaths(socketPath)
+	if err != nil {
+		return &ActivateResult{
+			OK:     true,
+			Status: ActivateStatusInstallPending,
+			Hint:   fmt.Sprintf("could not resolve runed paths: %v", err),
+		}
+	}
+
+	cfg := spawn.Config{
+		RuneBinary:    runeBin,
+		SocketPath:    socketPath,
+		SpawnLockPath: paths.spawnLock,
+	}
+	if err := spawn.EnsureDaemon(ctx, cfg); err != nil {
+		return &ActivateResult{
+			OK:     true,
+			Status: ActivateStatusInstallPending,
+			Hint:   fmt.Sprintf("auto-spawn of runed via `%s runed --detach` failed: %v. Inspect %s for runed startup logs. Agent recovery: invoke %s, then retry /rune:activate.", runeBin, err, paths.logHint, spawn.AgentInstallRecoveryHint()),
+		}
+	}
+	return nil
+}
+
+type runedSpawnPaths struct {
+	spawnLock string
+	logHint   string
+}
+
+func embedderPaths(socketPath string) (runedSpawnPaths, error) {
+	dir := filepath.Dir(socketPath)
+	if dir == "" || dir == "." {
+		return runedSpawnPaths{}, fmt.Errorf("invalid socket path %q", socketPath)
+	}
+	return runedSpawnPaths{
+		spawnLock: filepath.Join(dir, "spawn.lock"),
+		logHint:   filepath.Join(dir, "logs", "daemon.log"),
 	}, nil
 }
 
