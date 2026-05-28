@@ -183,6 +183,10 @@ func TestRegister_WriteToolsGated(t *testing.T) {
 // degraded so the operator can troubleshoot pre-active.
 func TestRegister_ReadOnlyToolsBypassGate(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // TempDir as $HOME
+	// Empty path returns "rune CLI not found"
+	t.Setenv("RUNE_HOME", t.TempDir())
+	t.Setenv("CLAUDE_PLUGIN_ROOT", "")
+	t.Setenv("PATH", "")
 
 	cs := newSession(t)
 
@@ -245,7 +249,7 @@ func TestRegister_ReadOnlyToolsBypassGate(t *testing.T) {
 		{
 			name:        "activate",
 			args:        nil,
-			mustContain: []string{`"ok":true`, `"status":"install_pending"`, `"hint"`, "runed socket not found"},
+			mustContain: []string{`"ok":true`, `"status":"install_pending"`, `"hint"`, "rune CLI not found"},
 			mustNotContain: []string{
 				"PIPELINE_NOT_READY",
 			},
