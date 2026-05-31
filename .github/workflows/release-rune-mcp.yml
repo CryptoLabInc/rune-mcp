@@ -81,13 +81,25 @@ jobs:
             ./cmd/rune-mcp
           ls -lh "dist/${ASSET}"
 
-      - name: Test with linux-amd64
+      - name: Test
         shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           BIN="./dist/rune-mcp-${{ matrix.os }}-${{ matrix.arch }}"
           chmod +x "$BIN" 2>/dev/null || true
+
+          # Check '--version'
+          OUT="$("$BIN" --version)"
+          echo "$OUT"
+          case "$OUT" in
+            *"$VERSION"*) echo "version ok" ;;
+            *) echo "::error::version $VERSION not found in output: $OUT" >&2; exit 1 ;;
+          esac
+
+          # Check exit 0
           HOME="$(mktemp -d)" "$BIN" < /dev/null
-          echo "smoke ok (exit 0 on stdin EOF)"
+          echo "exit 0"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
