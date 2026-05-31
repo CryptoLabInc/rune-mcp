@@ -77,7 +77,7 @@ func (d *Deps) InjectEmbedder(client embedder.Client) {
 		d.Recall.Embedder = client
 	}
 	if d.Lifecycle != nil {
-		d.Lifecycle.Embedder = client
+		d.Lifecycle.SetEmbedder(client)
 	}
 	closeAfterInterval("embedder", prev, client)
 }

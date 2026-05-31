@@ -54,9 +54,9 @@ func newWatcherTestService(t *testing.T, healthFn func(context.Context) (embedde
 	})
 
 	s := &LifecycleService{
-		Embedder: stub,
-		State:    mgr,
+		State: mgr,
 	}
+	s.SetEmbedder(stub)
 
 	return s, stub, fired
 }

@@ -25,7 +25,6 @@ import (
 type LifecycleService struct {
 	Vault     vault.Client
 	Envector  envector.Client
-	Embedder  embedder.Client
 	State     *lifecycle.Manager
 	IndexName string
 	ConfigDir string // for CaptureHistory reading capture_log.jsonl
@@ -37,11 +36,26 @@ type LifecycleService struct {
 
 	bootstrapWatcherMu      sync.Mutex
 	bootstrapWatcherRunning bool
+
+	embedderMu sync.RWMutex
+	embedder   embedder.Client
 }
 
 // NewLifecycleService constructs.
 func NewLifecycleService() *LifecycleService {
 	return &LifecycleService{}
+}
+
+func (s *LifecycleService) Embedder() embedder.Client {
+	s.embedderMu.RLock()
+	defer s.embedderMu.RUnlock()
+	return s.embedder
+}
+
+func (s *LifecycleService) SetEmbedder(c embedder.Client) {
+	s.embedderMu.Lock()
+	defer s.embedderMu.Unlock()
+	s.embedder = c
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -283,14 +297,15 @@ func (s *LifecycleService) collectVault(ctx context.Context, timeout time.Durati
 
 func (s *LifecycleService) collectEmbedding(ctx context.Context, timeout time.Duration) EmbeddingInfo {
 	info := EmbeddingInfo{Mode: "external gRPC"}
-	if s.Embedder == nil {
+	e := s.Embedder()
+	if e == nil {
 		return info
 	}
-	info.SocketPath = s.Embedder.SocketPath()
+	info.SocketPath = e.SocketPath()
 
 	infoCtx, cancelInfo := context.WithTimeout(ctx, timeout)
 	defer cancelInfo()
-	if snap, err := s.Embedder.Info(infoCtx); err != nil {
+	if snap, err := e.Info(infoCtx); err != nil {
 		info.InfoError = err.Error()
 	} else {
 		info.Model = snap.ModelIdentity
@@ -300,7 +315,8 @@ func (s *LifecycleService) collectEmbedding(ctx context.Context, timeout time.Du
 
 	healthCtx, cancelHealth := context.WithTimeout(ctx, timeout)
 	defer cancelHealth()
-	if health, err := s.Embedder.Health(healthCtx); err != nil {
+
+	if health, err := e.Health(healthCtx); err != nil {
 		info.HealthError = err.Error()
 	} else {
 		info.Status = health.Status
@@ -440,7 +456,7 @@ type DeleteCaptureResult struct {
 //  4. capture_log append with mode="soft-delete", action="deleted"
 func (s *LifecycleService) DeleteCapture(ctx context.Context, args DeleteCaptureArgs, capSvc *CaptureService) (*DeleteCaptureResult, error) {
 	// Search by ID
-	hit, err := SearchByID(ctx, s.Embedder, s.Vault, s.Envector, s.IndexName, args.RecordID)
+	hit, err := SearchByID(ctx, s.Embedder(), s.Vault, s.Envector, s.IndexName, args.RecordID)
 	if err != nil {
 		return nil, fmt.Errorf("delete: search by ID: %w", err)
 	}
@@ -465,7 +481,7 @@ func (s *LifecycleService) DeleteCapture(ctx context.Context, args DeleteCapture
 		embedText = hit.PayloadText
 	}
 
-	vec, err := s.Embedder.EmbedSingle(ctx, embedText)
+	vec, err := s.Embedder().EmbedSingle(ctx, embedText)
 	if err != nil {
 		return nil, fmt.Errorf("delete: re-embed: %w", err)
 	}
@@ -662,7 +678,7 @@ func (s *LifecycleService) Activate(ctx context.Context) (*ActivateResult, error
 		}, nil
 	}
 
-	// Pre-check: runed socker path ($RUNE_EMBEDDER_SOCKER or $HOME/.runed/embedding.sock)
+	// Pre-check: runed socket path ($RUNE_EMBEDDER_SOCKET or $HOME/.runed/embedding.sock)
 	socketPath := embedder.ResolveSocketPath("")
 	if socketPath != "" {
 		if _, statErr := os.Stat(socketPath); statErr != nil {
@@ -675,7 +691,7 @@ func (s *LifecycleService) Activate(ctx context.Context) (*ActivateResult, error
 	}
 
 	// Pre-check: runed bootstrap state. Show progress if runed is self-bootstrapping
-	if s.Embedder != nil {
+	if s.Embedder() != nil {
 		if br := s.probeBootstrap(ctx); br != nil {
 			return br, nil
 		}
@@ -698,7 +714,12 @@ func (s *LifecycleService) probeBootstrap(ctx context.Context) *ActivateResult {
 	probeCtx, cancel := context.WithTimeout(ctx, bootstrapProbeTimeout)
 	defer cancel()
 
-	h, err := s.Embedder.Health(probeCtx)
+	e := s.Embedder()
+	if e == nil {
+		return nil
+	}
+
+	h, err := e.Health(probeCtx)
 	if err != nil || h.Status != "LOADING" {
 		return nil // Health errors are ignored here
 	}
@@ -720,6 +741,9 @@ func (s *LifecycleService) probeBootstrap(ctx context.Context) *ActivateResult {
 var bootstrapWatchInterval = 15 * time.Second
 var bootstrapWatcherHealthTimeout = 5 * time.Second
 
+const bootstrapWatcherMaxErrors = 3
+const bootstrapWatcherDeadline = 30 * time.Minute
+
 func (s *LifecycleService) startBootstrapWatcher() {
 	s.bootstrapWatcherMu.Lock()
 	if s.bootstrapWatcherRunning { // idempotency
@@ -730,7 +754,7 @@ func (s *LifecycleService) startBootstrapWatcher() {
 	s.bootstrapWatcherMu.Unlock()
 
 	// Goroutine polls runed until it transition out of STATUS_LOADING,
-	// then call State.Retrigger() so boot loop resumes wihtout user interaction
+	// then call State.Retrigger() so boot loop resumes without user interaction
 	go s.runBootstrapWatcher()
 }
 
@@ -744,19 +768,35 @@ func (s *LifecycleService) runBootstrapWatcher() {
 	ticker := time.NewTicker(bootstrapWatchInterval)
 	defer ticker.Stop()
 
+	deadline := time.Now().Add(bootstrapWatcherDeadline)
+	consecutiveErrors := 0
+
 	for range ticker.C {
-		if s.Embedder == nil {
-			// This case need user's re-activation since Embedder was de-injected for any reason
+		if time.Now().After(deadline) {
+			slog.Warn("bootstrap watcher: total deadline exceeded; operator must re-trigger /rune:activate",
+				"deadline", bootstrapWatcherDeadline)
+			return
+		}
+
+		e := s.Embedder()
+		if e == nil { // Embedder is removed
 			return
 		}
 
 		probeCtx, cancel := context.WithTimeout(context.Background(), bootstrapWatcherHealthTimeout)
-		h, err := s.Embedder.Health(probeCtx)
+		h, err := e.Health(probeCtx)
 		cancel()
+
 		if err != nil {
-			// Health failure is not recovered here
-			return
+			consecutiveErrors++
+			if consecutiveErrors >= bootstrapWatcherMaxErrors {
+				slog.Warn("bootstrap watcher: persistent health probe failure; giving up",
+					"consecutive_errors", consecutiveErrors, "last_err", err)
+				return
+			}
+			continue
 		}
+		consecutiveErrors = 0
 
 		switch h.Status {
 		case "LOADING": // still bootstrapping
