@@ -18,6 +18,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -40,6 +41,10 @@ import (
 var version = "0.1.0-alpha"
 
 func main() {
+	if handleVersionFlag(os.Args, os.Stdout) {
+		return
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -110,6 +115,20 @@ func main() {
 		slog.Error("rune-mcp serve error", "err", err)
 		os.Exit(1)
 	}
+}
+
+func handleVersionFlag(args []string, out io.Writer) bool {
+	if len(args) < 2 {
+		return false
+	}
+
+	switch args[1] {
+	case "--version", "-version":
+		fmt.Fprintln(out, version)
+		return true
+	}
+
+	return false
 }
 
 // isNormalShutdown reports whether err corresponds to expected stdio teardown.

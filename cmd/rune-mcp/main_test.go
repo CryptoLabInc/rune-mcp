@@ -1,12 +1,48 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 )
+
+func TestHandleVersionFlag(t *testing.T) {
+	prev := version
+	version = "v0.0.0-test"
+	defer func() { version = prev }()
+
+	cases := []struct {
+		name        string
+		args        []string
+		wantHandled bool
+		wantOutput  string
+	}{
+		{"no args - main should continue", []string{"rune-mcp"}, false, ""},
+		{"unrelated arg - main should continue", []string{"rune-mcp", "serve"}, false, ""},
+		{"--version", []string{"rune-mcp", "--version"}, true, "v0.0.0-test"},
+		{"-version", []string{"rune-mcp", "-version"}, true, "v0.0.0-test"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			got := handleVersionFlag(tc.args, &buf)
+			if got != tc.wantHandled {
+				t.Errorf("handled = %v, want %v", got, tc.wantHandled)
+			}
+			if tc.wantOutput != "" && !strings.Contains(buf.String(), tc.wantOutput) {
+				t.Errorf("output = %q, want substring %q", buf.String(), tc.wantOutput)
+			}
+			if !tc.wantHandled && buf.Len() != 0 {
+				t.Errorf("non-handled case wrote to stdout: %q", buf.String())
+			}
+		})
+	}
+}
 
 func TestIsNormalShutdown(t *testing.T) {
 	cases := []struct {
