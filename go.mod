@@ -5,7 +5,7 @@ go 1.26.2
 require (
 	github.com/CryptoLabInc/envector-go-sdk v0.1.3
 	github.com/CryptoLabInc/rune-admin/vault v0.0.0-20260506055025-ad52b6bd549d
-	github.com/CryptoLabInc/runed v0.1.0-alpha.1
+	github.com/CryptoLabInc/runed v0.1.0-alpha.3
 	github.com/modelcontextprotocol/go-sdk v1.5.0
 	google.golang.org/grpc v1.81.0
 )

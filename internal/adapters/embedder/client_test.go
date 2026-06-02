@@ -367,6 +367,7 @@ func TestHealth_StatusEnumMapping(t *testing.T) {
 		{runedv1.HealthResponse_STATUS_OK, "OK"},
 		{runedv1.HealthResponse_STATUS_LOADING, "LOADING"},
 		{runedv1.HealthResponse_STATUS_DEGRADED, "DEGRADED"},
+		{runedv1.HealthResponse_STATUS_IDLE, "IDLE"},
 		{runedv1.HealthResponse_STATUS_SHUTTING_DOWN, "SHUTTING_DOWN"},
 		{runedv1.HealthResponse_STATUS_UNSPECIFIED, "UNSPECIFIED"},
 	}

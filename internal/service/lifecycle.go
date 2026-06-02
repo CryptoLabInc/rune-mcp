@@ -850,7 +850,7 @@ func (s *LifecycleService) runBootstrapWatcher() {
 		switch h.Status {
 		case "LOADING": // still bootstrapping
 			continue
-		case "OK": // bootstrap finished
+		case "OK", "IDLE": // bootstrap finished (IDLE = up but idle-suspended, still ready)
 			if s.State != nil {
 				s.State.Retrigger()
 			}

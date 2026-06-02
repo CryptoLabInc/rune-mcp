@@ -175,8 +175,8 @@ func (c *client) Info(ctx context.Context) (InfoSnapshot, error) { return c.info
 func (c *client) SocketPath() string { return c.sockPath }
 
 // Health issues a Health RPC. Status maps proto enum (STATUS_OK / STATUS_LOADING /
-// STATUS_DEGRADED / STATUS_SHUTTING_DOWN / STATUS_UNSPECIFIED) to the
-// "STATUS_"-stripped string the spec documents (OK / LOADING / DEGRADED /
+// STATUS_IDLE / STATUS_DEGRADED / STATUS_SHUTTING_DOWN / STATUS_UNSPECIFIED) to the
+// "STATUS_"-stripped string the spec documents (OK / LOADING / IDLE / DEGRADED /
 // SHUTTING_DOWN / UNSPECIFIED).
 //
 // Health is NOT retried — D8 says first embed call drives connectivity; Health
@@ -213,6 +213,8 @@ func statusName(s runedv1.HealthResponse_Status) string {
 		return "LOADING"
 	case runedv1.HealthResponse_STATUS_DEGRADED:
 		return "DEGRADED"
+	case runedv1.HealthResponse_STATUS_IDLE:
+		return "IDLE"
 	case runedv1.HealthResponse_STATUS_SHUTTING_DOWN:
 		return "SHUTTING_DOWN"
 	default:
