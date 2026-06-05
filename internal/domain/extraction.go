@@ -102,22 +102,9 @@ func ParseExtractionFromAgent(extracted map[string]any) (*Detection, *Extraction
 		return nil, nil, fmt.Errorf("extracted JSON is nil")
 	}
 
-	// Tier 2 detection
-	tier2, _ := extracted["tier2"].(map[string]any)
 	detection := &Detection{
 		IsSignificant: true, // agent-delegated: always true
 		Domain:        "general",
-	}
-
-	if tier2 != nil {
-		// capture=false: early rejection
-		if capture, ok := tier2["capture"].(bool); ok && !capture {
-			reason, _ := tier2["reason"].(string)
-			return detection, nil, &CaptureRejection{Reason: reason}
-		}
-		if dom, ok := tier2["domain"].(string); ok && dom != "" {
-			detection.Domain = dom
-		}
 	}
 
 	// Confidence: top-level or 0.0
@@ -209,17 +196,6 @@ func ParseExtractionFromAgent(extracted map[string]any) (*Detection, *Extraction
 		Confidence:   conf,
 		Single:       &single,
 	}, nil
-}
-
-type CaptureRejection struct {
-	Reason string
-}
-
-func (e *CaptureRejection) Error() string {
-	if e.Reason != "" {
-		return "capture rejected: " + e.Reason
-	}
-	return "capture rejected by agent"
 }
 
 //--- Helper ---//

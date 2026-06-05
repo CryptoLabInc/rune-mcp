@@ -154,5 +154,5 @@ type ParsedQuery struct {
 type Detection struct {
 	IsSignificant bool    // agent-delegated: always true (server.py:L82)
 	Confidence    float64 // [0.0, 1.0] agent-provided
-	Domain        string  // from extracted.tier2.domain, default "general"
+	Domain        string  // agent-delegated; always "general"
 }

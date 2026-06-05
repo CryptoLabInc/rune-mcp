@@ -15,7 +15,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -60,7 +59,6 @@ func NewCaptureService() *CaptureService {
 //
 //	Phase 1 (in handler): state gate → PIPELINE_NOT_READY if not active
 //	Phase 2: validate text + parse extracted (Detection + ExtractionResult split)
-//	         tier2.capture=false → early rejection {captured:false, reason}
 //	Phase 3: embedder.EmbedSingle(text_to_embed) — reusable_insight > payload.text
 //	Phase 4: envector.Score → Vault.DecryptScores(top_k=3) → novelty classify
 //	         near_duplicate (≥0.95) → return {captured:false, novelty{class, score, related}}
@@ -72,18 +70,6 @@ func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest)
 	// Phase 2
 	detection, extraction, err := domain.ParseExtractionFromAgent(req.Extracted)
 	if err != nil {
-		var rej *domain.CaptureRejection
-		if errors.As(err, &rej) {
-			reason := "no reason"
-			if rej.Reason != "" {
-				reason = rej.Reason
-			}
-			return &domain.CaptureResponse{
-				OK:       true,
-				Captured: false,
-				Reason:   fmt.Sprintf("Agent rejected: %s", reason),
-			}, nil
-		}
 		return nil, err
 	}
 	if extraction == nil {
