@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
@@ -41,8 +42,15 @@ func SearchByID(
 		return nil, nil
 	}
 
-	// Decrypt scores
-	entries, err := vaultClient.DecryptScores(ctx, string(blobs[0]), 5)
+	// Decrypt scores. The Vault RPC field is `EncryptedBlobB64`
+	// (proto3 `string`, valid-UTF-8 only) — envector returns raw cipher
+	// bytes, so we must base64-encode before sending. A direct
+	// `string(blobs[0])` cast pushes random cipher bytes through the
+	// proto3 string-validation path and trips
+	// "grpc: error while marshaling: string field contains invalid UTF-8".
+	// Mirrors recall.searchSingle and capture.
+	encryptedBlobB64 := base64.StdEncoding.EncodeToString(blobs[0])
+	entries, err := vaultClient.DecryptScores(ctx, encryptedBlobB64, 5)
 	if err != nil {
 		return nil, fmt.Errorf("search by ID: decrypt scores: %w", err)
 	}
