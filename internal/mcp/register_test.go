@@ -27,14 +27,14 @@ var expectedTools = []string{
 	"capture",
 	"capture_history",
 	"configure",
-	"delete_capture",
 	"diagnostics",
 	"recall",
 	"reload_pipelines",
 	"vault_status",
 }
 
-// newSession spins up an in-memory MCP server with all 10 tools registered
+// newSession spins up an in-memory MCP server with all registered tools
+// (delete_capture is intentionally gated out this release — see Register)
 // and returns a connected client session ready for tools/list and tools/call.
 //
 // Deps mirrors a "boot has not progressed past starting" state: the Manager
@@ -131,9 +131,10 @@ func TestRegister_SchemasInferred(t *testing.T) {
 	}
 }
 
-// TestRegister_WriteToolsGated — write tools (capture, batch_capture, recall,
-// delete_capture) must surface PIPELINE_NOT_READY when Deps.State is in
-// StateStarting. Confirms the CheckState gate fires before service dispatch.
+// TestRegister_WriteToolsGated — write tools (capture, batch_capture, recall)
+// must surface PIPELINE_NOT_READY when Deps.State is in StateStarting. Confirms
+// the CheckState gate fires before service dispatch. (delete_capture is gated
+// out of registration this release — see TestRegister_DeleteCaptureHidden.)
 //
 // reload_pipelines is intentionally NOT gated (it is the dormant→active
 // unblocker / `/rune:activate` handler per rune-mcp.md). Smoke tests for it
@@ -147,7 +148,6 @@ func TestRegister_WriteToolsGated(t *testing.T) {
 	}{
 		{"batch_capture", map[string]any{"items": "[]"}},
 		{"capture", map[string]any{"text": "hi", "source": "test", "extracted": map[string]any{}}},
-		{"delete_capture", map[string]any{"record_id": "test-id"}},
 		{"recall", map[string]any{"query": "hello"}},
 	}
 
@@ -174,6 +174,34 @@ func TestRegister_WriteToolsGated(t *testing.T) {
 				t.Errorf("Content[0].Text: %q does not contain PIPELINE_NOT_READY marker", tc0.Text)
 			}
 		})
+	}
+}
+
+// TestRegister_DeleteCaptureHidden — delete_capture is intentionally gated out
+// of registration for this release (see Register in tools.go: the by-ID lookup
+// is unreliable, so the tool is hidden rather than shipped broken). It must not
+// appear in tools/list and must be uncallable. Re-enabling the registration
+// should flip this test — restore delete_capture to expectedTools and the
+// WriteToolsGated suite at the same time.
+func TestRegister_DeleteCaptureHidden(t *testing.T) {
+	cs := newSession(t)
+
+	res, err := cs.ListTools(t.Context(), &sdkmcp.ListToolsParams{})
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	for _, tool := range res.Tools {
+		if tool.Name == "delete_capture" {
+			t.Fatalf("delete_capture is registered but must be hidden this release")
+		}
+	}
+
+	// Unregistered tool → transport-level "unknown tool" error.
+	if _, err := cs.CallTool(t.Context(), &sdkmcp.CallToolParams{
+		Name:      "delete_capture",
+		Arguments: map[string]any{"record_id": "test-id"},
+	}); err == nil {
+		t.Fatal("CallTool delete_capture: got nil error, want unknown-tool error")
 	}
 }
 

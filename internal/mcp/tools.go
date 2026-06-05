@@ -177,9 +177,16 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 	mustAdd(srv, "recall",
 		"Query organizational memory by natural-language question.",
 		handleRecall(deps))
-	mustAdd(srv, "delete_capture",
-		"Soft-delete a record by ID (sets status=reverted, re-inserts).",
-		handleDeleteCapture(deps))
+	// delete_capture is HIDDEN for this release. The by-ID lookup (SearchByID)
+	// cannot reliably locate a record — envector exposes no exact-ID retrieval,
+	// only vector similarity, so against a populated index soft-delete returns
+	// "not found". Registration is gated to remove the tool from the MCP surface
+	// (no slash command, not callable by the model). The handler
+	// (handleDeleteCapture / lifecycle.DeleteCapture) is intentionally kept;
+	// re-enable by uncommenting once a reliable by-ID path exists.
+	// mustAdd(srv, "delete_capture",
+	// 	"Soft-delete a record by ID (sets status=reverted, re-inserts).",
+	// 	handleDeleteCapture(deps))
 
 	// Read / diagnostic tools — bypass state gate.
 	mustAdd(srv, "capture_history",
