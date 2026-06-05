@@ -95,7 +95,12 @@ func buildSingleRecord(
 ) domain.DecisionRecord {
 	title := fields.Title
 	if title == "" {
-		title = extractTitle(cleanText)
+		// Agent-delegated captures (notably batch items) carry no raw text; the
+		// titleable content lives in the extraction. Prefer the raw text (single
+		// capture's most faithful source) but fall back to the curated
+		// reusable_insight, then the other content fields, so a contentful record
+		// never degrades to the generic "General decision" label / colliding ID.
+		title = extractTitle(firstNonEmpty(cleanText, extraction.GroupSummary, fields.Rationale, fields.Problem))
 	}
 
 	evidence := extractEvidence(rawEvent, cleanText)
@@ -180,7 +185,11 @@ func buildMultiRecord(
 	d := domain.ParseDomain(detection.Domain)
 	groupTitle := extraction.GroupTitle
 	if groupTitle == "" {
-		groupTitle = extractTitle(cleanText)
+		src := firstNonEmpty(cleanText, extraction.GroupSummary)
+		if src == "" && len(phases) > 0 {
+			src = firstNonEmpty(phases[0].PhaseTitle, phases[0].PhaseDecision)
+		}
+		groupTitle = extractTitle(src)
 	}
 	groupID := domain.GenerateGroupID(now, d, groupTitle)
 	groupType := extraction.GroupType
@@ -291,6 +300,17 @@ func buildMultiRecord(
 }
 
 //--- Helper ---//
+
+// firstNonEmpty returns the first argument that is non-empty after trimming,
+// or "" if all are blank. Used to pick a title source by content priority.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
 
 // extractTitle returns the first sentence (up to first ".") capped at
 // MaxTitleLen runes. text[:idx] is safe because "." is ASCII single-byte.
