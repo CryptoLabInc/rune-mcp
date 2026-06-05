@@ -1,11 +1,20 @@
 package mcp
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
 )
+
+// maxRecallTopK is a client-side sanity ceiling, not the authoritative limit.
+// The real per-token cap is enforced by the vault from the token's role
+// (rune-admin roles range up to admin's top_k=50). We reject only clearly
+// excessive requests here so a valid high-limit token is never falsely blocked;
+// a top_k within this ceiling but above the token's role limit is rejected by
+// the vault and surfaced as domain.CodeTopKLimit.
+const maxRecallTopK = 50
 
 // State gate — called at every tool handler entry.
 // Returns appropriate RuneError for non-active states (Python _ensure_pipelines).
@@ -62,7 +71,7 @@ func ValidateCaptureRequest(req *domain.CaptureRequest) error {
 
 // ValidateRecallArgs — Python server.py:L910-932.
 //   - query empty → ErrInvalidInput (D24 early reject)
-//   - topk > 10 → ErrInvalidInput
+//   - topk > maxRecallTopK → ErrInvalidInput (sanity ceiling; real limit is the vault's)
 //   - topk == 0 → default 5
 func ValidateRecallArgs(args *domain.RecallArgs) error {
 	if strings.TrimSpace(args.Query) == "" {
@@ -71,8 +80,11 @@ func ValidateRecallArgs(args *domain.RecallArgs) error {
 	if args.TopK == 0 {
 		args.TopK = 5
 	}
-	if args.TopK > 10 {
-		return domain.ErrInvalidInput
+	if args.TopK > maxRecallTopK {
+		return &domain.RuneError{
+			Code:    domain.CodeInvalidInput,
+			Message: fmt.Sprintf("top_k %d exceeds maximum %d", args.TopK, maxRecallTopK),
+		}
 	}
 	return nil
 }

@@ -495,6 +495,33 @@ func TestDecryptScores_GRPCError(t *testing.T) {
 	}
 }
 
+// TestDecryptScores_TopKExceeded — the vault returns codes.InvalidArgument with
+// the message "top_k N exceeds limit M for role 'X'" when top_k exceeds the
+// token role's limit. MapGRPCError must distinguish this from generic
+// invalid-input and surface VAULT_TOPK_EXCEEDED so recall can report a
+// dedicated TOPK_LIMIT error rather than INVALID_INPUT.
+func TestDecryptScores_TopKExceeded(t *testing.T) {
+	fake, c := startFakeServer(t)
+	fake.decryptScoresFn = func(*vaultpb.DecryptScoresRequest) (*vaultpb.DecryptScoresResponse, error) {
+		return nil, status.Error(codes.InvalidArgument, "top_k 8 exceeds limit 3 for role 'researcher'")
+	}
+
+	_, err := c.DecryptScores(context.Background(), "blob", 8)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var ve *vault.Error
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected *vault.Error, got %T", err)
+	}
+	if ve.Code != "VAULT_TOPK_EXCEEDED" {
+		t.Errorf("Code: got %q, want VAULT_TOPK_EXCEEDED", ve.Code)
+	}
+	if ve.Retryable {
+		t.Error("TopKExceeded must not be retryable")
+	}
+}
+
 func TestDecryptMetadata_GRPCError(t *testing.T) {
 	fake, c := startFakeServer(t)
 	fake.decryptMetadataFn = func(*vaultpb.DecryptMetadataRequest) (*vaultpb.DecryptMetadataResponse, error) {

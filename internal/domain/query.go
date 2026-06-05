@@ -44,7 +44,7 @@ const (
 // RecallArgs — §4.2. Python: server.py:L910-1034.
 type RecallArgs struct {
 	Query  string  `json:"query"`
-	TopK   int     `json:"topk,omitempty"`   // default 5, max 10
+	TopK   int     `json:"topk,omitempty"`   // default 5; client sanity ceiling 50, real cap from vault token role
 	Domain *string `json:"domain,omitempty"` // filter
 	Status *string `json:"status,omitempty"` // filter
 	Since  *string `json:"since,omitempty"`  // ISO date "YYYY-MM-DD"

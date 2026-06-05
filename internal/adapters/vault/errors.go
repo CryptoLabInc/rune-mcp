@@ -2,6 +2,7 @@ package vault
 
 import (
 	"errors"
+	"strings"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -45,6 +46,7 @@ var (
 	ErrVaultTimeout          = &Error{Code: "VAULT_TIMEOUT", Retryable: true}
 	ErrVaultPermissionDenied = &Error{Code: "VAULT_PERMISSION_DENIED", Retryable: false}
 	ErrVaultInvalidInput     = &Error{Code: "VAULT_INVALID_INPUT", Retryable: false}
+	ErrVaultTopKExceeded     = &Error{Code: "VAULT_TOPK_EXCEEDED", Retryable: false}
 	ErrVaultRateLimited      = &Error{Code: "VAULT_RATE_LIMITED", Retryable: true}
 
 	// ErrNotHTTPScheme — returned by HealthFallback when endpoint is not http(s).
@@ -58,7 +60,8 @@ var (
 //
 //	Unauthenticated     → ErrVaultAuthFailed       (token validation)
 //	PermissionDenied    → ErrVaultPermissionDenied (role scope check)
-//	InvalidArgument     → ErrVaultInvalidInput     (bad client input)
+//	InvalidArgument     → ErrVaultTopKExceeded     (msg contains "exceeds limit": top_k over role limit)
+//	InvalidArgument     → ErrVaultInvalidInput     (any other bad client input)
 //	ResourceExhausted   → ErrVaultRateLimited      (token rate limit)
 //	NotFound            → ErrVaultKeyNotFound      (server doesn't emit this today; mapped for future)
 //	Unavailable         → ErrVaultUnavailable      (transport: network / server down)
@@ -97,6 +100,22 @@ func MapGRPCError(err error) error {
 			Cause:     err,
 		}
 	case codes.InvalidArgument:
+		// The vault server returns codes.InvalidArgument both for genuinely
+		// malformed input (base64 deserialization, oversized lists) and for a
+		// top_k that exceeds the token role's limit. The latter carries the
+		// message "top_k N exceeds limit M for role 'X'" (rune-admin
+		// vault/internal/tokens/errors.go ErrTopKExceeded) — match both stable
+		// substrings ("top_k" + "exceeds limit") so callers can surface a
+		// dedicated TOPK_LIMIT error instead of a generic invalid-input one,
+		// while staying robust against unrelated "exceeds ..." messages.
+		if msg := st.Message(); strings.Contains(msg, "top_k") && strings.Contains(msg, "exceeds limit") {
+			return &Error{
+				Code:      ErrVaultTopKExceeded.Code,
+				Message:   st.Message(),
+				Retryable: false,
+				Cause:     err,
+			}
+		}
 		return &Error{
 			Code:      ErrVaultInvalidInput.Code,
 			Message:   st.Message(),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -114,6 +115,24 @@ func (s *RecallService) Handle(ctx context.Context, args *domain.RecallArgs) (*d
 // Phase 4 — search orchestration
 // ─────────────────────────────────────────────────────────────────────────────
 
+// topKLimitErr returns a domain TOPK_LIMIT error if err wraps a vault top_k
+// limit rejection, else nil. Unlike transient per-expansion failures (which
+// recall swallows best-effort), a top_k over the token's role limit is
+// deterministic — every expansion fails identically — so recall aborts and
+// surfaces a distinct, actionable error instead of silently returning zero
+// results or a generic INVALID_INPUT.
+func topKLimitErr(err error) *domain.RuneError {
+	var ve *vault.Error
+	if errors.As(err, &ve) && ve.Code == vault.ErrVaultTopKExceeded.Code {
+		return &domain.RuneError{
+			Code:      domain.CodeTopKLimit,
+			Message:   ve.Message,
+			Retryable: false,
+		}
+	}
+	return nil
+}
+
 // searchWithExpansions — Python: searcher.py:L153-176 _search_with_expansions.
 func (s *RecallService) searchWithExpansions(
 	ctx context.Context,
@@ -131,6 +150,9 @@ func (s *RecallService) searchWithExpansions(
 		}
 		hits, err := s.searchSingle(ctx, vec, topk)
 		if err != nil {
+			if te := topKLimitErr(err); te != nil {
+				return nil, te
+			}
 			slog.Warn("search expansion failed (best-effort)", "exp", exps[i], "err", err)
 			continue
 		}
@@ -156,7 +178,11 @@ func (s *RecallService) searchWithExpansions(
 		cancel()
 		if err == nil {
 			hits, err := s.searchSingle(ctx, vec, topk)
-			if err == nil {
+			if err != nil {
+				if te := topKLimitErr(err); te != nil {
+					return nil, te
+				}
+			} else {
 				for _, h := range hits {
 					if !seen[h.RecordID] {
 						seen[h.RecordID] = true

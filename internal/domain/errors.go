@@ -15,6 +15,7 @@ const (
 	CodeEnvectorInsert      = "ENVECTOR_INSERT_ERROR"
 	CodePipelineNotReady    = "PIPELINE_NOT_READY"
 	CodeInvalidInput        = "INVALID_INPUT"
+	CodeTopKLimit           = "TOPK_LIMIT"           // top_k exceeds the vault token's role limit (distinct from generic INVALID_INPUT)
 	CodeEmbedderUnreachable = "EMBEDDER_UNREACHABLE" // Go-specific (D30)
 	CodeEmptyEmbedText      = "EMPTY_EMBED_TEXT"     // D5 — dedicated code for missing embed text
 	CodeExtractionMissing   = "EXTRACTION_MISSING"   // D14 — agent must provide pre_extraction
@@ -39,6 +40,7 @@ var (
 	ErrEnvectorInsert      = &RuneError{Code: CodeEnvectorInsert, Retryable: true}
 	ErrPipelineNotReady    = &RuneError{Code: CodePipelineNotReady, Retryable: false}
 	ErrInvalidInput        = &RuneError{Code: CodeInvalidInput, Retryable: false}
+	ErrTopKLimit           = &RuneError{Code: CodeTopKLimit, Retryable: false}
 	ErrEmbedderUnreachable = &RuneError{Code: CodeEmbedderUnreachable, Retryable: true}
 	ErrEmptyEmbedText      = &RuneError{Code: CodeEmptyEmbedText, Retryable: false}
 	ErrExtractionMissing   = &RuneError{Code: CodeExtractionMissing, Retryable: false}
