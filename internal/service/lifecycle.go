@@ -679,6 +679,26 @@ func (s *LifecycleService) Activate(ctx context.Context) (*ActivateResult, error
 		}, nil
 	}
 
+	// Clear a user-initiated deactivation before re-triggering the boot loop.
+	//
+	// /rune:activate is an explicit "come back online" intent. If the daemon
+	// was put to sleep by /rune:deactivate, config.State is "dormant" with
+	// reason "user_deactivated" (boot.go also treats a bare dormant state with
+	// no reason as user_deactivated). The boot loop reads config.State != active
+	// and immediately re-enters dormant, so without clearing the marker here the
+	// reload below is a no-op and activation never takes effect.
+	//
+	// Scope is deliberately limited to user-deactivation: substrate-driven
+	// dormancy (not_configured / vault_unconfigured) is already handled by the
+	// configure_required pre-checks above, so reaching this point means valid
+	// credentials exist and the user's own deactivation is the only thing
+	// pinning the daemon dormant.
+	if cfg.State == "dormant" && (cfg.DormantReason == "" || cfg.DormantReason == "user_deactivated") {
+		if err := config.ClearDormant(); err != nil {
+			return nil, fmt.Errorf("activate: clear user-deactivated state: %w", err)
+		}
+	}
+
 	// Pre-check: runed socket path ($RUNE_EMBEDDER_SOCKET or $HOME/.runed/embedding.sock)
 	socketPath := embedder.ResolveSocketPath("")
 	if socketPath != "" {
