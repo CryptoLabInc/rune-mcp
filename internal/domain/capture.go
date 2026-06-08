@@ -9,11 +9,11 @@ package domain
 // Extracted is the flat wire format split into Detection + ExtractionResult
 // internally (see types.md §3a.4 mapping).
 type CaptureRequest struct {
-	Text      string         `json:"text"`
-	Source    string         `json:"source"`
-	User      string         `json:"user,omitempty"`
-	Channel   string         `json:"channel,omitempty"`
-	Extracted map[string]any `json:"extracted"` // see types.md §3a.4
+	Text      string         `json:"text" jsonschema:"Raw source text the decision was extracted from."`
+	Source    string         `json:"source" jsonschema:"Source identifier for the capture (e.g. channel, doc, or session name)."`
+	User      string         `json:"user,omitempty" jsonschema:"Optional author of the captured context."`
+	Channel   string         `json:"channel,omitempty" jsonschema:"Optional channel the context originated from."`
+	Extracted map[string]any `json:"extracted" jsonschema:"FLAT extraction object (the agent-delegated extraction result). Fields: {title, decision, problem, rationale, domain?, status?, tags?[]}. Do not nest these under another key; the object itself is the extraction."` // see types.md §3a.4
 }
 
 // CaptureResponse — §4.1.

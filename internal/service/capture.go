@@ -380,11 +380,19 @@ func buildRelatedTop3(entries []vault.ScoreEntry) []domain.RelatedRecord {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // BatchCaptureArgs — Python: server.py:L810 tool_batch_capture args.
+//
+// The jsonschema tags below are surfaced verbatim in the tool's inputSchema
+// (go-sdk reads the `jsonschema` struct tag as the property description). They
+// exist to steer the model on first call: `items` is a string-typed param, so
+// the schema cannot otherwise express the per-element shape, and the single
+// `capture` tool's {text, source, extracted} layout invites a wrong-by-analogy
+// guess (a [{text, extracted}, ...] wrapper). Keep them in sync with the
+// runtime validation error in Batch (capture.go).
 type BatchCaptureArgs struct {
-	Items   string  `json:"items"` // JSON array string (agent-supplied)
-	Source  string  `json:"source,omitempty"`
-	User    *string `json:"user,omitempty"`
-	Channel *string `json:"channel,omitempty"`
+	Items   string  `json:"items" jsonschema:"JSON array string. Each element is a FLAT extracted object, NOT a {text, extracted} wrapper. Shape per item: {title, decision, problem, rationale, domain?, status?, tags?[]} or the multi-phase shape {group_title, phases[]}. An item must carry at least one of title/decision/problem/rationale (a bare group_title is read only inside the multi-phase shape)."`
+	Source  string  `json:"source,omitempty" jsonschema:"Batch-level source identifier; applied to every item. Per-item source is not read."`
+	User    *string `json:"user,omitempty" jsonschema:"Batch-level user; applied to every item."`
+	Channel *string `json:"channel,omitempty" jsonschema:"Batch-level channel; applied to every item."`
 }
 
 // BatchCaptureResult — aggregated response.
