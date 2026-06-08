@@ -89,3 +89,31 @@ func MarkDormant(reason string) error {
 
 	return Save(cfg)
 }
+
+// ClearDormant transitions config.json back to the active state and removes the
+// dormant_reason / dormant_since markers. It is the inverse of MarkDormant.
+//
+// Called by Activate when the user explicitly resumes a daemon they put to
+// sleep with /rune:deactivate. /rune:activate expresses intent to come back
+// online, so the persisted user_deactivated marker must be cleared — otherwise
+// the boot loop reads config.State != "active" (lifecycle/boot.go) and
+// immediately re-enters dormant, ignoring the activation.
+//
+// Idempotent: if config.json is already active with no dormant markers, this is
+// a no-op (no disk write), mirroring MarkDormant's "skip if same" guard.
+func ClearDormant() error {
+	cfg, err := Load()
+	if err != nil {
+		return err
+	}
+
+	if cfg.State == "active" && cfg.DormantReason == "" && cfg.DormantSince == "" {
+		return nil // already active — skip write
+	}
+
+	cfg.State = "active"
+	cfg.DormantReason = ""
+	cfg.DormantSince = ""
+
+	return Save(cfg)
+}

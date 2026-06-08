@@ -177,6 +177,86 @@ func TestMarkDormant_DormantSinceWithinReasonableWindow(t *testing.T) {
 	}
 }
 
+func TestClearDormant_RestoresActiveAndClearsMarkers(t *testing.T) {
+	home := withTempHome(t)
+
+	// A daemon put to sleep by /rune:deactivate: dormant + user_deactivated,
+	// vault creds present.
+	cfg := &config.Config{
+		Vault:         config.VaultConfig{Endpoint: "tcp://existing:50051", Token: "evt_keep_me"},
+		State:         "dormant",
+		DormantReason: "user_deactivated",
+		DormantSince:  time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := config.Save(cfg); err != nil {
+		t.Fatalf("setup: Save: %v", err)
+	}
+
+	if err := config.ClearDormant(); err != nil {
+		t.Fatalf("ClearDormant: %v", err)
+	}
+
+	got := readConfig(t, home)
+	if got["state"] != "active" {
+		t.Errorf("state: got %v, want active", got["state"])
+	}
+	if _, ok := got["dormant_reason"]; ok {
+		t.Errorf("dormant_reason should be cleared (omitempty), got %v", got["dormant_reason"])
+	}
+	if _, ok := got["dormant_since"]; ok {
+		t.Errorf("dormant_since should be cleared (omitempty), got %v", got["dormant_since"])
+	}
+	// Vault creds must survive the transition.
+	vault, ok := got["vault"].(map[string]any)
+	if !ok || vault["endpoint"] != "tcp://existing:50051" || vault["token"] != "evt_keep_me" {
+		t.Errorf("vault section clobbered: got %v", got["vault"])
+	}
+}
+
+func TestClearDormant_IdempotentWhenAlreadyActive(t *testing.T) {
+	withTempHome(t)
+
+	cfg := &config.Config{
+		Vault: config.VaultConfig{Endpoint: "tcp://existing:50051", Token: "t"},
+		State: "active",
+	}
+	if err := config.Save(cfg); err != nil {
+		t.Fatalf("setup: Save: %v", err)
+	}
+
+	if err := config.ClearDormant(); err != nil {
+		t.Fatalf("ClearDormant: %v", err)
+	}
+
+	got, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.State != "active" || got.DormantReason != "" || got.DormantSince != "" {
+		t.Errorf("unexpected state after no-op: %+v", got)
+	}
+}
+
+// MarkDormant → ClearDormant must round-trip back to a clean active config.
+func TestClearDormant_RoundTripWithMarkDormant(t *testing.T) {
+	withTempHome(t)
+
+	if err := config.MarkDormant("user_deactivated"); err != nil {
+		t.Fatalf("MarkDormant: %v", err)
+	}
+	if err := config.ClearDormant(); err != nil {
+		t.Fatalf("ClearDormant: %v", err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.State != "active" || cfg.DormantReason != "" || cfg.DormantSince != "" {
+		t.Errorf("round-trip did not restore active: %+v", cfg)
+	}
+}
+
 func TestSave_WritesValidJSON(t *testing.T) {
 	withTempHome(t)
 
