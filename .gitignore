@@ -21,3 +21,6 @@ coverage.out
 
 # Build outputs
 bin/
+
+# Local Korean doc drafts (English .md is the committed source of truth)
+docs/bench/*.ko.md
