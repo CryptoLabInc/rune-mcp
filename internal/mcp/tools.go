@@ -225,7 +225,7 @@ func mustAdd[In, Out any](srv *sdkmcp.Server, name, description string, h sdkmcp
 	if !isValidToolName(name) {
 		panic(fmt.Errorf("mustAdd: invalid tool name %q (allowed: [A-Za-z0-9_-], 1..128 chars)", name))
 	}
-	if bench.Enabled() {
+	if bench.Enabled {
 		h = benchWrap(name, h)
 	}
 	sdkmcp.AddTool(srv, &sdkmcp.Tool{
@@ -238,12 +238,12 @@ func mustAdd[In, Out any](srv *sdkmcp.Server, name, description string, h sdkmcp
 // per-call total). It stamps a fresh request id on the context so every
 // downstream boundary log (vault/envector/embedder) for this call shares one
 // req=, then records total in-handler latency once the handler returns.
-// Only installed when bench.Enabled(); the wrapped service handler is
-// untouched, so production behaviour is identical with the toggle off.
+// Only installed when bench.Enabled (the bench build); the wrapped service
+// handler is untouched, so production behaviour is identical with the toggle off.
 func benchWrap[In, Out any](name string, h sdkmcp.ToolHandlerFor[In, Out]) sdkmcp.ToolHandlerFor[In, Out] {
 	return func(ctx context.Context, req *sdkmcp.CallToolRequest, input In) (*sdkmcp.CallToolResult, Out, error) {
 		ctx = obs.WithRequestID(ctx, obs.NewRequestID())
-		start := time.Now()
+		start := bench.Now()
 		res, out, err := h(ctx, req, input)
 		bench.Observe(ctx, "tool", name, start, err)
 		return res, out, err

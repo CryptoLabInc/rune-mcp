@@ -242,8 +242,9 @@ func (c *client) DecryptScores(ctx context.Context, encryptedBlobB64 string, top
 	// Tag the ctx so the bench UnaryInterceptor can stamp k= on the vault_topk
 	// line. This single choke point covers every DecryptScores caller (recall
 	// main/boost search, capture novelty), so no service-layer call site needs
-	// to know about instrumentation. Guarded so prod (bench off) pays nothing.
-	if bench.Enabled() {
+	// to know about instrumentation. In the production build bench.Enabled is a
+	// false constant, so this branch folds away and prod pays nothing.
+	if bench.Enabled {
 		ctx = bench.WithK(ctx, topK)
 	}
 

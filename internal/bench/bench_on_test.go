@@ -1,3 +1,5 @@
+//go:build bench
+
 package bench
 
 import (
@@ -25,32 +27,23 @@ func captureLogs(t *testing.T) func() string {
 	return sb.String
 }
 
-// Contract 1 — off = no-op. With RUNE_MCP_BENCH unset, Enabled() is false and
-// Observe emits nothing. This is the safety net: a future refactor that wires
-// a call site without its own guard still produces zero production log noise.
-func TestObserve_OffIsNoOp(t *testing.T) {
-	t.Setenv("RUNE_MCP_BENCH", "") // explicitly off
-	read := captureLogs(t)
-
-	Observe(context.Background(), "envector", "/envector/Score", time.Now(), nil)
-
-	if got := read(); got != "" {
-		t.Fatalf("off must emit nothing, got: %q", got)
-	}
-	if Enabled() {
-		t.Fatal("Enabled() must be false when RUNE_MCP_BENCH is unset")
+// Contract 1 — Enabled is the true constant in this (bench) build, so the
+// instrumentation is compiled in. The off counterpart is verified in
+// bench_off_test.go against the production stub.
+func TestEnabled_TrueInBenchBuild(t *testing.T) {
+	if !Enabled {
+		t.Fatal("Enabled must be true under -tags bench")
 	}
 }
 
 // Contract 2 — on = parseable line. The harness greps msg=bench and parses
 // the fields; this pins the exact field set the analysis depends on.
 func TestObserve_EmitsParseableLine(t *testing.T) {
-	t.Setenv("RUNE_MCP_BENCH", "1")
 	t.Setenv("RUNE_BENCH_N", "100000")
 	read := captureLogs(t)
 
 	ctx := obs.WithRequestID(context.Background(), "ab12-req")
-	Observe(ctx, "envector", "/envector.v1.Envector/Score", time.Now(), nil)
+	Observe(ctx, "envector", "/envector.v1.Envector/Score", Now(), nil)
 
 	out := read()
 	for _, want := range []string{
@@ -73,11 +66,10 @@ func TestObserve_EmitsParseableLine(t *testing.T) {
 // by top-K downstream. A tagged ctx must render k=; the value is appended, so
 // existing field consumers are unaffected.
 func TestObserve_EmitsKWhenTagged(t *testing.T) {
-	t.Setenv("RUNE_MCP_BENCH", "1")
 	read := captureLogs(t)
 
 	ctx := WithK(context.Background(), 20)
-	Observe(ctx, "vault", "/rune.vault.v1.VaultService/DecryptScores", time.Now(), nil)
+	Observe(ctx, "vault", "/rune.vault.v1.VaultService/DecryptScores", Now(), nil)
 
 	if out := read(); !strings.Contains(out, " k=20") {
 		t.Errorf("tagged ctx must render k=20, got: %q", out)
@@ -87,10 +79,9 @@ func TestObserve_EmitsKWhenTagged(t *testing.T) {
 // An untagged ctx (every non-vault segment) must NOT render k=, so the field
 // stays exclusive to vault_topk and downstream defaults it to k=-1.
 func TestObserve_NoKWhenUntagged(t *testing.T) {
-	t.Setenv("RUNE_MCP_BENCH", "1")
 	read := captureLogs(t)
 
-	Observe(context.Background(), "embedder", "/runed.v1.RunedService/Embed", time.Now(), nil)
+	Observe(context.Background(), "embedder", "/runed.v1.RunedService/Embed", Now(), nil)
 
 	if out := read(); strings.Contains(out, " k=") {
 		t.Errorf("untagged ctx must not render k=, got: %q", out)
@@ -100,11 +91,10 @@ func TestObserve_NoKWhenUntagged(t *testing.T) {
 // n defaults to -1 when the sweep var is unset, so an out-of-sweep bench line
 // is still self-describing rather than silently dropping the x-axis value.
 func TestObserve_NDefaultsToMinusOne(t *testing.T) {
-	t.Setenv("RUNE_MCP_BENCH", "1")
 	t.Setenv("RUNE_BENCH_N", "") // unset
 	read := captureLogs(t)
 
-	Observe(context.Background(), "tool", "recall", time.Now(), nil)
+	Observe(context.Background(), "tool", "recall", Now(), nil)
 
 	if out := read(); !strings.Contains(out, "n=-1") {
 		t.Errorf("unset N must render n=-1, got: %q", out)
@@ -114,10 +104,9 @@ func TestObserve_NDefaultsToMinusOne(t *testing.T) {
 // A failed call must render ok=false — the harness separates success/failure
 // latency, so the ok label has to track err faithfully.
 func TestObserve_ErrIsNotOk(t *testing.T) {
-	t.Setenv("RUNE_MCP_BENCH", "1")
 	read := captureLogs(t)
 
-	Observe(context.Background(), "vault", "/vault/DecryptScores", time.Now(), errors.New("boom"))
+	Observe(context.Background(), "vault", "/vault/DecryptScores", Now(), errors.New("boom"))
 
 	if out := read(); !strings.Contains(out, "ok=false") {
 		t.Errorf("err must render ok=false, got: %q", out)
@@ -128,7 +117,6 @@ func TestObserve_ErrIsNotOk(t *testing.T) {
 // real call, forwards both invoker's error and the method name. Uses a fake
 // invoker so the test is fast, deterministic, and network-free.
 func TestUnaryInterceptor_TimesAndForwards(t *testing.T) {
-	t.Setenv("RUNE_MCP_BENCH", "1")
 	read := captureLogs(t)
 
 	const method = "/envector.v1.Envector/Score"

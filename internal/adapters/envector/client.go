@@ -16,7 +16,6 @@ package envector
 import (
 	"context"
 	"fmt"
-	"time"
 
 	envector "github.com/CryptoLabInc/envector-go-sdk"
 	"google.golang.org/grpc"
@@ -165,7 +164,7 @@ func (c *client) Insert(ctx context.Context, req InsertRequest) (*InsertResult, 
 	// FHE) + stream RPC" together — the SDK does both inside c.idx.Insert and does
 	// not expose a split. To isolate the encryption alone, micro-bench the public
 	// Keys.Encrypt outside the live Insert call (it is N-independent).
-	start := time.Now()
+	start := bench.Now()
 	res, err := c.idx.Insert(ctx, sdkReq)
 	bench.Observe(ctx, "envector", opInsert, start, err)
 	if err != nil {
@@ -181,11 +180,11 @@ func (c *client) Score(ctx context.Context, vec []float32) ([][]byte, error) {
 	}
 
 	// Adapter-level bench: Score is a server-streaming RPC (InnerProduct), so the
-	// unary interceptor never fires for it. Observe self-guards on bench.Enabled()
-	// → zero overhead with the toggle off. This is the N-sensitive segment the
-	// benchmark cares about most; the query is sent as plaintext, so this times the full
-	// score cost (no hidden client-side crypto).
-	start := time.Now()
+	// unary interceptor never fires for it. In the production build bench.Now and
+	// bench.Observe are no-op stubs that inline away → zero overhead. This is the
+	// N-sensitive segment the benchmark cares about most; the query is sent as
+	// plaintext, so this times the full score cost (no hidden client-side crypto).
+	start := bench.Now()
 	blobs, err := c.idx.Score(ctx, vec)
 	bench.Observe(ctx, "envector", opScore, start, err)
 	if err != nil {

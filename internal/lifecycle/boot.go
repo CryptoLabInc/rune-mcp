@@ -37,14 +37,15 @@ import (
 
 // withBench returns the interceptor chain for a remote client: the supplied
 // base interceptors, plus the bench timer appended (innermost, so it
-// times the pure RPC) when RUNE_MCP_BENCH=1. With the toggle off it returns
+// times the pure RPC) in the bench build (-tags bench). In the production build
+// bench.Enabled is a false constant, so this branch folds away and returns
 // base unchanged — zero added interceptors, identical production behaviour.
 //
 // boot.go is the only place that can assemble this: the bench timer, like
 // recovery, sits next to clients whose construction lives here. Adapter code
 // stays untouched.
 func withBench(seg string, base ...grpc.UnaryClientInterceptor) []grpc.UnaryClientInterceptor {
-	if bench.Enabled() {
+	if bench.Enabled {
 		return append(base, bench.UnaryInterceptor(seg))
 	}
 	return base

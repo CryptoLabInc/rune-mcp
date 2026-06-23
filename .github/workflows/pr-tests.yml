@@ -49,3 +49,13 @@ jobs:
 
       - name: go test
         run: go test -race -count=1 ./...
+
+      # Bench instrumentation is compiled out of the default build (build tag
+      # `bench`), so the steps above never see it. Compile and run the bench
+      # build too, or instrumentation could rot undetected. Design rationale:
+      # internal/bench/bench_on.go header.
+      - name: go build (bench)
+        run: go build -tags bench ./...
+
+      - name: go test (bench)
+        run: go test -tags bench -race -count=1 ./...

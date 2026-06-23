@@ -1,3 +1,5 @@
+//go:build bench
+
 package envector
 
 import (
@@ -12,9 +14,14 @@ import (
 
 // These tests lock in the P0 fix: Score/Insert are streaming RPCs that the unary
 // bench interceptor cannot see, so they are timed at the adapter level via
-// bench.Observe. Before this seam
-// existed, score/insert silently emitted zero bench lines and nothing caught it.
-// fakeIndex (a sdkIndex) lets us assert the lines without a live envector server.
+// bench.Observe. Before this seam existed, score/insert silently emitted zero
+// bench lines and nothing caught it. fakeIndex (a sdkIndex) lets us assert the
+// lines without a live envector server.
+//
+// Build-tagged `bench`: they assert bench output, which only exists under
+// -tags bench. The "off = no line" guarantee is now structural — the production
+// build links bench.Observe as a no-op stub — and is verified once in
+// internal/bench/bench_off_test.go rather than per call site.
 
 type fakeIndex struct {
 	scoreErr  error
@@ -45,7 +52,6 @@ func captureBenchLogs(t *testing.T) func() string {
 }
 
 func TestScore_EmitsBenchLine(t *testing.T) {
-	t.Setenv("RUNE_MCP_BENCH", "1")
 	read := captureBenchLogs(t)
 
 	c := &client{idx: &fakeIndex{}}
@@ -62,7 +68,6 @@ func TestScore_EmitsBenchLine(t *testing.T) {
 }
 
 func TestInsert_EmitsBenchLine(t *testing.T) {
-	t.Setenv("RUNE_MCP_BENCH", "1")
 	read := captureBenchLogs(t)
 
 	c := &client{idx: &fakeIndex{}}
@@ -79,26 +84,9 @@ func TestInsert_EmitsBenchLine(t *testing.T) {
 	}
 }
 
-// Regression for the original defect: with the toggle off, the adapter must emit
-// no bench line — same no-op guarantee the interceptor path has.
-func TestScore_NoBenchLineWhenOff(t *testing.T) {
-	t.Setenv("RUNE_MCP_BENCH", "") // explicitly off
-	read := captureBenchLogs(t)
-
-	c := &client{idx: &fakeIndex{}}
-	if _, err := c.Score(context.Background(), []float32{0.1}); err != nil {
-		t.Fatalf("Score: %v", err)
-	}
-
-	if out := read(); strings.Contains(out, "msg=bench") {
-		t.Errorf("off must emit no bench line, got: %q", out)
-	}
-}
-
 // A failed streaming call must still emit a line, marked ok=false — the harness
 // separates success/failure latency.
 func TestInsert_BenchLineMarksError(t *testing.T) {
-	t.Setenv("RUNE_MCP_BENCH", "1")
 	read := captureBenchLogs(t)
 
 	c := &client{idx: &fakeIndex{insertErr: errors.New("boom")}}
