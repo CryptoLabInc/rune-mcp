@@ -24,7 +24,7 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/bench"
 )
 
-// US-1 bench op labels — kept identical to the gRPC full-method paths the unary
+// Bench op labels — kept identical to the gRPC full-method paths the unary
 // interceptor emits for other envector calls (e.g. get_metadata), so every
 // envector bench line shares one op= format. Score/Insert are streaming RPCs
 // (cc.NewStream), which the unary interceptor cannot see — so they are timed
@@ -84,7 +84,7 @@ type ClientConfig struct {
 // sdkIndex is the subset of *envector.Index the adapter actually calls. Declaring
 // it as an interface (rather than the concrete *envector.Index) is a test seam:
 // it lets a unit test inject a fake index to verify adapter-level behaviour —
-// notably that the streaming Score/Insert paths emit US-1 bench lines — without a
+// notably that the streaming Score/Insert paths emit bench lines — without a
 // live envector server. *envector.Index satisfies this implicitly.
 type sdkIndex interface {
 	Score(ctx context.Context, query []float32) ([][]byte, error)
@@ -164,7 +164,7 @@ func (c *client) Insert(ctx context.Context, req InsertRequest) (*InsertResult, 
 	// the unary interceptor never fires. This times "Keys.Encrypt (client-side
 	// FHE) + stream RPC" together — the SDK does both inside c.idx.Insert and does
 	// not expose a split. To isolate the encryption alone, micro-bench the public
-	// Keys.Encrypt outside the live Insert call (it is N-independent). See coverage doc §3.
+	// Keys.Encrypt outside the live Insert call (it is N-independent).
 	start := time.Now()
 	res, err := c.idx.Insert(ctx, sdkReq)
 	bench.Observe(ctx, "envector", opInsert, start, err)
@@ -182,8 +182,8 @@ func (c *client) Score(ctx context.Context, vec []float32) ([][]byte, error) {
 
 	// Adapter-level bench: Score is a server-streaming RPC (InnerProduct), so the
 	// unary interceptor never fires for it. Observe self-guards on bench.Enabled()
-	// → zero overhead with the toggle off. This is the N-sensitive segment US-1
-	// cares about most; the query is sent as plaintext, so this times the full
+	// → zero overhead with the toggle off. This is the N-sensitive segment the
+	// benchmark cares about most; the query is sent as plaintext, so this times the full
 	// score cost (no hidden client-side crypto).
 	start := time.Now()
 	blobs, err := c.idx.Score(ctx, vec)

@@ -12,7 +12,7 @@ import (
 
 // These tests lock in the P0 fix: Score/Insert are streaming RPCs that the unary
 // bench interceptor cannot see, so they are timed at the adapter level via
-// bench.Observe (docs/bench/us1-report-segment-coverage.md §3). Before this seam
+// bench.Observe. Before this seam
 // existed, score/insert silently emitted zero bench lines and nothing caught it.
 // fakeIndex (a sdkIndex) lets us assert the lines without a live envector server.
 

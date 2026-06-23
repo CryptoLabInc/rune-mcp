@@ -11,10 +11,9 @@ import (
 )
 
 // BenchmarkEncrypt measures the client-side FHE encryption cost (Keys.Encrypt)
-// in isolation. This is the one segment the US-1 bench instrumentation cannot
+// in isolation. This is the one segment the bench instrumentation cannot
 // see: it is N-independent and runs *before* the gRPC stream opens, so no
-// interceptor (unary or stream) captures it (see docs/bench/
-// us1-report-segment-coverage.md §3). Capture's `insert` bundles this cost with
+// interceptor (unary or stream) captures it. Capture's `insert` bundles this cost with
 // the RPC; rather than split it inside the live Insert call, we characterise the
 // constant here.
 //

@@ -234,7 +234,7 @@ func mustAdd[In, Out any](srv *sdkmcp.Server, name, description string, h sdkmcp
 	}, h)
 }
 
-// benchWrap decorates a tool handler with US-1 bench timing (seg=tool, the
+// benchWrap decorates a tool handler with bench timing (seg=tool, the
 // per-call total). It stamps a fresh request id on the context so every
 // downstream boundary log (vault/envector/embedder) for this call shares one
 // req=, then records total in-handler latency once the handler returns.

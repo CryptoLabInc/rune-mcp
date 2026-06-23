@@ -36,7 +36,7 @@ import (
 )
 
 // withBench returns the interceptor chain for a remote client: the supplied
-// base interceptors, plus the US-1 bench timer appended (innermost, so it
+// base interceptors, plus the bench timer appended (innermost, so it
 // times the pure RPC) when RUNE_MCP_BENCH=1. With the toggle off it returns
 // base unchanged — zero added interceptors, identical production behaviour.
 //
