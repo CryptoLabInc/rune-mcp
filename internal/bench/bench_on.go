@@ -1,8 +1,8 @@
 //go:build bench
 
-// Package bench — latency instrumentation for US-1 benchmarking.
+// Package bench — latency instrumentation for benchmarking.
 //
-// US-1 measures how recall/capture latency scales with N (pre-loaded vector
+// The benchmark measures how recall/capture latency scales with N (pre-loaded vector
 // rows). Only the envector Score segment is N-sensitive; the rest (embed,
 // in-process, vault decrypt) is N-independent. This package emits one log
 // line per measured segment so the benchmark harness can grep `msg=bench`
@@ -19,8 +19,6 @@
 // This is a leaf module: it imports only obs (logging + request id) and
 // grpc (interceptor type). Service code (tools.go, boot.go) calls into it;
 // it never calls back. That one-way dependency keeps the blast radius here.
-//
-// See planning: heeyeon-plan .../2026-06-18-us1-rune-mcp-bench-instrumentation-ko.md
 package bench
 
 import (
@@ -118,7 +116,7 @@ func Observe(ctx context.Context, seg, op string, start time.Time, err error) {
 // UNARY external calls are timed automatically: vault (DecryptScores/
 // DecryptMetadata), embedder (Embed/EmbedBatch), and envector GetMetadata. It
 // times exactly invoker() — the network round-trip plus remote processing —
-// which is the boundary latency US-1 wants.
+// which is the boundary latency the benchmark measures.
 //
 // NOTE: this only fires for unary RPCs (grpc.cc.Invoke). The N-sensitive
 // envector Score (InnerProduct) and Insert (BatchInsertData) are STREAMING
