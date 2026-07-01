@@ -25,7 +25,6 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/envector"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
 	"github.com/CryptoLabInc/rune-mcp/internal/service"
@@ -40,7 +39,6 @@ import (
 // can run pre-active for diagnostics.
 type Deps struct {
 	Vault    vault.Client
-	Envector envector.Client
 	Embedder embedder.Client
 	State    *lifecycle.Manager
 
@@ -82,21 +80,6 @@ func (d *Deps) InjectEmbedder(client embedder.Client) {
 	closeAfterInterval("embedder", prev, client)
 }
 
-func (d *Deps) InjectEnvector(client envector.Client) {
-	prev := d.Envector
-	d.Envector = client
-	if d.Capture != nil {
-		d.Capture.Envector = client
-	}
-	if d.Recall != nil {
-		d.Recall.Envector = client
-	}
-	if d.Lifecycle != nil {
-		d.Lifecycle.Envector = client
-	}
-	closeAfterInterval("envector", prev, client)
-}
-
 // Reserve Close() on a replaced client after a period to drain concurrent
 // in-flight gRPCs against the old connection
 //
@@ -115,21 +98,16 @@ func closeAfterInterval(name string, prev, next io.Closer) {
 	}()
 }
 
-// ApplyVaultBundle propagates per-bundle metadata (AgentID / AgentDEK /
-// IndexName / KeyID) to the three services that need them. Called by the
-// boot loop after Vault.GetAgentManifest succeeds.
+// ApplyVaultBundle propagates per-bundle config (IndexName / KeyID) to the
+// three services. Called by the boot loop after Vault.GetAgentManifest.
 //
-// Without this call, capture's AES envelope sealing fails (empty AgentDEK)
-// and recall / lifecycle diagnostics surface zero-value IndexName. Adapter
-// client injection (InjectVault/InjectEmbedder/InjectEnvector) handles the
-// gRPC connections; this method handles the per-token metadata.
+// Under the runespace model the manifest carries no FHE keys — the vault holds
+// them and does all encrypt/decrypt/seal — so this only wires non-secret config.
 func (d *Deps) ApplyVaultBundle(b *vault.Bundle) {
 	if b == nil {
 		return
 	}
 	if d.Capture != nil {
-		d.Capture.AgentID = b.AgentID
-		d.Capture.AgentDEK = b.AgentDEK
 		d.Capture.IndexName = b.IndexName
 	}
 	if d.Recall != nil {
@@ -138,8 +116,6 @@ func (d *Deps) ApplyVaultBundle(b *vault.Bundle) {
 	if d.Lifecycle != nil {
 		d.Lifecycle.IndexName = b.IndexName
 		d.Lifecycle.KeyID = b.KeyID
-		d.Lifecycle.AgentDEK = b.AgentDEK
-		d.Lifecycle.EncKeyLoaded = len(b.EncKey) > 0
 	}
 }
 
