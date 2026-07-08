@@ -3,62 +3,43 @@ package service
 import (
 	"context"
 	"errors"
-	"log/slog"
 
-	sdk "github.com/CryptoLabInc/envector-go-sdk"
-
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/envector"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
 )
 
-// We cannot easily rely on tranport interceptor since Insert and Score are streaming gRPC
-// Below helpers replicate interceptor: wait for retrigger on a retryable failure then retry once
+// These helpers replicate the transport interceptor: on a retryable vault
+// failure, wait for the pipeline to become active again, then retry once.
 
-func insertWithRecovery(ctx context.Context, state *lifecycle.Manager, c envector.Client, req envector.InsertRequest) (*envector.InsertResult, error) {
-	res, err := c.Insert(ctx, req)
+func insertWithRecovery(ctx context.Context, state *lifecycle.Manager, c vault.Client, vec []float32, meta string) (string, error) {
+	id, err := c.Insert(ctx, vec, meta)
 	if err == nil {
-		return res, nil
+		return id, nil
 	}
-	if errors.Is(err, sdk.ErrAlreadyExists) {
-		slog.Info("capture: insert request_id already committed (idempotent retry)",
-			"request_id", req.RequestID)
-		return &envector.InsertResult{}, nil
+	if state == nil || !isVaultRetryable(err) {
+		return "", err
 	}
-	if state == nil || !isEnvectorRetryable(err) {
-		return nil, err
-	}
-
 	if !state.WaitForActive(ctx, lifecycle.RecoverTimeout) {
-		return nil, err
+		return "", err
 	}
-
-	res, err = c.Insert(ctx, req)
-	if err == nil {
-		return res, nil
-	}
-	if errors.Is(err, sdk.ErrAlreadyExists) {
-		slog.Info("capture: insert request_id already committed on retry",
-			"request_id", req.RequestID)
-		return &envector.InsertResult{}, nil
-	}
-	return nil, err
+	return c.Insert(ctx, vec, meta)
 }
 
-func scoreWithRecovery(ctx context.Context, state *lifecycle.Manager, c envector.Client, vec []float32) ([][]byte, error) {
-	blobs, err := c.Score(ctx, vec)
+func searchWithRecovery(ctx context.Context, state *lifecycle.Manager, c vault.Client, vec []float32, topK int) ([]vault.Hit, error) {
+	hits, err := c.Search(ctx, vec, topK)
 	if err == nil {
-		return blobs, nil
+		return hits, nil
 	}
-	if state == nil || !isEnvectorRetryable(err) {
+	if state == nil || !isVaultRetryable(err) {
 		return nil, err
 	}
 	if !state.WaitForActive(ctx, lifecycle.RecoverTimeout) {
 		return nil, err
 	}
-	return c.Score(ctx, vec)
+	return c.Search(ctx, vec, topK)
 }
 
-func isEnvectorRetryable(err error) bool {
-	var e *envector.Error
+func isVaultRetryable(err error) bool {
+	var e *vault.Error
 	return errors.As(err, &e) && e.Retryable
 }

@@ -1,14 +1,16 @@
 module github.com/CryptoLabInc/rune-mcp
 
-go 1.26.2
+go 1.26.4
 
 require (
-	github.com/CryptoLabInc/envector-go-sdk v0.1.3
 	github.com/CryptoLabInc/rune-admin/vault v0.0.0-20260506055025-ad52b6bd549d
 	github.com/CryptoLabInc/runed v0.1.0
 	github.com/modelcontextprotocol/go-sdk v1.5.0
 	google.golang.org/grpc v1.81.0
 )
+
+// Local vault (integration test) — provides the new VaultService {Insert, Search} stubs.
+replace github.com/CryptoLabInc/rune-admin/vault => ../rune-admin/vault
 
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260415201107-50325440f8f2.1 // indirect

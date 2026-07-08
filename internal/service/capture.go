@@ -11,9 +11,6 @@ package service
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -22,7 +19,6 @@ import (
 	"time"
 
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/envector"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/logio"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
@@ -34,14 +30,11 @@ import (
 // Python: mcp/server/server.py:L1208-1407 _capture_single + L810-896 tool_batch_capture.
 type CaptureService struct {
 	Vault      vault.Client
-	Envector   envector.Client
 	Embedder   embedder.Client
 	CaptureLog *logio.CaptureLog
 	State      *lifecycle.Manager
 
 	// Injected from Vault bundle at boot.
-	AgentID   string
-	AgentDEK  []byte // 32B validated (vault.ValidateAgentDEK)
 	IndexName string
 
 	Now func() time.Time // injectable clock (default: time.Now)
@@ -128,7 +121,7 @@ func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest)
 		noveltyInfo = &domain.NoveltyInfo{Score: 1.0, Class: "novel"}
 	}
 
-	// Phase 5: embed, seal
+	// Phase 5: embed. Metadata is the plaintext record JSON; the vault seals it.
 	texts := make([]string, len(records))
 	for i := range records {
 		texts[i] = pickEmbedText(&records[i])
@@ -139,24 +132,15 @@ func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest)
 		return nil, fmt.Errorf("embed batch: %w", err)
 	}
 
-	envelopes, err := s.sealMetadata(records)
-	if err != nil {
-		return nil, fmt.Errorf("seal metadata: %w", err)
-	}
-
-	// Phase 6
-	insertReq := envector.InsertRequest{
-		Vectors:   vectors,
-		Metadata:  envelopes,
-		RequestID: newInsertRequestID(),
-	}
-	insertResult, err := insertWithRecovery(ctx, s.State, s.Envector, insertReq)
-	if err != nil {
-		return nil, fmt.Errorf("envector insert: %w", err)
-	}
-	if insertResult != nil && len(insertResult.ItemIDs) != 0 && len(insertResult.ItemIDs) != len(vectors) {
-		slog.Error("envector insert inconsistency",
-			"expected", len(vectors), "got", len(insertResult.ItemIDs))
+	// Phase 6: insert each record via the vault (vault encrypts + seals + stores).
+	for i := range records {
+		body, err := json.Marshal(records[i])
+		if err != nil {
+			return nil, fmt.Errorf("marshal record %d: %w", i, err)
+		}
+		if _, err := insertWithRecovery(ctx, s.State, s.Vault, vectors[i], string(body)); err != nil {
+			return nil, fmt.Errorf("vault insert: %w", err)
+		}
 	}
 
 	// Phase 7
@@ -265,7 +249,7 @@ func (s *CaptureService) Batch(ctx context.Context, args BatchCaptureArgs) (*Bat
 // runNoveltyCheck — Phase 4 helper. Returns novelty info + nil if proceed,
 // or a pre-built response if near_duplicate (caller short-circuits).
 func (s *CaptureService) runNoveltyCheck(ctx context.Context, embeddingText string) (*domain.NoveltyInfo, *domain.CaptureResponse, error) {
-	if s.Embedder == nil || s.Envector == nil || s.Vault == nil {
+	if s.Embedder == nil || s.Vault == nil {
 		return &domain.NoveltyInfo{Score: 1.0, Class: "novel"}, nil, nil
 	}
 
@@ -275,26 +259,16 @@ func (s *CaptureService) runNoveltyCheck(ctx context.Context, embeddingText stri
 		return &domain.NoveltyInfo{Score: 1.0, Class: "novel"}, nil, nil
 	}
 
-	blobs, err := scoreWithRecovery(ctx, s.State, s.Envector, vec)
-	if err != nil || len(blobs) == 0 {
-		slog.Warn("novelty check: score failed (non-fatal)", "err", err)
-		return &domain.NoveltyInfo{Score: 1.0, Class: "novel"}, nil, nil
-	}
-
-	// Vault.DecryptScores's `EncryptedBlobB64` is a proto3 string field —
-	// envector's raw cipher bytes must be base64-encoded before sending.
-	// Mirrors recall.searchSingle.
-	encryptedBlobB64 := base64.StdEncoding.EncodeToString(blobs[0])
-	entries, err := s.Vault.DecryptScores(ctx, encryptedBlobB64, 3)
-	if err != nil || len(entries) == 0 {
-		slog.Warn("novelty check: decrypt failed (non-fatal)", "err", err)
+	hits, err := searchWithRecovery(ctx, s.State, s.Vault, vec, 3)
+	if err != nil || len(hits) == 0 {
+		slog.Warn("novelty check: search failed or empty (non-fatal)", "err", err)
 		return &domain.NoveltyInfo{Score: 1.0, Class: "novel"}, nil, nil
 	}
 
 	maxSim := 0.0
-	for _, e := range entries {
-		if e.Score > maxSim {
-			maxSim = e.Score
+	for _, h := range hits {
+		if h.Score > maxSim {
+			maxSim = h.Score
 		}
 	}
 
@@ -302,7 +276,7 @@ func (s *CaptureService) runNoveltyCheck(ctx context.Context, embeddingText stri
 	noveltyInfo := &domain.NoveltyInfo{
 		Score:   score,
 		Class:   class,
-		Related: buildRelatedTop3(entries),
+		Related: buildRelatedTop3(hits),
 	}
 
 	if class == domain.NoveltyClassNearDuplicate {
@@ -317,31 +291,6 @@ func (s *CaptureService) runNoveltyCheck(ctx context.Context, embeddingText stri
 	return noveltyInfo, nil, nil
 }
 
-// sealMetadata — Phase 5 helper. For each record, json.Marshal → envector.Seal.
-// Safety check (Python envector_sdk.py:L250-251): agent_dek present but agent_id missing → skip.
-func (s *CaptureService) sealMetadata(records []domain.DecisionRecord) ([]string, error) {
-	envelopes := make([]string, len(records))
-
-	for i, rec := range records {
-		body, err := json.Marshal(rec)
-		if err != nil {
-			return nil, fmt.Errorf("marshal record %d: %w", i, err)
-		}
-
-		if len(s.AgentDEK) > 0 && s.AgentID != "" {
-			sealed, err := envector.Seal(s.AgentDEK, s.AgentID, body)
-			if err != nil {
-				return nil, fmt.Errorf("seal record %d: %w", i, err)
-			}
-
-			envelopes[i] = sealed
-		} else {
-			envelopes[i] = string(body) // no DEK
-		}
-	}
-	return envelopes, nil
-}
-
 func pickEmbedText(r *domain.DecisionRecord) string {
 	if r.ReusableInsight != "" {
 		return r.ReusableInsight
@@ -349,17 +298,8 @@ func pickEmbedText(r *domain.DecisionRecord) string {
 	return r.Payload.Text // fallback
 }
 
-// Identical format with enVector RequestHeader.Id
-func newInsertRequestID() string {
-	var b [14]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return ""
-	}
-	return hex.EncodeToString(b[:])
-}
-
-func buildRelatedTop3(entries []vault.ScoreEntry) []domain.RelatedRecord {
-	n := len(entries)
+func buildRelatedTop3(hits []vault.Hit) []domain.RelatedRecord {
+	n := len(hits)
 	if n > 3 {
 		n = 3
 	}
@@ -367,8 +307,8 @@ func buildRelatedTop3(entries []vault.ScoreEntry) []domain.RelatedRecord {
 	records := make([]domain.RelatedRecord, n)
 	for i := 0; i < n; i++ {
 		records[i] = domain.RelatedRecord{
-			ID:         fmt.Sprintf("shard:%d/row:%d", entries[i].ShardIdx, entries[i].RowIdx),
-			Similarity: math.Round(entries[i].Score*1000) / 1000,
+			ID:         hits[i].ID,
+			Similarity: math.Round(hits[i].Score*1000) / 1000,
 		}
 	}
 

@@ -27,8 +27,6 @@ import (
 
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/envector"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/keymanager"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/recovery"
@@ -41,7 +39,6 @@ import (
 type BootAdapterInjector interface {
 	InjectVault(client vault.Client)
 	InjectEmbedder(client embedder.Client)
-	InjectEnvector(client envector.Client)
 	ApplyVaultBundle(bundle *vault.Bundle)
 }
 
@@ -445,22 +442,6 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		return bootRetry
 	}
 
-	if err := keymanager.SaveEncKey(bundle.KeyID, bundle.EncKey); err != nil {
-		m.lastError.Store(fmt.Sprintf("save EncKey: %v", err))
-		m.SetBootError(classify(err, domain.BootPhaseKeySave))
-		slog.Error("boot: failed to save keys to disk", "err", err)
-		_ = vaultClient.Close()
-		return bootRetry
-	}
-
-	keyDir, err := keymanager.KeyDir(bundle.KeyID)
-	if err != nil {
-		m.lastError.Store(fmt.Sprintf("resolve key dir: %v", err))
-		m.SetBootError(classify(err, domain.BootPhaseKeySave))
-		slog.Error("boot: failed to resolve key dir", "err", err)
-		return bootRetry
-	}
-
 	deps.InjectVault(vaultClient)
 	deps.ApplyVaultBundle(bundle)
 
@@ -476,33 +457,6 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		return bootRetry
 	}
 	deps.InjectEmbedder(embedderClient)
-
-	envectorClient, err := envector.NewClient(envector.ClientConfig{
-		Endpoint:  bundle.EnvectorEndpoint,
-		APIKey:    bundle.EnvectorAPIKey,
-		KeyPath:   keyDir,
-		KeyID:     bundle.KeyID,
-		KeyDim:    DefaultKeyDim,
-		IndexName: bundle.IndexName,
-		UnaryInterceptors: []grpc.UnaryClientInterceptor{
-			recovery.UnaryRecovery("envector", m),
-		},
-	})
-	if err != nil {
-		m.lastError.Store(fmt.Sprintf("envector new client: %v", err))
-		m.SetBootError(classify(err, domain.BootPhaseEnvectorInit))
-		slog.Error("boot: failed to connect to envector", "err", err)
-		return bootRetry
-	}
-
-	if err := envectorClient.OpenIndex(ctx); err != nil {
-		m.lastError.Store(fmt.Sprintf("envector open index: %v", err))
-		m.SetBootError(classify(err, domain.BootPhaseEnvectorIndex))
-		slog.Error("boot: envector index activation failed", "err", err)
-		_ = envectorClient.Close()
-		return bootRetry
-	}
-	deps.InjectEnvector(envectorClient)
 
 	return bootActive
 }

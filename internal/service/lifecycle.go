@@ -13,7 +13,6 @@ import (
 
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/envector"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/logio"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
@@ -25,15 +24,13 @@ import (
 // Spec: docs/v04/spec/flows/lifecycle.md.
 type LifecycleService struct {
 	Vault     vault.Client
-	Envector  envector.Client
 	State     *lifecycle.Manager
 	IndexName string
 	ConfigDir string // for CaptureHistory reading capture_log.jsonl
 
-	// Key state (for diagnostics)
-	EncKeyLoaded bool
-	KeyID        string
-	AgentDEK     []byte
+	// Key state (for diagnostics). In the runespace model the vault is the sole
+	// key custodian; mcp holds no key material, only the KeyID from the manifest.
+	KeyID string
 
 	bootstrapWatcherMu      sync.Mutex
 	bootstrapWatcherRunning bool
@@ -159,11 +156,14 @@ type VaultInfo struct {
 	LastBootError *domain.BootError `json:"last_boot_error,omitempty"`
 }
 
-// KeysInfo — memory-resident key state.
+// KeysInfo — key custody status. In the runespace model the vault is the sole
+// key custodian (EncKey/EvalKey/SecKey never leave it); the mcp process holds
+// no key material. Provisioned reports that the vault has keys ready for this
+// index.
 type KeysInfo struct {
-	EncKeyLoaded   bool   `json:"enc_key_loaded"`
-	KeyID          string `json:"key_id,omitempty"`
-	AgentDEKLoaded bool   `json:"agent_dek_loaded"`
+	Custodian   string `json:"custodian"`   // "vault" — sole key holder
+	Provisioned bool   `json:"provisioned"` // vault has keys ready
+	KeyID       string `json:"key_id,omitempty"`
 }
 
 // PipelinesInfo — scribe/retriever init state.
@@ -237,9 +237,9 @@ func (s *LifecycleService) Diagnostics(ctx context.Context) *DiagnosticsResult {
 
 	// Keys
 	r.Keys = KeysInfo{
-		EncKeyLoaded:   s.EncKeyLoaded,
-		KeyID:          s.KeyID,
-		AgentDEKLoaded: len(s.AgentDEK) > 0,
+		Custodian:   "vault",
+		Provisioned: r.Vault.Healthy,
+		KeyID:       s.KeyID,
 	}
 
 	// Pipelines
@@ -255,9 +255,6 @@ func (s *LifecycleService) Diagnostics(ctx context.Context) *DiagnosticsResult {
 	r.Envector = s.collectEnvector(ctx, DiagnosticsTimeout)
 
 	if s.Vault != nil && !r.Vault.Healthy {
-		r.OK = false
-	}
-	if !r.Keys.EncKeyLoaded {
 		r.OK = false
 	}
 
@@ -333,13 +330,15 @@ func (s *LifecycleService) collectEmbedding(ctx context.Context, timeout time.Du
 }
 
 func (s *LifecycleService) collectEnvector(ctx context.Context, timeout time.Duration) EnvectorInfo {
-	if s.Envector == nil {
+	if s.Vault == nil {
 		return EnvectorInfo{}
 	}
 	info, _ := s.probeEnvector(ctx, timeout)
 	return info
 }
 
+// probeEnvector reports runespace reachability via the vault (mcp no longer
+// talks to the vector engine directly — the vault is the sole client).
 func (s *LifecycleService) probeEnvector(ctx context.Context, timeout time.Duration) (EnvectorInfo, error) {
 	ctx2, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -348,7 +347,7 @@ func (s *LifecycleService) probeEnvector(ctx context.Context, timeout time.Durat
 	t0 := time.Now()
 
 	go func() {
-		_, err := s.Envector.GetIndexList(ctx2)
+		_, err := s.Vault.HealthCheck(ctx2)
 		ch <- err
 	}()
 
@@ -457,7 +456,7 @@ type DeleteCaptureResult struct {
 //  4. capture_log append with mode="soft-delete", action="deleted"
 func (s *LifecycleService) DeleteCapture(ctx context.Context, args DeleteCaptureArgs, capSvc *CaptureService) (*DeleteCaptureResult, error) {
 	// Search by ID
-	hit, err := SearchByID(ctx, s.Embedder(), s.Vault, s.Envector, s.IndexName, args.RecordID)
+	hit, err := SearchByID(ctx, s.Embedder(), s.Vault, s.IndexName, args.RecordID)
 	if err != nil {
 		return nil, fmt.Errorf("delete: search by ID: %w", err)
 	}
@@ -492,21 +491,8 @@ func (s *LifecycleService) DeleteCapture(ctx context.Context, args DeleteCapture
 		return nil, fmt.Errorf("delete: marshal: %w", err)
 	}
 
-	if capSvc == nil || len(capSvc.AgentDEK) == 0 || capSvc.AgentID == "" {
-		return nil, fmt.Errorf("delete: missing agent DEK or ID for encryption")
-	}
-
-	envelope, err := envector.Seal(capSvc.AgentDEK, capSvc.AgentID, body)
-	if err != nil {
-		return nil, fmt.Errorf("delete: seal: %w", err)
-	}
-
-	insertReq := envector.InsertRequest{
-		Vectors:  [][]float32{vec},
-		Metadata: []string{envelope},
-	}
-	_, err = s.Envector.Insert(ctx, insertReq)
-	if err != nil {
+	// Re-insert via the vault (vault encrypts + seals + stores).
+	if _, err := s.Vault.Insert(ctx, vec, string(body)); err != nil {
 		return nil, fmt.Errorf("delete: re-insert: %w", err)
 	}
 
@@ -949,7 +935,7 @@ func (s *LifecycleService) ReloadPipelines(ctx context.Context) (*ReloadPipeline
 		}
 	}
 
-	if s.Envector != nil {
+	if s.Vault != nil {
 		warmup := s.warmupEnvector(ctx, WarmupTimeout)
 		result.EnvectorWarmup = warmup
 	}
@@ -997,7 +983,7 @@ func (s *LifecycleService) warmupEnvector(ctx context.Context, timeout time.Dura
 	defer cancel()
 
 	t0 := time.Now()
-	_, err := s.Envector.GetIndexList(ctx2)
+	_, err := s.Vault.HealthCheck(ctx2)
 	elapsed := float64(time.Since(t0).Milliseconds())
 
 	if err != nil {

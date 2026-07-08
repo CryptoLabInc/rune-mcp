@@ -1,25 +1,17 @@
 // Package vault is the Rune-Vault gRPC client.
-// Spec: docs/v04/spec/components/vault.md.
-// Python: mcp/adapter/vault_client.py (381 LoC).
+//
+// Under the runespace model the vault holds ALL FHE keys and is the sole
+// runespace client. rune-mcp is a pure-Go client that only talks to this
+// service — it never encrypts/decrypts or touches runespace directly.
 //
 // Responsibility:
-//   - GetAgentManifest: fetch agent manifest (EncKey, envector creds, agent_dek)
-//   - DecryptScores: Vault decrypts encrypted_blob → [{shard, row, score}]
-//   - DecryptMetadata: Vault decrypts AES envelopes → plaintext JSON strings
-//
-// Key ownership:
-//   - Vault owns EvalKey and SecKey to handle RegisterKeys/LoadKeys/decryption
-//   - Plugin receives EncKey + agent_dek only via GetAgentManifest
-//
-// Asymmetric responsibility (critical):
-//   - Capture: rune-mcp service layer encrypts locally with agent_dek
-//   - Recall: service layer calls DecryptMetadata (Python searcher.py:L444,L455)
-//     envector SDK is NEVER in the decrypt path
+//   - GetAgentManifest: fetch agent config (no keys)
+//   - Insert: send a plaintext embedding + metadata; vault encrypts + seals + stores
+//   - Search: send a plaintext query; vault searches + decrypts + opens metadata
 package vault
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -34,41 +26,29 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-// MaxMessageLength — 256MB applied on both MaxCallRecvMsgSize and MaxCallSendMsgSize.
-// Python parity: vault_client.py:L33 + spec/components/vault.md §256MB.
-//
-// Even with EvalKey no longer included in the manifest (Vault now owns
-// EvalKey/SecKey server-side), the manifest_json still carries EncKey JSON
-// content which can be on the order of MBs depending on FHE parameters.
-// Keeping the cap at 256MB matches Python's grpcio settings and avoids
-// future ResourceExhausted surprises if EncKey size grows.
+// MaxMessageLength — 256MB on both send/recv (FHE ciphertexts are large, and
+// the vault relays plaintext vectors which are small; keep the generous cap).
 const MaxMessageLength = 256 * 1024 * 1024
 
-// DefaultTimeout — Python vault_client.py:L84 (all RPCs: 30s)
+// DefaultTimeout — per-RPC deadline.
 const DefaultTimeout = 30 * time.Second
 
-// HealthCheckTimeout — Python vault_client.py:L315 (5s override on health probes)
+// HealthCheckTimeout — override on health probes.
 const HealthCheckTimeout = 5 * time.Second
 
-// Returned by GetAgentManifest (GetAgentManifestResponse.manifest_json).
+// Bundle is the agent config returned by GetAgentManifest (no keys).
 type Bundle struct {
-	EncKey           []byte // FHE encryption key (for local encrypt via envector SDK)
-	EnvectorEndpoint string // enVector Cloud server address
-	EnvectorAPIKey   string // enVector Cloud access token
-	AgentID          string // agent identifier (used in AES envelope "a" field)
-	AgentDEK         []byte // MUST be exactly 32 bytes (AES-256)
-	KeyID            string // key bundle identifier
-	IndexName        string // server-side index name
+	AgentID   string
+	KeyID     string
+	IndexName string
+	Dim       int
 }
 
 type manifestJSON struct {
-	EncKeyJSON       string `json:"EncKey.json"`
-	EnvectorEndpoint string `json:"envector_endpoint"`
-	EnvectorAPIKey   string `json:"envector_api_key"`
-	AgentID          string `json:"agent_id"`
-	AgentDEK         string `json:"agent_dek"` // base64(StdEncoding)
-	KeyID            string `json:"key_id"`
-	IndexName        string `json:"index_name"`
+	AgentID   string `json:"agent_id"`
+	KeyID     string `json:"key_id"`
+	IndexName string `json:"index_name"`
+	Dim       int    `json:"dim"`
 }
 
 func ParseManifestJSON(raw string) (*Bundle, error) {
@@ -76,53 +56,27 @@ func ParseManifestJSON(raw string) (*Bundle, error) {
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		return nil, fmt.Errorf("vault: parse manifest_json: %w", err)
 	}
-
-	dek, err := decodeAgentDEK(m.AgentDEK)
-	if err != nil {
-		return nil, err
-	}
-
 	return &Bundle{
-		EncKey:           []byte(m.EncKeyJSON),
-		EnvectorEndpoint: m.EnvectorEndpoint,
-		EnvectorAPIKey:   m.EnvectorAPIKey,
-		AgentID:          m.AgentID,
-		AgentDEK:         dek,
-		KeyID:            m.KeyID,
-		IndexName:        m.IndexName,
+		AgentID:   m.AgentID,
+		KeyID:     m.KeyID,
+		IndexName: m.IndexName,
+		Dim:       m.Dim,
 	}, nil
 }
 
-// base64 decode + 32-byte length check
-// length mismatch: non-retryable
-func decodeAgentDEK(b64 string) ([]byte, error) {
-	if b64 == "" {
-		return nil, fmt.Errorf("vault: agent_dek is empty")
-	}
-
-	b, err := base64.StdEncoding.DecodeString(b64)
-	if err != nil {
-		return nil, fmt.Errorf("vault: agent_dek invalid base64: %w", err)
-	}
-	if len(b) != 32 {
-		return nil, fmt.Errorf("vault: invalid agent_dek size %d (expected 32)", len(b))
-	}
-
-	return b, nil
-}
-
-// ScoreEntry — DecryptScores output.
-type ScoreEntry struct {
-	ShardIdx int32
-	RowIdx   int32
+// Hit is one decrypted, ranked search result. Metadata is plaintext JSON
+// (the vault opened the sealed envelope).
+type Hit struct {
+	ID       string
 	Score    float64
+	Metadata string
 }
 
 // Client interface — implemented by gRPC client (and test mocks).
 type Client interface {
 	GetAgentManifest(ctx context.Context) (*Bundle, error)
-	DecryptScores(ctx context.Context, encryptedBlobB64 string, topK int) ([]ScoreEntry, error)
-	DecryptMetadata(ctx context.Context, encryptedMetadataList []string) ([]string, error)
+	Insert(ctx context.Context, vector []float32, metadata string) (string, error)
+	Search(ctx context.Context, vector []float32, topK int) ([]Hit, error)
 	HealthCheck(ctx context.Context) (bool, error)
 	Endpoint() string
 	Close() error
@@ -148,7 +102,6 @@ var defaultKeepalive = keepalive.ClientParameters{
 	PermitWithoutStream: true,
 }
 
-// See spec/components/vault.md §TLS + §Keepalive.
 func NewClient(endpoint, token string, opts ClientOpts) (Client, error) {
 	normalized, err := NormalizeEndpoint(endpoint)
 	if err != nil {
@@ -189,12 +142,7 @@ func NewClient(endpoint, token string, opts ClientOpts) (Client, error) {
 	return newWithConn(normalized, token, conn), nil
 }
 
-// NewBufconnClient wraps an existing *grpc.ClientConn (e.g., from
-// google.golang.org/grpc/test/bufconn) so tests can exercise the same RPC
-// path without going through DNS / TLS / endpoint normalization.
-//
-// Production callers should prefer NewClient — this constructor intentionally
-// trusts whatever creds + options the conn was built with.
+// NewBufconnClient wraps an existing *grpc.ClientConn for tests.
 func NewBufconnClient(conn *grpc.ClientConn, token string) Client {
 	return newWithConn("bufconn", token, conn)
 }
@@ -230,52 +178,47 @@ func (c *client) GetAgentManifest(ctx context.Context) (*Bundle, error) {
 	if msg := resp.GetError(); msg != "" {
 		return nil, &Error{Code: ErrVaultInternal.Code, Message: "GetAgentManifest: " + msg, Retryable: true}
 	}
-
 	return ParseManifestJSON(resp.GetManifestJson())
 }
 
-func (c *client) DecryptScores(ctx context.Context, encryptedBlobB64 string, topK int) ([]ScoreEntry, error) {
+func (c *client) Insert(ctx context.Context, vector []float32, metadata string) (string, error) {
 	ctx, cancel := withTimeout(c.authCtx(ctx), DefaultTimeout)
 	defer cancel()
 
-	resp, err := c.stub.DecryptScores(ctx, &vaultpb.DecryptScoresRequest{
-		Token:            c.token,
-		EncryptedBlobB64: encryptedBlobB64,
-		TopK:             int32(topK),
+	resp, err := c.stub.Insert(ctx, &vaultpb.InsertRequest{
+		Token:    c.token,
+		Vector:   vector,
+		Metadata: metadata,
 	})
 	if err != nil {
-		return nil, MapGRPCError(err)
+		return "", MapGRPCError(err)
 	}
 	if msg := resp.GetError(); msg != "" {
-		return nil, &Error{Code: ErrVaultInternal.Code, Message: "DecryptScores: " + msg, Retryable: true}
+		return "", &Error{Code: ErrVaultInternal.Code, Message: "Insert: " + msg, Retryable: true}
 	}
-
-	out := make([]ScoreEntry, 0, len(resp.GetResults()))
-	for _, e := range resp.GetResults() {
-		out = append(out, ScoreEntry{
-			ShardIdx: e.GetShardIdx(),
-			RowIdx:   e.GetRowIdx(),
-			Score:    e.GetScore(),
-		})
-	}
-	return out, nil
+	return resp.GetId(), nil
 }
 
-func (c *client) DecryptMetadata(ctx context.Context, encryptedMetadataList []string) ([]string, error) {
+func (c *client) Search(ctx context.Context, vector []float32, topK int) ([]Hit, error) {
 	ctx, cancel := withTimeout(c.authCtx(ctx), DefaultTimeout)
 	defer cancel()
 
-	resp, err := c.stub.DecryptMetadata(ctx, &vaultpb.DecryptMetadataRequest{
-		Token:                 c.token,
-		EncryptedMetadataList: encryptedMetadataList,
+	resp, err := c.stub.Search(ctx, &vaultpb.SearchRequest{
+		Token:  c.token,
+		Vector: vector,
+		TopK:   int32(topK),
 	})
 	if err != nil {
 		return nil, MapGRPCError(err)
 	}
 	if msg := resp.GetError(); msg != "" {
-		return nil, &Error{Code: ErrVaultInternal.Code, Message: "DecryptMetadata: " + msg, Retryable: true}
+		return nil, &Error{Code: ErrVaultInternal.Code, Message: "Search: " + msg, Retryable: true}
 	}
-	return resp.GetDecryptedMetadata(), nil
+	out := make([]Hit, 0, len(resp.GetHits()))
+	for _, h := range resp.GetHits() {
+		out = append(out, Hit{ID: h.GetId(), Score: h.GetScore(), Metadata: h.GetMetadata()})
+	}
+	return out, nil
 }
 
 func (c *client) HealthCheck(ctx context.Context) (bool, error) {
@@ -287,7 +230,6 @@ func (c *client) HealthCheck(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, MapGRPCError(err)
 	}
-
 	return resp.GetStatus() == grpc_health_v1.HealthCheckResponse_SERVING, nil
 }
 
