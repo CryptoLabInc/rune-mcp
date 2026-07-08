@@ -1,13 +1,13 @@
 // Package keymanager persists FHE key material received from Vault to the
-// local rune directory so the envector SDK can load it via OpenKeysFromFile.
+// local rune directory so the runespace SDK can load it via OpenKeysFromFile.
 //
 // Format note: EncKey.json carries a libevi key envelope (provider_meta +
-// entries — see third_party/evi/include/km/KeyEnvelope.hpp). envector-go-sdk
-// (our envector adapter) and pyenvector are both libevi wrappers and produce
+// entries — see third_party/evi/include/km/KeyEnvelope.hpp). runespace-sdk
+// (our runespace adapter) and pyenvector are both libevi wrappers and produce
 // / consume this same on-disk format. The Vault server generated the key via
-// envector-go-sdk's GenerateKeys (which calls libevi's evi_km_wrap_enc_key)
+// runespace-sdk's GenerateKeys (which calls libevi's evi_km_wrap_enc_key)
 // and forwards the file content verbatim through GetAgentManifest's
-// manifest_json. When we load it back, envector-go-sdk's OpenKeysFromFile
+// manifest_json. When we load it back, runespace-sdk's OpenKeysFromFile
 // invokes evi_km_unwrap_enc_key — which expects the same envelope shape on
 // disk. We must persist bundle.EncKey byte-identical; any re-encoding or
 // re-wrapping will be rejected by the cgo unwrap.
