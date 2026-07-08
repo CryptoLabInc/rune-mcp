@@ -3,7 +3,7 @@ name: Release rune-mcp
 # Workflow creates a prerelease when any `v*` tag is pushed; maintainer
 # later promotes prerelease to release via GitHub
 #
-# TODO: envector-go-sdk requires CGO, but native Github hosted runners for
+# TODO: runespace-sdk requires CGO, but native Github hosted runners for
 # Darwin/amd64 and Windows not working well now. We should later check them again
 
 on:
@@ -65,7 +65,7 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # rune-mcp links envector-go-sdk via CGO, so the linux binary depends on
+      # rune-mcp links runespace-sdk via CGO, so the linux binary depends on
       # the build image's glibc. Name the asset by the build OS (ubuntu-2204 /
       # mac-14), read from the running image, so its glibc/SDK baseline is
       # visible. The linux runners are pinned to 22.04 for broad glibc compat.
