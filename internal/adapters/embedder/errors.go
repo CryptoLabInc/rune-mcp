@@ -29,6 +29,10 @@ var (
 
 	// Non-retryable
 	ErrEmbedderInternal = &Error{Code: "EMBEDDER_INTERNAL", Retryable: false}
+	// ErrEmbedderNoCentroids — runed has no centroid set loaded, surfaced as
+	// FAILED_PRECONDITION by Embed with_route. Not retryable as-is: push a set
+	// via SetCentroids first, then retry (§9.2 C4 — capture self-heals this way).
+	ErrEmbedderNoCentroids = &Error{Code: "EMBEDDER_NO_CENTROIDS", Retryable: false}
 )
 
 // Converts gRPC status error into typed embedder.Error
@@ -60,6 +64,15 @@ func MapGRPCError(err error) error {
 			Code:      ErrEmbedderTimeout.Code,
 			Message:   st.Message(),
 			Retryable: true,
+			Cause:     err,
+		}
+	case codes.FailedPrecondition:
+		// runed's only FailedPrecondition today: Embed with_route before a
+		// centroid set was injected (runed internal/server/server.go).
+		return &Error{
+			Code:      ErrEmbedderNoCentroids.Code,
+			Message:   st.Message(),
+			Retryable: false,
 			Cause:     err,
 		}
 	default:

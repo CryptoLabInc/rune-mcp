@@ -502,8 +502,9 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 
 	// Relay the IVF centroid set from the vault down to runed so Embed can
 	// route inserts. Best-effort at boot: a failure here does not block
-	// activation (capture's EmbedRoute will surface FAILED_PRECONDITION and
-	// the next boot retries), but a healthy path pushes it now.
+	// activation — capture self-heals at the point of use (§9.2 C4: EmbedRoute
+	// FAILED_PRECONDITION → the service resyncs the set and retries once) —
+	// but a healthy path pushes it now so the first capture pays no resync.
 	if cs, err := vaultClient.Centroids(ctx); err != nil {
 		slog.Warn("boot: centroid relay fetch failed (routing unavailable until retry)", "err", err)
 	} else if cs != nil && cs.Version != "" && len(cs.Vectors) > 0 {

@@ -48,6 +48,12 @@ var (
 	ErrVaultInvalidInput     = &Error{Code: "VAULT_INVALID_INPUT", Retryable: false}
 	ErrVaultTopKExceeded     = &Error{Code: "VAULT_TOPK_EXCEEDED", Retryable: false}
 	ErrVaultRateLimited      = &Error{Code: "VAULT_RATE_LIMITED", Retryable: true}
+	// ErrVaultWrongCentroidVersion — the runespace engine replaced its centroid
+	// set and the insert was routed against the stale one (§9.2 C3). Not
+	// retryable as-is: resync centroids (vault relay → runed), re-route, and
+	// retry once with the same id. Wire contract: FailedPrecondition with the
+	// "WRONG_CENTROID_VERSION" message prefix from the vault Insert handler.
+	ErrVaultWrongCentroidVersion = &Error{Code: "WRONG_CENTROID_VERSION", Retryable: false}
 
 	// ErrNotHTTPScheme — returned by HealthFallback when endpoint is not http(s).
 	ErrNotHTTPScheme = errors.New("vault: endpoint not http(s) scheme")
@@ -63,6 +69,7 @@ var (
 //	InvalidArgument     → ErrVaultTopKExceeded     (msg contains "exceeds limit": top_k over role limit)
 //	InvalidArgument     → ErrVaultInvalidInput     (any other bad client input)
 //	ResourceExhausted   → ErrVaultRateLimited      (token rate limit)
+//	FailedPrecondition  → ErrVaultWrongCentroidVersion (msg prefix "WRONG_CENTROID_VERSION": stale centroid routing)
 //	NotFound            → ErrVaultKeyNotFound      (server doesn't emit this today; mapped for future)
 //	Unavailable         → ErrVaultUnavailable      (transport: network / server down)
 //	DeadlineExceeded    → ErrVaultTimeout          (transport: client deadline)
@@ -127,6 +134,25 @@ func MapGRPCError(err error) error {
 			Code:      ErrVaultRateLimited.Code,
 			Message:   st.Message(),
 			Retryable: true,
+			Cause:     err,
+		}
+	case codes.FailedPrecondition:
+		// The vault emits FailedPrecondition only for the centroid-version
+		// mismatch relay (Insert handler, "WRONG_CENTROID_VERSION: ..."). Match
+		// the prefix so an unrelated future FailedPrecondition still falls
+		// through to VAULT_INTERNAL instead of triggering a centroid resync.
+		if strings.HasPrefix(st.Message(), "WRONG_CENTROID_VERSION") {
+			return &Error{
+				Code:      ErrVaultWrongCentroidVersion.Code,
+				Message:   st.Message(),
+				Retryable: false,
+				Cause:     err,
+			}
+		}
+		return &Error{
+			Code:      ErrVaultInternal.Code,
+			Message:   st.Message(),
+			Retryable: false,
 			Cause:     err,
 		}
 	case codes.NotFound:

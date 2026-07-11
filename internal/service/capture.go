@@ -63,35 +63,74 @@ func NewCaptureService() *CaptureService {
 // metadataJSON (agent_dek), and forwards the ciphertext item to the vault
 // under a fresh idempotent id. Shared by the capture flow and DeleteCapture's
 // tombstone re-insert so there is one client-side crypto path.
+//
+// Centroid desync self-heals here (§9.2): buildInsertItem covers C4 (runed has
+// no set), and a WRONG_CENTROID_VERSION rejection covers C3 — resync, rebuild
+// the item under the new set (fresh cluster_id + version, same id), and retry
+// exactly once.
 func (s *CaptureService) EncryptSealInsert(ctx context.Context, text, metadataJSON string) (string, error) {
 	if s.Encryptor == nil {
 		return "", fmt.Errorf("capture: encryptor not initialized")
 	}
-	routed, err := s.Embedder.EmbedRoute(ctx, text)
+	id := uuid.NewString()
+	item, err := s.buildInsertItem(ctx, id, text, metadataJSON)
 	if err != nil {
-		return "", fmt.Errorf("embed route: %w", err)
+		return "", err
+	}
+	insertedID, err := insertWithRecovery(ctx, s.State, s.Vault, item)
+	if err == nil || !isWrongCentroidVersion(err) {
+		return insertedID, err
+	}
+	// C3: the engine replaced its centroid set after we routed. The vault has
+	// already dropped its stale cache, so a resync now yields the new set.
+	slog.Warn("capture: insert rejected for stale centroid version; resyncing and retrying once", "id", id)
+	if rerr := s.resyncCentroids(ctx); rerr != nil {
+		return "", fmt.Errorf("insert rejected (%w) and centroid resync failed: %w", err, rerr)
+	}
+	item, err = s.buildInsertItem(ctx, id, text, metadataJSON)
+	if err != nil {
+		return "", err
+	}
+	return insertWithRecovery(ctx, s.State, s.Vault, item)
+}
+
+// buildInsertItem runs the client-side crypto pipeline — embed+route (runed) →
+// encrypt (EncKey) → seal (agent_dek) — and assembles the vault item under the
+// given idempotent id. On runed FAILED_PRECONDITION (no centroid set — C4,
+// e.g. the best-effort boot relay failed or runed restarted with a cold cache)
+// it pushes the set once and retries the route.
+func (s *CaptureService) buildInsertItem(ctx context.Context, id, text, metadataJSON string) (vault.InsertItem, error) {
+	routed, err := s.Embedder.EmbedRoute(ctx, text)
+	if isNoCentroids(err) {
+		slog.Warn("capture: runed has no centroid set; resyncing and retrying once")
+		if rerr := s.resyncCentroids(ctx); rerr != nil {
+			return vault.InsertItem{}, fmt.Errorf("embed route: %w (centroid resync failed: %w)", err, rerr)
+		}
+		routed, err = s.Embedder.EmbedRoute(ctx, text)
+	}
+	if err != nil {
+		return vault.InsertItem{}, fmt.Errorf("embed route: %w", err)
 	}
 	rmp, err := s.Encryptor.EncryptFlat(routed.Vector)
 	if err != nil {
-		return "", fmt.Errorf("encrypt flat: %w", err)
+		return vault.InsertItem{}, fmt.Errorf("encrypt flat: %w", err)
 	}
 	mm, err := s.Encryptor.EncryptClustered(routed.Vector)
 	if err != nil {
-		return "", fmt.Errorf("encrypt clustered: %w", err)
+		return vault.InsertItem{}, fmt.Errorf("encrypt clustered: %w", err)
 	}
 	sealed, err := seal.Seal(s.AgentDEK, s.AgentID, []byte(metadataJSON))
 	if err != nil {
-		return "", fmt.Errorf("seal metadata: %w", err)
+		return vault.InsertItem{}, fmt.Errorf("seal metadata: %w", err)
 	}
-	item := vault.InsertItem{
-		ID:                 uuid.NewString(),
+	return vault.InsertItem{
+		ID:                 id,
 		RMPItem:            rmp,
 		MMItem:             mm,
 		ClusterID:          routed.ClusterID,
 		CentroidSetVersion: routed.CentroidSetVersion,
 		SealedMetadata:     sealed,
-	}
-	return insertWithRecovery(ctx, s.State, s.Vault, item)
+	}, nil
 }
 
 // Handle — single capture. Called by internal/mcp/tools.go ToolCapture.
