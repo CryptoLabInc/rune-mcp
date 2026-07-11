@@ -38,9 +38,10 @@ import (
 // CheckState; read-only tools (vault_status, diagnostics, capture_history)
 // can run pre-active for diagnostics.
 type Deps struct {
-	Vault    vault.Client
-	Embedder embedder.Client
-	State    *lifecycle.Manager
+	Vault     vault.Client
+	Embedder  embedder.Client
+	Encryptor lifecycle.Encryptor
+	State     *lifecycle.Manager
 
 	Capture   *service.CaptureService
 	Recall    *service.RecallService
@@ -63,6 +64,13 @@ func (d *Deps) InjectVault(client vault.Client) {
 		d.Lifecycle.Vault = client
 	}
 	closeAfterInterval("vault", prev, client)
+}
+
+func (d *Deps) InjectEncryptor(enc lifecycle.Encryptor) {
+	if d.Capture != nil {
+		d.Capture.Encryptor = enc
+	}
+	d.Encryptor = enc
 }
 
 func (d *Deps) InjectEmbedder(client embedder.Client) {
@@ -109,6 +117,8 @@ func (d *Deps) ApplyVaultBundle(b *vault.Bundle) {
 	}
 	if d.Capture != nil {
 		d.Capture.IndexName = b.IndexName
+		d.Capture.AgentID = b.AgentID
+		d.Capture.AgentDEK = b.AgentDEK
 	}
 	if d.Recall != nil {
 		d.Recall.IndexName = b.IndexName

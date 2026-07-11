@@ -481,18 +481,18 @@ func (s *LifecycleService) DeleteCapture(ctx context.Context, args DeleteCapture
 		embedText = hit.PayloadText
 	}
 
-	vec, err := s.Embedder().EmbedSingle(ctx, embedText)
-	if err != nil {
-		return nil, fmt.Errorf("delete: re-embed: %w", err)
-	}
-
 	body, err := json.Marshal(metadata)
 	if err != nil {
 		return nil, fmt.Errorf("delete: marshal: %w", err)
 	}
 
-	// Re-insert via the vault (vault encrypts + seals + stores).
-	if _, err := s.Vault.Insert(ctx, vec, string(body)); err != nil {
+	// Re-insert the tombstone via the capture service's client-side crypto
+	// path (encrypt + seal + forward). Requires the capture service (which
+	// owns the encryptor/agent_dek) — delete_capture is only wired when it is.
+	if capSvc == nil {
+		return nil, fmt.Errorf("delete: capture service required for re-insert")
+	}
+	if _, err := capSvc.EncryptSealInsert(ctx, embedText, string(body)); err != nil {
 		return nil, fmt.Errorf("delete: re-insert: %w", err)
 	}
 

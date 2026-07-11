@@ -27,6 +27,7 @@ type fakeServer struct {
 	insertFn           func(*vaultpb.InsertRequest) (*vaultpb.InsertResponse, error)
 	searchFn           func(*vaultpb.SearchRequest) (*vaultpb.SearchResponse, error)
 	healthFn           func(*healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error)
+	getCentroidsFn     func(vaultpb.VaultService_GetCentroidsServer) error
 }
 
 func (f *fakeServer) GetAgentManifest(_ context.Context, req *vaultpb.GetAgentManifestRequest) (*vaultpb.GetAgentManifestResponse, error) {
@@ -132,12 +133,19 @@ func TestGetAgentManifest_MalformedJSON(t *testing.T) {
 func TestInsert_HappyPath(t *testing.T) {
 	fake, c := startFakeServer(t)
 	fake.insertFn = func(req *vaultpb.InsertRequest) (*vaultpb.InsertResponse, error) {
-		if len(req.GetVector()) != 3 || req.GetMetadata() != `{"t":1}` {
+		if req.GetId() != "id-xyz" || len(req.GetRmpItem()) == 0 || len(req.GetMmItem()) == 0 || req.GetCentroidSetVersion() != "v1" {
 			t.Errorf("insert req mismatch: %+v", req)
 		}
-		return &vaultpb.InsertResponse{Id: "id-xyz"}, nil
+		return &vaultpb.InsertResponse{Id: req.GetId()}, nil
 	}
-	id, err := c.Insert(context.Background(), []float32{0.1, 0.2, 0.3}, `{"t":1}`)
+	id, err := c.Insert(context.Background(), vault.InsertItem{
+		ID:                 "id-xyz",
+		RMPItem:            []byte{1, 2},
+		MMItem:             []byte{3, 4},
+		ClusterID:          2,
+		CentroidSetVersion: "v1",
+		SealedMetadata:     `{"a":"x","c":"y"}`,
+	})
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
@@ -151,7 +159,7 @@ func TestInsert_ResponseError(t *testing.T) {
 	fake.insertFn = func(*vaultpb.InsertRequest) (*vaultpb.InsertResponse, error) {
 		return &vaultpb.InsertResponse{Error: "insert failed"}, nil
 	}
-	_, err := c.Insert(context.Background(), []float32{1}, "")
+	_, err := c.Insert(context.Background(), vault.InsertItem{ID: "id-1", RMPItem: []byte{1}, MMItem: []byte{2}, CentroidSetVersion: "v"})
 	if err == nil || !strings.Contains(err.Error(), "insert failed") {
 		t.Fatalf("want insert error, got %v", err)
 	}
@@ -255,5 +263,37 @@ func TestMapGRPCError_NilReturnsNil(t *testing.T) {
 func TestParseManifestJSON_NotJSON(t *testing.T) {
 	if _, err := vault.ParseManifestJSON("nope"); err == nil {
 		t.Fatal("expected parse error")
+	}
+}
+
+// ── Centroids relay ───────────────────────────────────────────────
+
+func (f *fakeServer) GetCentroids(_ *vaultpb.GetCentroidsRequest, stream vaultpb.VaultService_GetCentroidsServer) error {
+	if f.getCentroidsFn != nil {
+		return f.getCentroidsFn(stream)
+	}
+	return status.Error(codes.Unimplemented, "test server: GetCentroids not stubbed")
+}
+
+func TestCentroids_Relay(t *testing.T) {
+	fake, c := startFakeServer(t)
+	fake.getCentroidsFn = func(stream vaultpb.VaultService_GetCentroidsServer) error {
+		if err := stream.Send(&vaultpb.CentroidChunk{Payload: &vaultpb.CentroidChunk_Header{
+			Header: &vaultpb.CentroidSetHeader{Version: "v9", Dim: 2, Nlist: 2},
+		}}); err != nil {
+			return err
+		}
+		return stream.Send(&vaultpb.CentroidChunk{Payload: &vaultpb.CentroidChunk_Batch{
+			Batch: &vaultpb.CentroidBatch{Centroids: []*vaultpb.Centroid{
+				{Id: 0, Vec: []float32{1, 0}}, {Id: 1, Vec: []float32{0, 1}},
+			}},
+		}})
+	}
+	cs, err := c.Centroids(context.Background())
+	if err != nil {
+		t.Fatalf("Centroids: %v", err)
+	}
+	if cs.Version != "v9" || cs.Dim != 2 || len(cs.Vectors) != 2 {
+		t.Fatalf("relay mismatch: %+v", cs)
 	}
 }

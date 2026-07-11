@@ -53,10 +53,22 @@ type HealthSnapshot struct {
 	Message       string
 }
 
+// Routed is an embedding plus its IVF cluster assignment (with_route).
+type Routed struct {
+	Vector             []float32
+	ClusterID          uint32
+	CentroidSetVersion string
+}
+
 // Client interface — thin wrapper over generated gRPC stub.
 type Client interface {
 	EmbedSingle(ctx context.Context, text string) ([]float32, error)
 	EmbedBatch(ctx context.Context, texts []string) ([][]float32, error)
+	// EmbedRoute embeds and returns the cluster assignment. Fails with
+	// FAILED_PRECONDITION if runed has no centroid set (push via SetCentroids).
+	EmbedRoute(ctx context.Context, text string) (Routed, error)
+	// SetCentroids pushes an IVF centroid set to runed for routing.
+	SetCentroids(ctx context.Context, version string, dim int, vectors [][]float32) error
 	Info(ctx context.Context) (InfoSnapshot, error)
 	Health(ctx context.Context) (HealthSnapshot, error)
 	SocketPath() string
@@ -121,6 +133,54 @@ func (c *client) EmbedSingle(ctx context.Context, text string) ([]float32, error
 		return nil, err
 	}
 	return resp.GetVector(), nil
+}
+
+func (c *client) EmbedRoute(ctx context.Context, text string) (Routed, error) {
+	resp, err := retry(ctx, func(ctx context.Context) (*runedv1.EmbedResponse, error) {
+		return c.pb.Embed(ctx, &runedv1.EmbedRequest{Text: text, WithRoute: true})
+	})
+	if err != nil {
+		return Routed{}, err
+	}
+	return Routed{
+		Vector:             resp.GetVector(),
+		ClusterID:          resp.GetClusterId(),
+		CentroidSetVersion: resp.GetCentroidSetVersion(),
+	}, nil
+}
+
+// centroidPushBatch bounds one SetCentroids frame (64 x dim 1024 x 4B ~ 256KB).
+const centroidPushBatch = 64
+
+func (c *client) SetCentroids(ctx context.Context, version string, dim int, vectors [][]float32) error {
+	stream, err := c.pb.SetCentroids(ctx)
+	if err != nil {
+		return fmt.Errorf("embedder: set centroids open: %w", err)
+	}
+	if err := stream.Send(&runedv1.SetCentroidsRequest{Payload: &runedv1.SetCentroidsRequest_Header{
+		Header: &runedv1.CentroidSetHeader{Version: version, Dim: uint32(dim), Nlist: uint32(len(vectors))},
+	}}); err != nil {
+		return fmt.Errorf("embedder: set centroids header: %w", err)
+	}
+	for lo := 0; lo < len(vectors); lo += centroidPushBatch {
+		hi := lo + centroidPushBatch
+		if hi > len(vectors) {
+			hi = len(vectors)
+		}
+		batch := make([]*runedv1.Centroid, 0, hi-lo)
+		for i := lo; i < hi; i++ {
+			batch = append(batch, &runedv1.Centroid{Id: uint32(i), Vec: vectors[i]})
+		}
+		if err := stream.Send(&runedv1.SetCentroidsRequest{Payload: &runedv1.SetCentroidsRequest_Batch{
+			Batch: &runedv1.CentroidBatch{Centroids: batch},
+		}}); err != nil {
+			return fmt.Errorf("embedder: set centroids batch: %w", err)
+		}
+	}
+	if _, err := stream.CloseAndRecv(); err != nil {
+		return fmt.Errorf("embedder: set centroids close: %w", err)
+	}
+	return nil
 }
 
 // EmbedBatch splits len(texts) > Info.MaxBatchSize into chunks and submits

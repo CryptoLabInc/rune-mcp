@@ -18,8 +18,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/logio"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/seal"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
@@ -31,18 +34,64 @@ import (
 type CaptureService struct {
 	Vault      vault.Client
 	Embedder   embedder.Client
+	Encryptor  Encryptor
 	CaptureLog *logio.CaptureLog
 	State      *lifecycle.Manager
 
 	// Injected from Vault bundle at boot.
 	IndexName string
+	AgentID   string // for the seal envelope's "a" field
+	AgentDEK  []byte // metadata seal key (agent_dek from manifest)
 
 	Now func() time.Time // injectable clock (default: time.Now)
+}
+
+// Encryptor is the client-side FHE encrypt surface (runespacecrypto). Kept as
+// an interface so capture tests need no cgo. EncryptFlat/EncryptClustered take
+// an l2-normalized vector and return the tier ciphertexts.
+type Encryptor interface {
+	EncryptFlat(vec []float32) ([]byte, error)
+	EncryptClustered(vec []float32) ([]byte, error)
 }
 
 // NewCaptureService constructs with default clock.
 func NewCaptureService() *CaptureService {
 	return &CaptureService{Now: time.Now}
+}
+
+// EncryptSealInsert embeds+routes text, encrypts the vector (EncKey), seals
+// metadataJSON (agent_dek), and forwards the ciphertext item to the vault
+// under a fresh idempotent id. Shared by the capture flow and DeleteCapture's
+// tombstone re-insert so there is one client-side crypto path.
+func (s *CaptureService) EncryptSealInsert(ctx context.Context, text, metadataJSON string) (string, error) {
+	if s.Encryptor == nil {
+		return "", fmt.Errorf("capture: encryptor not initialized")
+	}
+	routed, err := s.Embedder.EmbedRoute(ctx, text)
+	if err != nil {
+		return "", fmt.Errorf("embed route: %w", err)
+	}
+	rmp, err := s.Encryptor.EncryptFlat(routed.Vector)
+	if err != nil {
+		return "", fmt.Errorf("encrypt flat: %w", err)
+	}
+	mm, err := s.Encryptor.EncryptClustered(routed.Vector)
+	if err != nil {
+		return "", fmt.Errorf("encrypt clustered: %w", err)
+	}
+	sealed, err := seal.Seal(s.AgentDEK, s.AgentID, []byte(metadataJSON))
+	if err != nil {
+		return "", fmt.Errorf("seal metadata: %w", err)
+	}
+	item := vault.InsertItem{
+		ID:                 uuid.NewString(),
+		RMPItem:            rmp,
+		MMItem:             mm,
+		ClusterID:          routed.ClusterID,
+		CentroidSetVersion: routed.CentroidSetVersion,
+		SealedMetadata:     sealed,
+	}
+	return insertWithRecovery(ctx, s.State, s.Vault, item)
 }
 
 // Handle — single capture. Called by internal/mcp/tools.go ToolCapture.
@@ -122,24 +171,22 @@ func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest)
 	}
 
 	// Phase 5: embed. Metadata is the plaintext record JSON; the vault seals it.
-	texts := make([]string, len(records))
-	for i := range records {
-		texts[i] = pickEmbedText(&records[i])
+	// Phase 5-6: embed (with IVF routing), encrypt each record locally
+	// (EncKey), seal its metadata (agent_dek), and forward the ciphertext to
+	// the vault. Plaintext vectors and metadata never leave this process.
+	if s.Encryptor == nil {
+		return nil, fmt.Errorf("capture: encryptor not initialized")
 	}
-
-	vectors, err := s.Embedder.EmbedBatch(ctx, texts)
-	if err != nil {
-		return nil, fmt.Errorf("embed batch: %w", err)
+	if s.Encryptor == nil {
+		return nil, fmt.Errorf("capture: encryptor not initialized")
 	}
-
-	// Phase 6: insert each record via the vault (vault encrypts + seals + stores).
 	for i := range records {
 		body, err := json.Marshal(records[i])
 		if err != nil {
 			return nil, fmt.Errorf("marshal record %d: %w", i, err)
 		}
-		if _, err := insertWithRecovery(ctx, s.State, s.Vault, vectors[i], string(body)); err != nil {
-			return nil, fmt.Errorf("vault insert: %w", err)
+		if _, err := s.EncryptSealInsert(ctx, pickEmbedText(&records[i]), string(body)); err != nil {
+			return nil, fmt.Errorf("vault insert %d: %w", i, err)
 		}
 	}
 

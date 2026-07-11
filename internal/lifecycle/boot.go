@@ -27,6 +27,8 @@ import (
 
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/keymanager"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/runespacecrypto"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/recovery"
@@ -39,7 +41,17 @@ import (
 type BootAdapterInjector interface {
 	InjectVault(client vault.Client)
 	InjectEmbedder(client embedder.Client)
+	InjectEncryptor(enc Encryptor)
 	ApplyVaultBundle(bundle *vault.Bundle)
+}
+
+// Encryptor is the client-side FHE encrypt surface the boot loop opens from
+// the manifest's EncKey and injects. Structurally identical to
+// service.Encryptor (a value satisfies both); declared here to avoid a
+// lifecycle->service import cycle.
+type Encryptor interface {
+	EncryptFlat(vec []float32) ([]byte, error)
+	EncryptClustered(vec []float32) ([]byte, error)
 }
 
 // State — atomic-safe enum.
@@ -445,6 +457,36 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	deps.InjectVault(vaultClient)
 	deps.ApplyVaultBundle(bundle)
 
+	// Persist the PUBLIC EncKey pair from the manifest and open the local
+	// encryptor (cgo). Capture encrypts here so plaintext vectors never reach
+	// the vault; SecKey stays in the vault, so this opens Enc-only.
+	if bundle.InsertCapability != "pre_encrypted" {
+		m.SetState(StateWaitingForVault)
+		msg := fmt.Sprintf("vault manifest lacks pre_encrypted insert capability (got %q) — vault too old for client-side crypto", bundle.InsertCapability)
+		m.lastError.Store(msg)
+		m.SetBootError(&domain.BootError{Kind: domain.BootErrVaultManifest, Detail: msg, Hint: "Update Rune-Vault to a build that distributes EncKey/agent_dek."})
+		slog.Error("boot: " + msg)
+		_ = vaultClient.Close()
+		return bootRetry
+	}
+	keyDir, err := keymanager.SaveEncKeys(bundle.KeyID, bundle.EncKeyJSON, bundle.MMEncKey)
+	if err != nil {
+		m.lastError.Store(fmt.Sprintf("save enc keys: %v", err))
+		m.SetBootError(&domain.BootError{Kind: domain.BootErrKeySave, Detail: err.Error(), Hint: "Check ~/.rune/keys is writable."})
+		slog.Error("boot: failed to save EncKey", "err", err)
+		_ = vaultClient.Close()
+		return bootRetry
+	}
+	enc, err := runespacecrypto.Open(keyDir, bundle.KeyID, bundle.Dim)
+	if err != nil {
+		m.lastError.Store(fmt.Sprintf("open encryptor: %v", err))
+		m.SetBootError(&domain.BootError{Kind: domain.BootErrEnvectorInit, Detail: err.Error(), Hint: "The EncKey may be corrupt; re-run /rune:configure."})
+		slog.Error("boot: failed to open encryptor", "err", err)
+		_ = vaultClient.Close()
+		return bootRetry
+	}
+	deps.InjectEncryptor(enc)
+
 	embedderClient, err := embedder.New(embedder.ResolveSocketPath(""), embedder.Opts{
 		UnaryInterceptors: []grpc.UnaryClientInterceptor{
 			recovery.UnaryRecovery("embedder", m),
@@ -457,6 +499,20 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		return bootRetry
 	}
 	deps.InjectEmbedder(embedderClient)
+
+	// Relay the IVF centroid set from the vault down to runed so Embed can
+	// route inserts. Best-effort at boot: a failure here does not block
+	// activation (capture's EmbedRoute will surface FAILED_PRECONDITION and
+	// the next boot retries), but a healthy path pushes it now.
+	if cs, err := vaultClient.Centroids(ctx); err != nil {
+		slog.Warn("boot: centroid relay fetch failed (routing unavailable until retry)", "err", err)
+	} else if cs != nil && cs.Version != "" && len(cs.Vectors) > 0 {
+		if err := embedderClient.SetCentroids(ctx, cs.Version, cs.Dim, cs.Vectors); err != nil {
+			slog.Warn("boot: centroid push to runed failed", "err", err)
+		} else {
+			slog.Info("boot: centroid set synced to runed", "version", cs.Version, "nlist", len(cs.Vectors))
+		}
+	}
 
 	return bootActive
 }

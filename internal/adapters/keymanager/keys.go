@@ -56,6 +56,40 @@ func SaveEncKey(keyID string, encKey []byte) error {
 	return nil
 }
 
+// SaveEncKeys writes both PUBLIC encryption keys in the runespace-go-sdk
+// on-disk layout so runespacecrypto.Open (WithKeyPath keyDir) can load them:
+//
+//	<keyDir>/EncKey.json      RMP EncKey envelope (verbatim, for EncryptFlat)
+//	<keyDir>/mm/EncKey.bin     MM EncKey raw bytes (for EncryptClustered)
+//
+// Both are delivered in the Vault manifest (rmpJSON as string "EncKey.json",
+// mmKey base64-decoded from "mm_enc_key"). Written verbatim — any re-encoding
+// breaks the cgo key loader. Returns the key directory. Empty inputs are an
+// error (a manifest missing either key cannot support client encryption).
+func SaveEncKeys(keyID string, rmpJSON, mmKey []byte) (string, error) {
+	if len(rmpJSON) == 0 || len(mmKey) == 0 {
+		return "", fmt.Errorf("keymanager: empty EncKey material (rmp=%d mm=%d)", len(rmpJSON), len(mmKey))
+	}
+	keyDir, err := KeyDir(keyID)
+	if err != nil {
+		return "", err
+	}
+	mmDir := filepath.Join(keyDir, "mm")
+	if err := os.MkdirAll(mmDir, config.DirPerm); err != nil {
+		return "", fmt.Errorf("keymanager: mkdir %s: %w", mmDir, err)
+	}
+	if err := os.Chmod(keyDir, config.DirPerm); err != nil {
+		return "", fmt.Errorf("keymanager: chmod %s: %w", keyDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(keyDir, "EncKey.json"), rmpJSON, config.FilePerm); err != nil {
+		return "", fmt.Errorf("keymanager: write EncKey.json: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(mmDir, "EncKey.bin"), mmKey, config.FilePerm); err != nil {
+		return "", fmt.Errorf("keymanager: write mm/EncKey.bin: %w", err)
+	}
+	return keyDir, nil
+}
+
 // KeyDir returns the per-key directory path that envector SDK's
 // OpenKeysFromFile expects as WithKeyPath: ~/.rune/keys/<keyID>/. This is
 // the directory containing EncKey.json — envector resolves the file

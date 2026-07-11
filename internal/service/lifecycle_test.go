@@ -21,6 +21,12 @@ func (s *stubEmbedder) EmbedSingle(context.Context, string) ([]float32, error) {
 func (s *stubEmbedder) EmbedBatch(context.Context, []string) ([][]float32, error) {
 	return nil, nil
 }
+func (s *stubEmbedder) EmbedRoute(context.Context, string) (embedder.Routed, error) {
+	return embedder.Routed{}, nil
+}
+func (s *stubEmbedder) SetCentroids(context.Context, string, int, [][]float32) error {
+	return nil
+}
 func (s *stubEmbedder) Info(context.Context) (embedder.InfoSnapshot, error) {
 	return embedder.InfoSnapshot{}, nil
 }
