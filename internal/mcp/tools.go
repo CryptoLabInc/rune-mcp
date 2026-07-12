@@ -17,6 +17,7 @@
 package mcp
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -46,10 +47,16 @@ type Deps struct {
 	Capture   *service.CaptureService
 	Recall    *service.RecallService
 	Lifecycle *service.LifecycleService
+
+	// Inflight counts active tool invocations so the exit sequence can drain
+	// them (GracefulShutdown step 1) instead of cutting a batch_capture mid-
+	// insert. Every registered handler passes through it via mustAdd.
+	Inflight *lifecycle.InflightTracker
 }
 
 // TODO: revert this to 5s once closeAfterInterval is replaced with refcount/sync.WaitGroup
-const staleClientCloseTime = 30 * time.Second
+// (var, not const, so tests can shrink the interval.)
+var staleClientCloseTime = 30 * time.Second
 
 func (d *Deps) InjectVault(client vault.Client) {
 	prev := d.Vault
@@ -67,10 +74,16 @@ func (d *Deps) InjectVault(client vault.Client) {
 }
 
 func (d *Deps) InjectEncryptor(enc lifecycle.Encryptor) {
+	prev := d.Encryptor
 	if d.Capture != nil {
 		d.Capture.Encryptor = enc
 	}
 	d.Encryptor = enc
+	// The replaced encryptor wraps a cgo (libevi) key context the GC cannot
+	// reclaim — drain in-flight captures, then Close it, same as the vault /
+	// embedder injectors above. Without this every re-boot cycle (vault
+	// restart, boot retry, reload_pipelines) leaks one native key context.
+	closeAfterInterval("encryptor", prev, enc)
 }
 
 func (d *Deps) InjectEmbedder(client embedder.Client) {
@@ -154,13 +167,13 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 	}()
 
 	// Write tools — state-gated.
-	mustAdd(srv, "capture",
+	mustAdd(srv, deps.Inflight, "capture",
 		"Capture a decision record (agent-delegated extraction required).",
 		handleCapture(deps))
-	mustAdd(srv, "batch_capture",
+	mustAdd(srv, deps.Inflight, "batch_capture",
 		"Capture a batch of decision records (e.g. session-end sweep).",
 		handleBatchCapture(deps))
-	mustAdd(srv, "recall",
+	mustAdd(srv, deps.Inflight, "recall",
 		"Query organizational memory by natural-language question.",
 		handleRecall(deps))
 	// delete_capture is HIDDEN for this release. The by-ID lookup (SearchByID)
@@ -170,48 +183,61 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 	// (no slash command, not callable by the model). The handler
 	// (handleDeleteCapture / lifecycle.DeleteCapture) is intentionally kept;
 	// re-enable by uncommenting once a reliable by-ID path exists.
-	// mustAdd(srv, "delete_capture",
+	// mustAdd(srv, deps.Inflight, "delete_capture",
 	// 	"Soft-delete a record by ID (sets status=reverted, re-inserts).",
 	// 	handleDeleteCapture(deps))
 
 	// Read / diagnostic tools — bypass state gate.
-	mustAdd(srv, "capture_history",
+	mustAdd(srv, deps.Inflight, "capture_history",
 		"List recent captures from local capture_log.jsonl (read-only).",
 		handleCaptureHistory(deps))
-	mustAdd(srv, "vault_status",
+	mustAdd(srv, deps.Inflight, "vault_status",
 		"Probe Vault connectivity and report secure-search mode.",
 		handleVaultStatus(deps))
-	mustAdd(srv, "diagnostics",
+	mustAdd(srv, deps.Inflight, "diagnostics",
 		"Collect a 7-section health snapshot (env / state / vault / keys / pipelines / embedding / envector).",
 		handleDiagnostics(deps))
-	mustAdd(srv, "configure",
+	mustAdd(srv, deps.Inflight, "configure",
 		"Write Vault credentials (endpoint, token, optional ca_cert_path / tls_disable) to $HOME/.rune/config.json and mark state=active.",
 		handleConfigure(deps))
-	mustAdd(srv, "activate",
+	mustAdd(srv, deps.Inflight, "activate",
 		"Pre-check then reload_pipelines. Returns status=configure_required if $HOME/.rune/config.json is missing/empty, status=install_pending if the runed socket is absent, otherwise mirrors reload_pipelines.",
 		handleActivate(deps))
-	mustAdd(srv, "reload_pipelines",
+	mustAdd(srv, deps.Inflight, "reload_pipelines",
 		"Re-initialize Vault + envector pipelines (BOOT replay) with envector warmup.",
 		handleReloadPipelines(deps))
 
 	return nil
 }
 
-// mustAdd wraps sdkmcp.AddTool with up-front name validation.
+// mustAdd wraps sdkmcp.AddTool with up-front name validation and inflight
+// tracking.
 //
 // The SDK's Server.AddTool only LOGS on invalid tool names
 // (go-sdk/mcp/server.go:238-241) — it does not panic, so Register's
 // defer recover() would miss it and the bad-named tool would silently
 // register. mustAdd panics on invalid names, unifying the failure
 // path so recover() catches everything.
-func mustAdd[In, Out any](srv *sdkmcp.Server, name, description string, h sdkmcp.ToolHandlerFor[In, Out]) {
+//
+// Every handler is wrapped with tracker Begin/End so the exit sequence can
+// drain in-flight calls (GracefulShutdown step 1). A nil tracker skips the
+// wrap (tests that register without one).
+func mustAdd[In, Out any](srv *sdkmcp.Server, tracker *lifecycle.InflightTracker, name, description string, h sdkmcp.ToolHandlerFor[In, Out]) {
 	if !isValidToolName(name) {
 		panic(fmt.Errorf("mustAdd: invalid tool name %q (allowed: [A-Za-z0-9_-], 1..128 chars)", name))
+	}
+	wrapped := h
+	if tracker != nil {
+		wrapped = func(ctx context.Context, req *sdkmcp.CallToolRequest, in In) (*sdkmcp.CallToolResult, Out, error) {
+			tracker.Begin()
+			defer tracker.End()
+			return h(ctx, req, in)
+		}
 	}
 	sdkmcp.AddTool(srv, &sdkmcp.Tool{
 		Name:        name,
 		Description: description,
-	}, h)
+	}, wrapped)
 }
 
 // isValidToolName mirrors the SDK's validateToolName rules

@@ -46,12 +46,15 @@ type BootAdapterInjector interface {
 }
 
 // Encryptor is the client-side FHE encrypt surface the boot loop opens from
-// the manifest's EncKey and injects. Structurally identical to
-// service.Encryptor (a value satisfies both); declared here to avoid a
-// lifecycle->service import cycle.
+// the manifest's EncKey and injects. A superset of service.Encryptor (the
+// encrypt methods) plus Close, because the boot loop owns the handle's
+// lifecycle: the cgo key context behind it is invisible to the GC and is
+// released only by Close — on replacement (re-boot) and at process exit.
+// Declared here to avoid a lifecycle->service import cycle.
 type Encryptor interface {
 	EncryptFlat(vec []float32) ([]byte, error)
 	EncryptClustered(vec []float32) ([]byte, error)
+	Close() error
 }
 
 // State — atomic-safe enum.
