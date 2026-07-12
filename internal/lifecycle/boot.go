@@ -472,6 +472,24 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		_ = vaultClient.Close()
 		return bootRetry
 	}
+
+	// §9.2 C1 (2026-07-12 개정): every insert carries the RMP+MM dual
+	// representation — the engine, the vault proto, and the SDK all reject an
+	// MM-less item — so a cluster-less (flat-only) runespace is an unsupported
+	// deployment, not a mode. An empty centroid_set_version means either that,
+	// or the vault could not reach the engine while building the manifest;
+	// both block capture, so fail the boot loudly here instead of activating
+	// into a state where every capture would fail. The boot loop retries, so a
+	// transient engine outage recovers by itself.
+	if bundle.CentroidSetVersion == "" {
+		m.SetState(StateWaitingForVault)
+		msg := "vault manifest carries no centroid_set_version — runespace has no cluster tier (flat-only, unsupported) or the vault cannot reach the engine"
+		m.lastError.Store(msg)
+		m.SetBootError(&domain.BootError{Kind: domain.BootErrVaultManifest, Detail: msg, Hint: "Configure the runespace cluster tier (centroid set) and check vault→runespace connectivity."})
+		slog.Error("boot: " + msg)
+		_ = vaultClient.Close()
+		return bootRetry
+	}
 	keyDir, err := keymanager.SaveEncKeys(bundle.KeyID, bundle.EncKeyJSON, bundle.MMEncKey)
 	if err != nil {
 		m.lastError.Store(fmt.Sprintf("save enc keys: %v", err))
