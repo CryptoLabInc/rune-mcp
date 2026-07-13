@@ -473,6 +473,21 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		return bootRetry
 	}
 
+	// §9.1 B1: reject a malformed bundle at the point of receipt, before the
+	// bad material overwrites the on-disk key copies or — worse — boots into
+	// active and fails far away (a missing agent_dek only surfaces at the
+	// first capture's seal step otherwise). Format-level checks only; real
+	// cryptographic validity is judged where the material is used
+	// (runespacecrypto.Open for keys, the vault's openMeta for the dek).
+	if msg := validateBundle(bundle); msg != "" {
+		m.SetState(StateWaitingForVault)
+		m.lastError.Store(msg)
+		m.SetBootError(&domain.BootError{Kind: domain.BootErrVaultManifest, Detail: msg, Hint: "The vault answered with an incomplete manifest — check the vault's version and key state."})
+		slog.Error("boot: " + msg)
+		_ = vaultClient.Close()
+		return bootRetry
+	}
+
 	// §9.2 C1 (2026-07-12 개정): every insert carries the RMP+MM dual
 	// representation — the engine, the vault proto, and the SDK all reject an
 	// MM-less item — so a cluster-less (flat-only) runespace is an unsupported
@@ -520,6 +535,20 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		return bootRetry
 	}
 	deps.InjectEmbedder(embedderClient)
+
+	// §9.1 B4: the manifest's dim (which also sized the encryptor keys — Open
+	// above enforces key/dim agreement) must match the vectors runed actually
+	// produces, or captures would encrypt wrong-sized vectors. Best-effort:
+	// while runed is still bootstrapping, Info may fail or report 0 — skip
+	// rather than block the boot (the bootstrap wait covers that window).
+	if info, ierr := embedderClient.Info(ctx); ierr == nil && info.VectorDim > 0 && info.VectorDim != bundle.Dim {
+		msg := fmt.Sprintf("dim mismatch: manifest/keys=%d, runed=%d — vault and embedder disagree on the embedding dimension", bundle.Dim, info.VectorDim)
+		m.SetState(StateWaitingForVault)
+		m.lastError.Store(msg)
+		m.SetBootError(&domain.BootError{Kind: domain.BootErrConfigInvalid, Detail: msg, Hint: "Check that the vault's embedding_dim matches the runed model."})
+		slog.Error("boot: " + msg)
+		return bootRetry
+	}
 
 	// Relay the IVF centroid set from the vault down to runed so Embed can
 	// route inserts. Best-effort at boot: a failure here does not block
