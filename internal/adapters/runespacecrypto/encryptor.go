@@ -12,7 +12,7 @@ package runespacecrypto
 import (
 	"fmt"
 
-	runespace "github.com/jh-lee-cryptolab/runespace-go-sdk"
+	runespace "github.com/CryptoLabInc/runespace-sdk"
 )
 
 // Encryptor holds an opened, Enc-only key set. It is safe for concurrent use

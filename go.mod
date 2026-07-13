@@ -5,8 +5,8 @@ go 1.26.4
 require (
 	github.com/CryptoLabInc/rune-admin/vault v0.0.0-20260506055025-ad52b6bd549d
 	github.com/CryptoLabInc/runed v0.1.0
+	github.com/CryptoLabInc/runespace-sdk v0.0.0
 	github.com/google/uuid v1.6.0
-	github.com/jh-lee-cryptolab/runespace-go-sdk v0.0.0
 	github.com/modelcontextprotocol/go-sdk v1.5.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171
 	google.golang.org/grpc v1.81.0
@@ -16,7 +16,7 @@ require (
 // the runespace SDK provides client-side EncKey encryption (cgo).
 replace github.com/CryptoLabInc/rune-admin/vault => ../rune-admin/vault
 
-replace github.com/jh-lee-cryptolab/runespace-go-sdk => ../runespace-go-sdk
+replace github.com/CryptoLabInc/runespace-sdk => ../runespace-sdk
 
 replace github.com/CryptoLabInc/runed => ../runed
 
