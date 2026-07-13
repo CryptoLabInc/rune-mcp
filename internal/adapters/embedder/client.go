@@ -125,8 +125,32 @@ func newWithConn(sockPath string, conn *grpc.ClientConn) *client {
 	}
 }
 
+// Hang guards. A wedged-but-listening runed (SIGSTOP, blocked disk I/O)
+// answers nothing — the one failure class that produces no error, so every
+// error path stays silent and the caller blocks forever (worst case: the boot
+// relay, freezing the boot loop with no retry and no boot_error). An upper
+// bound converts that silence into DeadlineExceeded, which the existing
+// retry/surface machinery already handles. Applied only when the caller
+// brought no deadline of its own; per attempt, so retries and the bootstrap
+// wait each get a fresh budget. Vars so tests can shrink them.
+var (
+	EmbedCallTimeout    = 120 * time.Second // forward pass + idle-suspend wake + max batch
+	CentroidPushTimeout = 60 * time.Second  // 16MB local stream + gob persist (measured <1s)
+	ControlCallTimeout  = 10 * time.Second  // Info / Health probes
+)
+
+// withDefaultTimeout bounds ctx by d unless the caller already set a deadline.
+func withDefaultTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, d)
+}
+
 func (c *client) EmbedSingle(ctx context.Context, text string) ([]float32, error) {
 	resp, err := retry(ctx, func(ctx context.Context) (*runedv1.EmbedResponse, error) {
+		ctx, cancel := withDefaultTimeout(ctx, EmbedCallTimeout)
+		defer cancel()
 		return c.pb.Embed(ctx, &runedv1.EmbedRequest{Text: text})
 	})
 	if err != nil {
@@ -137,6 +161,8 @@ func (c *client) EmbedSingle(ctx context.Context, text string) ([]float32, error
 
 func (c *client) EmbedRoute(ctx context.Context, text string) (Routed, error) {
 	resp, err := retry(ctx, func(ctx context.Context) (*runedv1.EmbedResponse, error) {
+		ctx, cancel := withDefaultTimeout(ctx, EmbedCallTimeout)
+		defer cancel()
 		return c.pb.Embed(ctx, &runedv1.EmbedRequest{Text: text, WithRoute: true})
 	})
 	if err != nil {
@@ -153,6 +179,8 @@ func (c *client) EmbedRoute(ctx context.Context, text string) (Routed, error) {
 const centroidPushBatch = 64
 
 func (c *client) SetCentroids(ctx context.Context, version string, dim int, vectors [][]float32) error {
+	ctx, cancel := withDefaultTimeout(ctx, CentroidPushTimeout)
+	defer cancel()
 	stream, err := c.pb.SetCentroids(ctx)
 	if err != nil {
 		return fmt.Errorf("embedder: set centroids open: %w", err)
@@ -215,6 +243,8 @@ func (c *client) EmbedBatch(ctx context.Context, texts []string) ([][]float32, e
 
 func (c *client) embedBatchOnce(ctx context.Context, texts []string) ([][]float32, error) {
 	resp, err := retry(ctx, func(ctx context.Context) (*runedv1.EmbedBatchResponse, error) {
+		ctx, cancel := withDefaultTimeout(ctx, EmbedCallTimeout)
+		defer cancel()
 		return c.pb.EmbedBatch(ctx, &runedv1.EmbedBatchRequest{Texts: texts})
 	})
 	if err != nil {
@@ -230,7 +260,11 @@ func (c *client) embedBatchOnce(ctx context.Context, texts []string) ([][]float3
 	return out, nil
 }
 
-func (c *client) Info(ctx context.Context) (InfoSnapshot, error) { return c.info.Get(ctx) }
+func (c *client) Info(ctx context.Context) (InfoSnapshot, error) {
+	ctx, cancel := withDefaultTimeout(ctx, ControlCallTimeout)
+	defer cancel()
+	return c.info.Get(ctx)
+}
 
 func (c *client) SocketPath() string { return c.sockPath }
 
@@ -242,6 +276,8 @@ func (c *client) SocketPath() string { return c.sockPath }
 // Health is NOT retried — D8 says first embed call drives connectivity; Health
 // is a diagnostic tool surface (vault_status, diagnostics).
 func (c *client) Health(ctx context.Context) (HealthSnapshot, error) {
+	ctx, cancel := withDefaultTimeout(ctx, ControlCallTimeout)
+	defer cancel()
 	resp, err := c.pb.Health(ctx, &runedv1.HealthRequest{})
 	if err != nil {
 		return HealthSnapshot{}, MapGRPCError(err)
