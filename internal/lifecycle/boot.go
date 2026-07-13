@@ -457,9 +457,6 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		return bootRetry
 	}
 
-	deps.InjectVault(vaultClient)
-	deps.ApplyVaultBundle(bundle)
-
 	// Persist the PUBLIC EncKey pair from the manifest and open the local
 	// encryptor (cgo). Capture encrypts here so plaintext vectors never reach
 	// the vault; SecKey stays in the vault, so this opens Enc-only.
@@ -521,6 +518,13 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		_ = vaultClient.Close()
 		return bootRetry
 	}
+	// Share the clients only now — after every gate (capability, bundle
+	// validation, centroid guard, key save, encryptor open) has passed. The
+	// failure exits above close a client nothing else references yet, so the
+	// services keep the previous boot's still-live vault client during retry
+	// windows and diagnostics stay truthful (§ finding: closed-client refs).
+	deps.InjectVault(vaultClient)
+	deps.ApplyVaultBundle(bundle)
 	deps.InjectEncryptor(enc)
 
 	embedderClient, err := embedder.New(embedder.ResolveSocketPath(""), embedder.Opts{
