@@ -67,8 +67,10 @@ type Client interface {
 	// EmbedRoute embeds and returns the cluster assignment. Fails with
 	// FAILED_PRECONDITION if runed has no centroid set (push via SetCentroids).
 	EmbedRoute(ctx context.Context, text string) (Routed, error)
-	// SetCentroids pushes an IVF centroid set to runed for routing.
-	SetCentroids(ctx context.Context, version string, dim int, vectors [][]float32) error
+	// SetCentroids pushes an IVF centroid set to runed for routing. preset is
+	// the version-hash ingredient runed needs to verify the content hash
+	// (empty = legacy chain, runed skips verification).
+	SetCentroids(ctx context.Context, version string, dim int, preset string, vectors [][]float32) error
 	Info(ctx context.Context) (InfoSnapshot, error)
 	Health(ctx context.Context) (HealthSnapshot, error)
 	SocketPath() string
@@ -178,7 +180,7 @@ func (c *client) EmbedRoute(ctx context.Context, text string) (Routed, error) {
 // centroidPushBatch bounds one SetCentroids frame (64 x dim 1024 x 4B ~ 256KB).
 const centroidPushBatch = 64
 
-func (c *client) SetCentroids(ctx context.Context, version string, dim int, vectors [][]float32) error {
+func (c *client) SetCentroids(ctx context.Context, version string, dim int, preset string, vectors [][]float32) error {
 	ctx, cancel := withDefaultTimeout(ctx, CentroidPushTimeout)
 	defer cancel()
 	stream, err := c.pb.SetCentroids(ctx)
@@ -186,7 +188,7 @@ func (c *client) SetCentroids(ctx context.Context, version string, dim int, vect
 		return fmt.Errorf("embedder: set centroids open: %w", err)
 	}
 	if err := stream.Send(&runedv1.SetCentroidsRequest{Payload: &runedv1.SetCentroidsRequest_Header{
-		Header: &runedv1.CentroidSetHeader{Version: version, Dim: uint32(dim), Nlist: uint32(len(vectors))},
+		Header: &runedv1.CentroidSetHeader{Version: version, Dim: uint32(dim), Nlist: uint32(len(vectors)), Preset: preset},
 	}}); err != nil {
 		return fmt.Errorf("embedder: set centroids header: %w", err)
 	}

@@ -28,7 +28,7 @@ func (e *resyncEmbedder) EmbedRoute(context.Context, string) (embedder.Routed, e
 	return embedder.Routed{Vector: []float32{1, 0}, ClusterID: 3, CentroidSetVersion: e.version}, nil
 }
 
-func (e *resyncEmbedder) SetCentroids(_ context.Context, version string, _ int, _ [][]float32) error {
+func (e *resyncEmbedder) SetCentroids(_ context.Context, version string, _ int, _ string, _ [][]float32) error {
 	e.pushCalls++
 	if e.pushErr != nil {
 		return e.pushErr
@@ -171,8 +171,8 @@ type sabotageEmbedder struct {
 	*resyncEmbedder
 }
 
-func (e *sabotageEmbedder) SetCentroids(ctx context.Context, version string, dim int, vecs [][]float32) error {
-	if err := e.resyncEmbedder.SetCentroids(ctx, version, dim, vecs); err != nil {
+func (e *sabotageEmbedder) SetCentroids(ctx context.Context, version string, dim int, preset string, vecs [][]float32) error {
+	if err := e.resyncEmbedder.SetCentroids(ctx, version, dim, preset, vecs); err != nil {
 		return err
 	}
 	e.version = "v1" // routing stays stale despite the push

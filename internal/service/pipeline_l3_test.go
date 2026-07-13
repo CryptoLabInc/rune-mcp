@@ -79,7 +79,7 @@ func TestPipelineL3(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Centroids relay: %v", err)
 	}
-	if err := emb.SetCentroids(ctx, cs.Version, cs.Dim, cs.Vectors); err != nil {
+	if err := emb.SetCentroids(ctx, cs.Version, cs.Dim, cs.Preset, cs.Vectors); err != nil {
 		t.Fatalf("SetCentroids to runed: %v", err)
 	}
 	t.Logf("centroids synced: version=%s nlist=%d", cs.Version, len(cs.Vectors))

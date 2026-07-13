@@ -32,7 +32,7 @@ func (s *CaptureService) resyncCentroids(ctx context.Context) error {
 	if cs == nil || cs.Version == "" || len(cs.Vectors) == 0 {
 		return fmt.Errorf("centroid resync: vault relayed an empty set")
 	}
-	if err := s.Embedder.SetCentroids(ctx, cs.Version, cs.Dim, cs.Vectors); err != nil {
+	if err := s.Embedder.SetCentroids(ctx, cs.Version, cs.Dim, cs.Preset, cs.Vectors); err != nil {
 		return fmt.Errorf("centroid resync: push to runed: %w", err)
 	}
 	slog.Info("capture: centroid set resynced to runed", "version", cs.Version, "nlist", len(cs.Vectors))

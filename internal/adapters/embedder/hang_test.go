@@ -58,7 +58,7 @@ func TestSetCentroids_HangIsBounded(t *testing.T) {
 		return stream.Context().Err()
 	}
 	start := time.Now()
-	err := cl.SetCentroids(context.Background(), "v1", 2, [][]float32{{1, 0}})
+	err := cl.SetCentroids(context.Background(), "v1", 2, "IP1", [][]float32{{1, 0}})
 	if err == nil {
 		t.Fatal("want bounded error, got success")
 	}

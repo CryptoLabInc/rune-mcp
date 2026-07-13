@@ -118,9 +118,12 @@ type InsertItem struct {
 }
 
 // CentroidSet is the relayed IVF centroid set (runespace -> vault -> here).
+// Preset is a version-hash ingredient — relayed through to runed so it can
+// recompute and verify the content hash ("" when the vault predates it).
 type CentroidSet struct {
 	Version string
 	Dim     int
+	Preset  string
 	Vectors [][]float32
 }
 
@@ -278,6 +281,7 @@ func (c *client) Centroids(ctx context.Context) (*CentroidSet, error) {
 		case *vaultpb.CentroidChunk_Header:
 			cs.Version = p.Header.GetVersion()
 			cs.Dim = int(p.Header.GetDim())
+			cs.Preset = p.Header.GetPreset()
 			if n := p.Header.GetNlist(); n > 0 {
 				cs.Vectors = make([][]float32, 0, n)
 			}

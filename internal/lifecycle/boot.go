@@ -562,7 +562,7 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	if cs, err := vaultClient.Centroids(ctx); err != nil {
 		slog.Warn("boot: centroid relay fetch failed (routing unavailable until retry)", "err", err)
 	} else if cs != nil && cs.Version != "" && len(cs.Vectors) > 0 {
-		if err := embedderClient.SetCentroids(ctx, cs.Version, cs.Dim, cs.Vectors); err != nil {
+		if err := embedderClient.SetCentroids(ctx, cs.Version, cs.Dim, cs.Preset, cs.Vectors); err != nil {
 			slog.Warn("boot: centroid push to runed failed", "err", err)
 		} else {
 			slog.Info("boot: centroid set synced to runed", "version", cs.Version, "nlist", len(cs.Vectors))
