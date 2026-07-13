@@ -6,7 +6,7 @@
 // dispatch. Two patterns are compiled (Python parity —
 // mcp/server/server.py:L25-40 _SensitiveFilter):
 //
-//  1. token-shaped strings starting with sk- / pk- / api_ / envector_ /
+//  1. token-shaped strings starting with sk- / pk- / api_ / runespace_ /
 //     evt_ followed by 10+ identifier chars
 //  2. labelled secrets like `token:`, `key=`, `secret "`, `password ` —
 //     case-insensitive — followed by a separator and 20+ identifier
@@ -36,7 +36,7 @@ import (
 // identifier (mykey, keystore, keyboard, tokenizer) are not mistakenly
 // treated as the bare `key` / `token` label and over-redacted.
 var SensitivePatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(sk-|pk-|api_|envector_|evt_)[a-zA-Z0-9_-]{10,}`),
+	regexp.MustCompile(`(sk-|pk-|api_|runespace_|evt_)[a-zA-Z0-9_-]{10,}`),
 	regexp.MustCompile(`(?i)\b(token|key|secret|password)["\s:=]+[a-zA-Z0-9_-]{20,}`),
 }
 
