@@ -11,7 +11,7 @@
 //	 gated in internal/mcp/tools.go.)
 //
 // Wiring: Deps holds a State manager + 3 services. Adapter clients (vault /
-// envector / embedder) are populated on the services by the boot loop after
+// embedder) are populated on the services by the boot loop after
 // Vault returns the bundle. Until boot completes, write tools fail with
 // PIPELINE_NOT_READY through CheckState; read-only tools work degraded.
 //
@@ -183,8 +183,8 @@ func isNormalShutdown(err error) bool {
 }
 
 // buildDeps wires the state manager + 3 services so that handler dispatch can
-// proceed immediately. Adapter clients (vault.Client, embedder.Client,
-// envector.Client) and DEK/key state are populated by RunBootLoop once Vault
+// proceed immediately. Adapter clients (vault.Client, embedder.Client) and
+// DEK/key state are populated by RunBootLoop once Vault
 // returns the bundle — until then, the services see nil adapters and write
 // tools are state-gated to PIPELINE_NOT_READY.
 //

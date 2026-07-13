@@ -175,7 +175,7 @@ func TestRegister_BatchCaptureItemsDescribed(t *testing.T) {
 //
 // reload_pipelines is intentionally NOT gated (it is the dormant→active
 // unblocker / `/rune:activate` handler per rune-mcp.md). Smoke tests for it
-// live in the diagnostic suite once an envector mock is in place.
+// live in the diagnostic suite once a vault mock is in place.
 func TestRegister_WriteToolsGated(t *testing.T) {
 	cs := newSession(t)
 

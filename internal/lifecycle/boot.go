@@ -281,13 +281,13 @@ const (
 //   - config.State="dormant"          → terminal Dormant (user explicit)
 //   - vault endpoint/token empty      → terminal Dormant (await /rune:configure)
 //   - vault dial / GetAgentManifest   → state=WaitingForVault, exp backoff retry
-//   - keymanager / embedder / envector init → exp backoff retry (might be
+//   - keymanager / embedder / encryptor init → exp backoff retry (might be
 //     transient — daemon down, etc.)
 //   - other config error (parse fail) → exp backoff retry (user might be editing)
 //   - ctx cancellation                → return immediately
 //
 // Every attempt that fails after a successful Vault dial closes the partial
-// adapter conns it created (vault, embedder, envector) before retrying so
+// adapter conns it created (vault, embedder) before retrying so
 // gRPC connections do not leak across retries.
 func RunBootLoop(ctx context.Context, m *Manager, deps BootAdapterInjector) {
 	m.SetState(StateStarting)
@@ -513,7 +513,7 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	enc, err := runespacecrypto.Open(keyDir, bundle.KeyID, bundle.Dim)
 	if err != nil {
 		m.lastError.Store(fmt.Sprintf("open encryptor: %v", err))
-		m.SetBootError(&domain.BootError{Kind: domain.BootErrEnvectorInit, Detail: err.Error(), Hint: "The EncKey may be corrupt; re-run /rune:configure."})
+		m.SetBootError(&domain.BootError{Kind: domain.BootErrRunespaceInit, Detail: err.Error(), Hint: "The EncKey may be corrupt; re-run /rune:configure."})
 		slog.Error("boot: failed to open encryptor", "err", err)
 		_ = vaultClient.Close()
 		return bootRetry

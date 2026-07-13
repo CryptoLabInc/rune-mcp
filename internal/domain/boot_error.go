@@ -49,8 +49,8 @@ const (
 
 	// ── Post-Vault adapters ──────────────────────────────────────────
 	BootErrEmbedderUnreachable BootErrorKind = "embedder_unreachable" // UDS socket missing / runed down
-	BootErrEnvectorInit        BootErrorKind = "envector_init"        // envector.NewClient failed
-	BootErrEnvectorIndex       BootErrorKind = "envector_index"       // OpenIndex failed
+	BootErrRunespaceInit       BootErrorKind = "runespace_init"       // client-side runespace encryptor (runespacecrypto.Open) failed
+	BootErrRunespaceIndex      BootErrorKind = "runespace_index"      // runespace index unavailable (reached via the vault, not mcp)
 	BootErrKeySave             BootErrorKind = "key_save"             // SaveEncKey / KeyDir filesystem failure
 	BootErrLocalIO             BootErrorKind = "local_io"             // generic local FS / permissions
 )
@@ -65,9 +65,9 @@ const (
 	BootPhaseVaultDial     BootPhase = "vault_dial"
 	BootPhaseVaultManifest BootPhase = "vault_manifest"
 	BootPhaseKeySave       BootPhase = "key_save"
-	BootPhaseEmbedderDial  BootPhase = "embedder_dial"
-	BootPhaseEnvectorInit  BootPhase = "envector_init"
-	BootPhaseEnvectorIndex BootPhase = "envector_index"
+	BootPhaseEmbedderDial   BootPhase = "embedder_dial"
+	BootPhaseRunespaceInit  BootPhase = "runespace_init"
+	BootPhaseRunespaceIndex BootPhase = "runespace_index"
 )
 
 // BootError — surfaced via diagnostics.vault.last_boot_error.

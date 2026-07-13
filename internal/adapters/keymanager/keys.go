@@ -1,13 +1,13 @@
 // Package keymanager persists FHE key material received from Vault to the
-// local rune directory so the envector SDK can load it via OpenKeysFromFile.
+// local rune directory so the runespace SDK can load it via OpenKeysFromFile.
 //
 // Format note: EncKey.json carries a libevi key envelope (provider_meta +
-// entries — see third_party/evi/include/km/KeyEnvelope.hpp). envector-go-sdk
-// (our envector adapter) and pyenvector are both libevi wrappers and produce
+// entries — see third_party/evi/include/km/KeyEnvelope.hpp). runespace-go-sdk
+// (our runespace adapter) and pyenvector are both libevi wrappers and produce
 // / consume this same on-disk format. The Vault server generated the key via
-// envector-go-sdk's GenerateKeys (which calls libevi's evi_km_wrap_enc_key)
+// runespace-go-sdk's GenerateKeys (which calls libevi's evi_km_wrap_enc_key)
 // and forwards the file content verbatim through GetAgentManifest's
-// manifest_json. When we load it back, envector-go-sdk's OpenKeysFromFile
+// manifest_json. When we load it back, runespace-go-sdk's OpenKeysFromFile
 // invokes evi_km_unwrap_enc_key — which expects the same envelope shape on
 // disk. We must persist bundle.EncKey byte-identical; any re-encoding or
 // re-wrapping will be rejected by the cgo unwrap.
@@ -25,10 +25,10 @@ import (
 // ~/.rune/keys/<keyID>/EncKey.json (perm 0600). The directory is created
 // with perm 0700 if missing.
 //
-// encKey is the byte content of the original pyenvector EncKey.json file
+// encKey is the byte content of the original libevi EncKey.json file
 // (manifest_json field "EncKey.json" carries this as a string). Do NOT
 // re-encode, base64-wrap, or otherwise transform — the cgo unwrap on the
-// envector side parses the original envelope shape and any modification
+// runespace side parses the original envelope shape and any modification
 // breaks it.
 //
 // Empty encKey is treated as a no-op (caller responsibility to validate).
@@ -90,9 +90,9 @@ func SaveEncKeys(keyID string, rmpJSON, mmKey []byte) (string, error) {
 	return keyDir, nil
 }
 
-// KeyDir returns the per-key directory path that envector SDK's
+// KeyDir returns the per-key directory path that the runespace SDK's
 // OpenKeysFromFile expects as WithKeyPath: ~/.rune/keys/<keyID>/. This is
-// the directory containing EncKey.json — envector resolves the file
+// the directory containing EncKey.json — the SDK resolves the file
 // directly via filepath.Join(keyDir, "EncKey.json").
 func KeyDir(keyID string) (string, error) {
 	runedir, err := config.RuneDir()
