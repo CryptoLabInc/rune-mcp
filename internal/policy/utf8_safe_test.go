@@ -76,7 +76,7 @@ func TestBuildPhases_KoreanTextProducesValidUTF8(t *testing.T) {
 	// Real-world reproducer from session 1778902721 #17.
 	text := "/rune:configure 실패 원인을 surface 하는 4-layer 변경:  " +
 		"문제: /rune:configure 실패 시 (CA 인증서 불일치, 잘못된 토큰, " +
-		"endpoint 도달 불가 등) rune-mcp 가 state: \"waiting_for_vault\" 만 " +
+		"endpoint 도달 불가 등) rune-mcp 가 state: \"waiting_for_console\" 만 " +
 		"반환하고 실패 이유를 안 알려줌."
 
 	extractedRaw := map[string]any{

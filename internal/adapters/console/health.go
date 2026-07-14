@@ -1,4 +1,4 @@
-package vault
+package console
 
 import (
 	"context"
@@ -9,8 +9,6 @@ import (
 )
 
 // HealthFallback — Tier 2 HTTP /health probe (diagnostic only).
-// Spec: docs/v04/spec/components/vault.md §Health check 2-tier.
-// Python: mcp/adapter/vault_client.py:L322-337.
 //
 // When to call:
 //   - Tier 1 gRPC health.v1 check fails (see Client.HealthCheck)
@@ -32,7 +30,7 @@ func HealthFallback(ctx context.Context, rawEndpoint string) error {
 
 	u, err := url.Parse(rawEndpoint)
 	if err != nil {
-		return fmt.Errorf("vault: invalid endpoint URL: %w", err)
+		return fmt.Errorf("console: invalid endpoint URL: %w", err)
 	}
 
 	// Strip suffixes
@@ -47,7 +45,7 @@ func HealthFallback(ctx context.Context, rawEndpoint string) error {
 
 	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 	if err != nil {
-		return fmt.Errorf("vault: failed to create health request: %w", err)
+		return fmt.Errorf("console: failed to create health request: %w", err)
 	}
 
 	resp, err := http.DefaultClient.Do(req)
@@ -57,7 +55,7 @@ func HealthFallback(ctx context.Context, rawEndpoint string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("vault: health endpoint returned %d", resp.StatusCode)
+		return fmt.Errorf("console: health endpoint returned %d", resp.StatusCode)
 	}
 	return nil
 }

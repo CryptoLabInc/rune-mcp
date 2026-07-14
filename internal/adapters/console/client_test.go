@@ -1,4 +1,4 @@
-package vault_test
+package console_test
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	vaultpb "github.com/CryptoLabInc/rune-admin/vault/pkg/vaultpb"
+	consolepb "github.com/CryptoLabInc/rune-console/runeconsole/pkg/consolepb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -15,36 +15,36 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
 )
 
-// fakeServer implements VaultServiceServer + HealthServer for in-process tests.
+// fakeServer implements ConsoleServiceServer + HealthServer for in-process tests.
 type fakeServer struct {
-	vaultpb.UnimplementedVaultServiceServer
+	consolepb.UnimplementedConsoleServiceServer
 	healthpb.UnimplementedHealthServer
 
-	getAgentManifestFn func(*vaultpb.GetAgentManifestRequest) (*vaultpb.GetAgentManifestResponse, error)
-	insertFn           func(*vaultpb.InsertRequest) (*vaultpb.InsertResponse, error)
-	searchFn           func(*vaultpb.SearchRequest) (*vaultpb.SearchResponse, error)
+	getAgentManifestFn func(*consolepb.GetAgentManifestRequest) (*consolepb.GetAgentManifestResponse, error)
+	insertFn           func(*consolepb.InsertRequest) (*consolepb.InsertResponse, error)
+	searchFn           func(*consolepb.SearchRequest) (*consolepb.SearchResponse, error)
 	healthFn           func(*healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error)
-	getCentroidsFn     func(vaultpb.VaultService_GetCentroidsServer) error
+	getCentroidsFn     func(consolepb.ConsoleService_GetCentroidsServer) error
 }
 
-func (f *fakeServer) GetAgentManifest(_ context.Context, req *vaultpb.GetAgentManifestRequest) (*vaultpb.GetAgentManifestResponse, error) {
+func (f *fakeServer) GetAgentManifest(_ context.Context, req *consolepb.GetAgentManifestRequest) (*consolepb.GetAgentManifestResponse, error) {
 	if f.getAgentManifestFn != nil {
 		return f.getAgentManifestFn(req)
 	}
 	return nil, status.Error(codes.Unimplemented, "test server: GetAgentManifest not stubbed")
 }
 
-func (f *fakeServer) Insert(_ context.Context, req *vaultpb.InsertRequest) (*vaultpb.InsertResponse, error) {
+func (f *fakeServer) Insert(_ context.Context, req *consolepb.InsertRequest) (*consolepb.InsertResponse, error) {
 	if f.insertFn != nil {
 		return f.insertFn(req)
 	}
 	return nil, status.Error(codes.Unimplemented, "test server: Insert not stubbed")
 }
 
-func (f *fakeServer) Search(_ context.Context, req *vaultpb.SearchRequest) (*vaultpb.SearchResponse, error) {
+func (f *fakeServer) Search(_ context.Context, req *consolepb.SearchRequest) (*consolepb.SearchResponse, error) {
 	if f.searchFn != nil {
 		return f.searchFn(req)
 	}
@@ -58,12 +58,12 @@ func (f *fakeServer) Check(_ context.Context, req *healthpb.HealthCheckRequest) 
 	return &healthpb.HealthCheckResponse{Status: healthpb.HealthCheckResponse_SERVING}, nil
 }
 
-func startFakeServer(t *testing.T) (*fakeServer, vault.Client) {
+func startFakeServer(t *testing.T) (*fakeServer, console.Client) {
 	t.Helper()
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer()
 	fake := &fakeServer{}
-	vaultpb.RegisterVaultServiceServer(srv, fake)
+	consolepb.RegisterConsoleServiceServer(srv, fake)
 	healthpb.RegisterHealthServer(srv, fake)
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
@@ -80,18 +80,18 @@ func startFakeServer(t *testing.T) (*fakeServer, vault.Client) {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 
-	return fake, vault.NewBufconnClient(conn, "test-token")
+	return fake, console.NewBufconnClient(conn, "test-token")
 }
 
 // ── GetAgentManifest (config-only bundle) ─────────────────────────
 
 func TestGetAgentManifest_HappyPath(t *testing.T) {
 	fake, c := startFakeServer(t)
-	fake.getAgentManifestFn = func(req *vaultpb.GetAgentManifestRequest) (*vaultpb.GetAgentManifestResponse, error) {
+	fake.getAgentManifestFn = func(req *consolepb.GetAgentManifestRequest) (*consolepb.GetAgentManifestResponse, error) {
 		if req.GetToken() != "test-token" {
 			return nil, status.Error(codes.Unauthenticated, "wrong token")
 		}
-		return &vaultpb.GetAgentManifestResponse{
+		return &consolepb.GetAgentManifestResponse{
 			ManifestJson: `{"key_id":"key_test","index_name":"test-index","agent_id":"agent_test","dim":1024}`,
 		}, nil
 	}
@@ -107,20 +107,20 @@ func TestGetAgentManifest_HappyPath(t *testing.T) {
 
 func TestGetAgentManifest_ResponseErrorString(t *testing.T) {
 	fake, c := startFakeServer(t)
-	fake.getAgentManifestFn = func(*vaultpb.GetAgentManifestRequest) (*vaultpb.GetAgentManifestResponse, error) {
-		return &vaultpb.GetAgentManifestResponse{Error: "manifest build failed"}, nil
+	fake.getAgentManifestFn = func(*consolepb.GetAgentManifestRequest) (*consolepb.GetAgentManifestResponse, error) {
+		return &consolepb.GetAgentManifestResponse{Error: "manifest build failed"}, nil
 	}
 	_, err := c.GetAgentManifest(context.Background())
-	var ve *vault.Error
+	var ve *console.Error
 	if !errors.As(err, &ve) || !strings.Contains(ve.Message, "manifest build failed") {
-		t.Fatalf("expected wrapped vault.Error, got %v", err)
+		t.Fatalf("expected wrapped console.Error, got %v", err)
 	}
 }
 
 func TestGetAgentManifest_MalformedJSON(t *testing.T) {
 	fake, c := startFakeServer(t)
-	fake.getAgentManifestFn = func(*vaultpb.GetAgentManifestRequest) (*vaultpb.GetAgentManifestResponse, error) {
-		return &vaultpb.GetAgentManifestResponse{ManifestJson: "not json {"}, nil
+	fake.getAgentManifestFn = func(*consolepb.GetAgentManifestRequest) (*consolepb.GetAgentManifestResponse, error) {
+		return &consolepb.GetAgentManifestResponse{ManifestJson: "not json {"}, nil
 	}
 	_, err := c.GetAgentManifest(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "parse manifest_json") {
@@ -132,13 +132,13 @@ func TestGetAgentManifest_MalformedJSON(t *testing.T) {
 
 func TestInsert_HappyPath(t *testing.T) {
 	fake, c := startFakeServer(t)
-	fake.insertFn = func(req *vaultpb.InsertRequest) (*vaultpb.InsertResponse, error) {
+	fake.insertFn = func(req *consolepb.InsertRequest) (*consolepb.InsertResponse, error) {
 		if req.GetId() != "id-xyz" || len(req.GetRmpItem()) == 0 || len(req.GetMmItem()) == 0 || req.GetCentroidSetVersion() != "v1" {
 			t.Errorf("insert req mismatch: %+v", req)
 		}
-		return &vaultpb.InsertResponse{Id: req.GetId()}, nil
+		return &consolepb.InsertResponse{Id: req.GetId()}, nil
 	}
-	id, err := c.Insert(context.Background(), vault.InsertItem{
+	id, err := c.Insert(context.Background(), console.InsertItem{
 		ID:                 "id-xyz",
 		RMPItem:            []byte{1, 2},
 		MMItem:             []byte{3, 4},
@@ -156,10 +156,10 @@ func TestInsert_HappyPath(t *testing.T) {
 
 func TestInsert_ResponseError(t *testing.T) {
 	fake, c := startFakeServer(t)
-	fake.insertFn = func(*vaultpb.InsertRequest) (*vaultpb.InsertResponse, error) {
-		return &vaultpb.InsertResponse{Error: "insert failed"}, nil
+	fake.insertFn = func(*consolepb.InsertRequest) (*consolepb.InsertResponse, error) {
+		return &consolepb.InsertResponse{Error: "insert failed"}, nil
 	}
-	_, err := c.Insert(context.Background(), vault.InsertItem{ID: "id-1", RMPItem: []byte{1}, MMItem: []byte{2}, CentroidSetVersion: "v"})
+	_, err := c.Insert(context.Background(), console.InsertItem{ID: "id-1", RMPItem: []byte{1}, MMItem: []byte{2}, CentroidSetVersion: "v"})
 	if err == nil || !strings.Contains(err.Error(), "insert failed") {
 		t.Fatalf("want insert error, got %v", err)
 	}
@@ -169,11 +169,11 @@ func TestInsert_ResponseError(t *testing.T) {
 
 func TestSearch_HappyPath(t *testing.T) {
 	fake, c := startFakeServer(t)
-	fake.searchFn = func(req *vaultpb.SearchRequest) (*vaultpb.SearchResponse, error) {
+	fake.searchFn = func(req *consolepb.SearchRequest) (*consolepb.SearchResponse, error) {
 		if req.GetTopK() != 5 {
 			t.Errorf("topk: got %d, want 5", req.GetTopK())
 		}
-		return &vaultpb.SearchResponse{Hits: []*vaultpb.SearchHit{
+		return &consolepb.SearchResponse{Hits: []*consolepb.SearchHit{
 			{Id: "a", Score: 0.95, Metadata: `{"title":"A"}`},
 			{Id: "b", Score: 0.80, Metadata: `{"title":"B"}`},
 		}}, nil
@@ -189,13 +189,13 @@ func TestSearch_HappyPath(t *testing.T) {
 
 func TestSearch_GRPCError(t *testing.T) {
 	fake, c := startFakeServer(t)
-	fake.searchFn = func(*vaultpb.SearchRequest) (*vaultpb.SearchResponse, error) {
+	fake.searchFn = func(*consolepb.SearchRequest) (*consolepb.SearchResponse, error) {
 		return nil, status.Error(codes.PermissionDenied, "denied")
 	}
 	_, err := c.Search(context.Background(), []float32{1}, 5)
-	var ve *vault.Error
-	if !errors.As(err, &ve) || ve.Code != "VAULT_PERMISSION_DENIED" || ve.Retryable {
-		t.Fatalf("want non-retryable VAULT_PERMISSION_DENIED, got %v", err)
+	var ve *console.Error
+	if !errors.As(err, &ve) || ve.Code != "CONSOLE_PERMISSION_DENIED" || ve.Retryable {
+		t.Fatalf("want non-retryable CONSOLE_PERMISSION_DENIED, got %v", err)
 	}
 }
 
@@ -231,22 +231,22 @@ func TestMapGRPCError_CodeMatrix(t *testing.T) {
 		wantCode  string
 		retryable bool
 	}{
-		{codes.Unauthenticated, "x", "VAULT_AUTH_FAILED", false},
-		{codes.PermissionDenied, "x", "VAULT_PERMISSION_DENIED", false},
-		{codes.InvalidArgument, "x", "VAULT_INVALID_INPUT", false},
-		{codes.InvalidArgument, "top_k 8 exceeds limit 3 for role 'r'", "VAULT_TOPK_EXCEEDED", false},
-		{codes.ResourceExhausted, "x", "VAULT_RATE_LIMITED", true},
-		{codes.NotFound, "x", "VAULT_KEY_NOT_FOUND", false},
-		{codes.Unavailable, "x", "VAULT_UNAVAILABLE", true},
-		{codes.DeadlineExceeded, "x", "VAULT_TIMEOUT", true},
-		{codes.Internal, "x", "VAULT_INTERNAL", true},
-		{codes.Aborted, "x", "VAULT_INTERNAL", true},
+		{codes.Unauthenticated, "x", "CONSOLE_AUTH_FAILED", false},
+		{codes.PermissionDenied, "x", "CONSOLE_PERMISSION_DENIED", false},
+		{codes.InvalidArgument, "x", "CONSOLE_INVALID_INPUT", false},
+		{codes.InvalidArgument, "top_k 8 exceeds limit 3 for role 'r'", "CONSOLE_TOPK_EXCEEDED", false},
+		{codes.ResourceExhausted, "x", "CONSOLE_RATE_LIMITED", true},
+		{codes.NotFound, "x", "CONSOLE_KEY_NOT_FOUND", false},
+		{codes.Unavailable, "x", "CONSOLE_UNAVAILABLE", true},
+		{codes.DeadlineExceeded, "x", "CONSOLE_TIMEOUT", true},
+		{codes.Internal, "x", "CONSOLE_INTERNAL", true},
+		{codes.Aborted, "x", "CONSOLE_INTERNAL", true},
 	}
 	for _, tc := range cases {
-		err := vault.MapGRPCError(status.Error(tc.grpcCode, tc.msg))
-		var ve *vault.Error
+		err := console.MapGRPCError(status.Error(tc.grpcCode, tc.msg))
+		var ve *console.Error
 		if !errors.As(err, &ve) {
-			t.Fatalf("expected *vault.Error, got %T", err)
+			t.Fatalf("expected *console.Error, got %T", err)
 		}
 		if ve.Code != tc.wantCode || ve.Retryable != tc.retryable {
 			t.Errorf("%v/%q → %s(retry=%v), want %s(retry=%v)", tc.grpcCode, tc.msg, ve.Code, ve.Retryable, tc.wantCode, tc.retryable)
@@ -255,20 +255,20 @@ func TestMapGRPCError_CodeMatrix(t *testing.T) {
 }
 
 func TestMapGRPCError_NilReturnsNil(t *testing.T) {
-	if got := vault.MapGRPCError(nil); got != nil {
+	if got := console.MapGRPCError(nil); got != nil {
 		t.Errorf("MapGRPCError(nil): got %v, want nil", got)
 	}
 }
 
 func TestParseManifestJSON_NotJSON(t *testing.T) {
-	if _, err := vault.ParseManifestJSON("nope"); err == nil {
+	if _, err := console.ParseManifestJSON("nope"); err == nil {
 		t.Fatal("expected parse error")
 	}
 }
 
 // ── Centroids relay ───────────────────────────────────────────────
 
-func (f *fakeServer) GetCentroids(_ *vaultpb.GetCentroidsRequest, stream vaultpb.VaultService_GetCentroidsServer) error {
+func (f *fakeServer) GetCentroids(_ *consolepb.GetCentroidsRequest, stream consolepb.ConsoleService_GetCentroidsServer) error {
 	if f.getCentroidsFn != nil {
 		return f.getCentroidsFn(stream)
 	}
@@ -277,14 +277,14 @@ func (f *fakeServer) GetCentroids(_ *vaultpb.GetCentroidsRequest, stream vaultpb
 
 func TestCentroids_Relay(t *testing.T) {
 	fake, c := startFakeServer(t)
-	fake.getCentroidsFn = func(stream vaultpb.VaultService_GetCentroidsServer) error {
-		if err := stream.Send(&vaultpb.CentroidChunk{Payload: &vaultpb.CentroidChunk_Header{
-			Header: &vaultpb.CentroidSetHeader{Version: "v9", Dim: 2, Nlist: 2},
+	fake.getCentroidsFn = func(stream consolepb.ConsoleService_GetCentroidsServer) error {
+		if err := stream.Send(&consolepb.CentroidChunk{Payload: &consolepb.CentroidChunk_Header{
+			Header: &consolepb.CentroidSetHeader{Version: "v9", Dim: 2, Nlist: 2},
 		}}); err != nil {
 			return err
 		}
-		return stream.Send(&vaultpb.CentroidChunk{Payload: &vaultpb.CentroidChunk_Batch{
-			Batch: &vaultpb.CentroidBatch{Centroids: []*vaultpb.Centroid{
+		return stream.Send(&consolepb.CentroidChunk{Payload: &consolepb.CentroidChunk_Batch{
+			Batch: &consolepb.CentroidBatch{Centroids: []*consolepb.Centroid{
 				{Id: 0, Vec: []float32{1, 0}}, {Id: 1, Vec: []float32{0, 1}},
 			}},
 		}})

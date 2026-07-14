@@ -20,10 +20,10 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/logio"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/seal"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
 	"github.com/CryptoLabInc/rune-mcp/internal/policy"
@@ -32,13 +32,13 @@ import (
 // CaptureService orchestrates the 7-phase capture flow.
 // Python: mcp/server/server.py:L1208-1407 _capture_single + L810-896 tool_batch_capture.
 type CaptureService struct {
-	Vault      vault.Client
+	Console    console.Client
 	Embedder   embedder.Client
 	Encryptor  Encryptor
 	CaptureLog *logio.CaptureLog
 	State      *lifecycle.Manager
 
-	// Injected from Vault bundle at boot.
+	// Injected from Console bundle at boot.
 	IndexName string
 	AgentID   string // for the seal envelope's "a" field
 	AgentDEK  []byte // metadata seal key (agent_dek from manifest)
@@ -60,7 +60,7 @@ func NewCaptureService() *CaptureService {
 }
 
 // EncryptSealInsert embeds+routes text, encrypts the vector (EncKey), seals
-// metadataJSON (agent_dek), and forwards the ciphertext item to the vault
+// metadataJSON (agent_dek), and forwards the ciphertext item to the console
 // under a fresh idempotent id. Shared by the capture flow and DeleteCapture's
 // tombstone re-insert so there is one client-side crypto path.
 //
@@ -77,11 +77,11 @@ func (s *CaptureService) EncryptSealInsert(ctx context.Context, text, metadataJS
 	if err != nil {
 		return "", err
 	}
-	insertedID, err := insertWithRecovery(ctx, s.State, s.Vault, item)
+	insertedID, err := insertWithRecovery(ctx, s.State, s.Console, item)
 	if err == nil || !isWrongCentroidVersion(err) {
 		return insertedID, err
 	}
-	// C3: the engine replaced its centroid set after we routed. The vault has
+	// C3: the engine replaced its centroid set after we routed. The console has
 	// already dropped its stale cache, so a resync now yields the new set.
 	slog.Warn("capture: insert rejected for stale centroid version; resyncing and retrying once", "id", id)
 	if rerr := s.resyncCentroids(ctx); rerr != nil {
@@ -91,39 +91,39 @@ func (s *CaptureService) EncryptSealInsert(ctx context.Context, text, metadataJS
 	if err != nil {
 		return "", err
 	}
-	return insertWithRecovery(ctx, s.State, s.Vault, item)
+	return insertWithRecovery(ctx, s.State, s.Console, item)
 }
 
 // buildInsertItem runs the client-side crypto pipeline — embed+route (runed) →
-// encrypt (EncKey) → seal (agent_dek) — and assembles the vault item under the
+// encrypt (EncKey) → seal (agent_dek) — and assembles the console item under the
 // given idempotent id. On runed FAILED_PRECONDITION (no centroid set — C4,
 // e.g. the best-effort boot relay failed or runed restarted with a cold cache)
 // it pushes the set once and retries the route.
-func (s *CaptureService) buildInsertItem(ctx context.Context, id, text, metadataJSON string) (vault.InsertItem, error) {
+func (s *CaptureService) buildInsertItem(ctx context.Context, id, text, metadataJSON string) (console.InsertItem, error) {
 	routed, err := s.Embedder.EmbedRoute(ctx, text)
 	if isNoCentroids(err) {
 		slog.Warn("capture: runed has no centroid set; resyncing and retrying once")
 		if rerr := s.resyncCentroids(ctx); rerr != nil {
-			return vault.InsertItem{}, fmt.Errorf("embed route: %w (centroid resync failed: %w)", err, rerr)
+			return console.InsertItem{}, fmt.Errorf("embed route: %w (centroid resync failed: %w)", err, rerr)
 		}
 		routed, err = s.Embedder.EmbedRoute(ctx, text)
 	}
 	if err != nil {
-		return vault.InsertItem{}, fmt.Errorf("embed route: %w", err)
+		return console.InsertItem{}, fmt.Errorf("embed route: %w", err)
 	}
 	rmp, err := s.Encryptor.EncryptFlat(routed.Vector)
 	if err != nil {
-		return vault.InsertItem{}, fmt.Errorf("encrypt flat: %w", err)
+		return console.InsertItem{}, fmt.Errorf("encrypt flat: %w", err)
 	}
 	mm, err := s.Encryptor.EncryptClustered(routed.Vector)
 	if err != nil {
-		return vault.InsertItem{}, fmt.Errorf("encrypt clustered: %w", err)
+		return console.InsertItem{}, fmt.Errorf("encrypt clustered: %w", err)
 	}
 	sealed, err := seal.Seal(s.AgentDEK, s.AgentID, []byte(metadataJSON))
 	if err != nil {
-		return vault.InsertItem{}, fmt.Errorf("seal metadata: %w", err)
+		return console.InsertItem{}, fmt.Errorf("seal metadata: %w", err)
 	}
-	return vault.InsertItem{
+	return console.InsertItem{
 		ID:                 id,
 		RMPItem:            rmp,
 		MMItem:             mm,
@@ -141,11 +141,11 @@ func (s *CaptureService) buildInsertItem(ctx context.Context, id, text, metadata
 //	Phase 1 (in handler): state gate → PIPELINE_NOT_READY if not active
 //	Phase 2: validate text + parse extracted (Detection + ExtractionResult split)
 //	Phase 3: embedder.EmbedSingle(text_to_embed) — reusable_insight > payload.text
-//	Phase 4: Vault.Score → Vault.DecryptScores(top_k=3) → novelty classify
+//	Phase 4: Console.Score → Console.DecryptScores(top_k=3) → novelty classify
 //	         near_duplicate (≥0.95) → return {captured:false, novelty{class, score, related}}
 //	         failures non-fatal (server.py:L1370-1372 logger.warning)
 //	Phase 5: policy.BuildPhases → embedder.EmbedBatch(texts) → seal.Seal × N
-//	Phase 6: Vault.Insert (atomic batch, D17)
+//	Phase 6: Console.Insert (atomic batch, D17)
 //	Phase 7: capture_log append (degrade per D19) → respond
 func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest) (*domain.CaptureResponse, error) {
 	// Phase 2
@@ -209,10 +209,10 @@ func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest)
 		noveltyInfo = &domain.NoveltyInfo{Score: 1.0, Class: "novel"}
 	}
 
-	// Phase 5: embed. Metadata is the plaintext record JSON; the vault seals it.
+	// Phase 5: embed. Metadata is the plaintext record JSON; the console seals it.
 	// Phase 5-6: embed (with IVF routing), encrypt each record locally
 	// (EncKey), seal its metadata (agent_dek), and forward the ciphertext to
-	// the vault. Plaintext vectors and metadata never leave this process.
+	// the console. Plaintext vectors and metadata never leave this process.
 	if s.Encryptor == nil {
 		return nil, fmt.Errorf("capture: encryptor not initialized")
 	}
@@ -225,7 +225,7 @@ func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest)
 			return nil, fmt.Errorf("marshal record %d: %w", i, err)
 		}
 		if _, err := s.EncryptSealInsert(ctx, pickEmbedText(&records[i]), string(body)); err != nil {
-			return nil, fmt.Errorf("vault insert %d: %w", i, err)
+			return nil, fmt.Errorf("console insert %d: %w", i, err)
 		}
 	}
 
@@ -269,8 +269,8 @@ func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest)
 //
 // Future optimizations:
 //   - Phase 3/5 embed: runed.EmbedBatch (N to 1 call)
-//   - Phase 4 score: Vault native multi-vector query
-//   - Phase 6 insert: Vault.Insert is already batch-native (N to 1 call)
+//   - Phase 4 score: Console native multi-vector query
+//   - Phase 6 insert: Console.Insert is already batch-native (N to 1 call)
 func (s *CaptureService) Batch(ctx context.Context, args BatchCaptureArgs) (*BatchCaptureResult, error) {
 	var rawItems []map[string]any
 	if err := json.Unmarshal([]byte(args.Items), &rawItems); err != nil {
@@ -335,7 +335,7 @@ func (s *CaptureService) Batch(ctx context.Context, args BatchCaptureArgs) (*Bat
 // runNoveltyCheck — Phase 4 helper. Returns novelty info + nil if proceed,
 // or a pre-built response if near_duplicate (caller short-circuits).
 func (s *CaptureService) runNoveltyCheck(ctx context.Context, embeddingText string) (*domain.NoveltyInfo, *domain.CaptureResponse, error) {
-	if s.Embedder == nil || s.Vault == nil {
+	if s.Embedder == nil || s.Console == nil {
 		return &domain.NoveltyInfo{Score: 1.0, Class: "novel"}, nil, nil
 	}
 
@@ -345,7 +345,7 @@ func (s *CaptureService) runNoveltyCheck(ctx context.Context, embeddingText stri
 		return &domain.NoveltyInfo{Score: 1.0, Class: "novel"}, nil, nil
 	}
 
-	hits, err := searchWithRecovery(ctx, s.State, s.Vault, vec, 3)
+	hits, err := searchWithRecovery(ctx, s.State, s.Console, vec, 3)
 	if err != nil || len(hits) == 0 {
 		slog.Warn("novelty check: search failed or empty (non-fatal)", "err", err)
 		return &domain.NoveltyInfo{Score: 1.0, Class: "novel"}, nil, nil
@@ -384,7 +384,7 @@ func pickEmbedText(r *domain.DecisionRecord) string {
 	return r.Payload.Text // fallback
 }
 
-func buildRelatedTop3(hits []vault.Hit) []domain.RelatedRecord {
+func buildRelatedTop3(hits []console.Hit) []domain.RelatedRecord {
 	n := len(hits)
 	if n > 3 {
 		n = 3
