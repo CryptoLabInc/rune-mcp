@@ -1,12 +1,6 @@
 // Package service holds the orchestration layer — multi-phase flows that
 // coordinate adapters + policy. MCP tool handlers (internal/mcp/tools.go)
 // delegate to these services; business logic lives here, not in handlers.
-//
-// Spec:
-//
-//	docs/v04/spec/flows/capture.md (7-phase)
-//	docs/v04/spec/flows/recall.md (7-phase)
-//	docs/v04/spec/flows/lifecycle.md (6 tools)
 package service
 
 import (
@@ -30,7 +24,6 @@ import (
 )
 
 // CaptureService orchestrates the 7-phase capture flow.
-// Python: mcp/server/server.py:L1208-1407 _capture_single + L810-896 tool_batch_capture.
 type CaptureService struct {
 	Console    console.Client
 	Embedder   embedder.Client
@@ -64,7 +57,7 @@ func NewCaptureService() *CaptureService {
 // under a fresh idempotent id. Shared by the capture flow and DeleteCapture's
 // tombstone re-insert so there is one client-side crypto path.
 //
-// Centroid desync self-heals here (§9.2): buildInsertItem covers C4 (runed has
+// Centroid desync self-heals here: buildInsertItem covers C4 (runed has
 // no set), and a WRONG_CENTROID_VERSION rejection covers C3 — resync, rebuild
 // the item under the new set (fresh cluster_id + version, same id), and retry
 // exactly once.
@@ -134,16 +127,15 @@ func (s *CaptureService) buildInsertItem(ctx context.Context, id, text, metadata
 }
 
 // Handle — single capture. Called by internal/mcp/tools.go ToolCapture.
-// Python: server.py:L1208-1407 _capture_single.
 //
-// Flow (per spec/flows/capture.md):
+// Flow:
 //
 //	Phase 1 (in handler): state gate → PIPELINE_NOT_READY if not active
 //	Phase 2: validate text + parse extracted (Detection + ExtractionResult split)
 //	Phase 3: embedder.EmbedSingle(text_to_embed) — reusable_insight > payload.text
 //	Phase 4: Console.Score → Console.DecryptScores(top_k=3) → novelty classify
 //	         near_duplicate (≥0.95) → return {captured:false, novelty{class, score, related}}
-//	         failures non-fatal (server.py:L1370-1372 logger.warning)
+//	         failures non-fatal
 //	Phase 5: policy.BuildPhases → embedder.EmbedBatch(texts) → seal.Seal × N
 //	Phase 6: Console.Insert (atomic batch, D17)
 //	Phase 7: capture_log append (degrade per D19) → respond
@@ -157,7 +149,7 @@ func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest)
 		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "extraction is nil after parse"}
 	}
 
-	// D14 (lifecycle.md §3): an item with neither raw text nor any embeddable
+	// D14: an item with neither raw text nor any embeddable
 	// extraction content must be rejected, never captured. Single capture always
 	// carries a validated req.Text, so this only fires for agent-supplied
 	// extractions with no usable fields — an empty batch item, or the
@@ -402,11 +394,9 @@ func buildRelatedTop3(hits []console.Hit) []domain.RelatedRecord {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Batch types — lifecycle.md §3
+// Batch types
 // ─────────────────────────────────────────────────────────────────────────────
 
-// BatchCaptureArgs — Python: server.py:L810 tool_batch_capture args.
-//
 // The jsonschema tags below are surfaced verbatim in the tool's inputSchema
 // (go-sdk reads the `jsonschema` struct tag as the property description). They
 // exist to steer the model on first call: `items` is a string-typed param, so

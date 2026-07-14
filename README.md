@@ -45,10 +45,6 @@ tools run in a degraded mode.
 
 ## Docs
 
-- [docs/runed/](docs/runed/) — Go implementation reference (architecture, communication, capture/recall flows, MCP/CLI layer)
-- [docs/migration/](docs/migration/) — Python → Go migration analysis
-- [internal/](internal/) — per-package details (see the directory README)
-
 ## Dependencies
 
 - `runed` — shared daemon runtime

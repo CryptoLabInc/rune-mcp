@@ -6,8 +6,7 @@ package domain
 //
 // Spec rationale: rune-mcp's boot loop currently logs errors and stores a
 // free-form string in lifecycle.Manager.LastError(). Callers (diagnostics,
-// SKILL.md flows) need a stable enum to branch on. See
-// docs/v04/decisions/D??-boot-error-surface.md (planned).
+// SKILL.md flows) need a stable enum to branch on.
 //
 // Leaf type: imports stdlib only. Classifier lives in internal/lifecycle.
 

@@ -11,8 +11,6 @@ import (
 
 // infoCache caches the embedder Info RPC response.
 //
-// Spec: docs/v04/spec/components/embedder.md §Info 캐시.
-//
 // Behavior:
 //   - Success: snapshot cached for the lifetime of the cache
 //   - Error  : NOT cached. The next Get() re-attempts the RPC. Within the cooldown
