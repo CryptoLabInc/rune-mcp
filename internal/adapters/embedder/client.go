@@ -37,6 +37,10 @@ type InfoSnapshot struct {
 	VectorDim     int
 	MaxTextLength int
 	MaxBatchSize  int
+	// CentroidSetVersion is runed's CURRENT routing set at snapshot time.
+	// Unlike the fields above it is mutable (SetCentroids replaces it), so
+	// a successful push invalidates the cache below.
+	CentroidSetVersion string
 }
 
 // Status: OK / LOADING / DEGRADED / SHUTTING_DOWN
@@ -210,6 +214,7 @@ func (c *client) SetCentroids(ctx context.Context, version string, dim int, pres
 	if _, err := stream.CloseAndRecv(); err != nil {
 		return fmt.Errorf("embedder: set centroids close: %w", err)
 	}
+	c.info.invalidate() // the push changed runed's CentroidSetVersion
 	return nil
 }
 

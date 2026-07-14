@@ -545,13 +545,17 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	// produces, or captures would encrypt wrong-sized vectors. Best-effort:
 	// while runed is still bootstrapping, Info may fail or report 0 — skip
 	// rather than block the boot (the bootstrap wait covers that window).
-	if info, ierr := embedderClient.Info(ctx); ierr == nil && info.VectorDim > 0 && info.VectorDim != bundle.Dim {
-		msg := fmt.Sprintf("dim mismatch: manifest/keys=%d, runed=%d — vault and embedder disagree on the embedding dimension", bundle.Dim, info.VectorDim)
-		m.SetState(StateWaitingForVault)
-		m.lastError.Store(msg)
-		m.SetBootError(&domain.BootError{Kind: domain.BootErrConfigInvalid, Detail: msg, Hint: "Check that the vault's embedding_dim matches the runed model."})
-		slog.Error("boot: " + msg)
-		return bootRetry
+	var runedCentroidVer string
+	if info, ierr := embedderClient.Info(ctx); ierr == nil {
+		runedCentroidVer = info.CentroidSetVersion
+		if info.VectorDim > 0 && info.VectorDim != bundle.Dim {
+			msg := fmt.Sprintf("dim mismatch: manifest/keys=%d, runed=%d — vault and embedder disagree on the embedding dimension", bundle.Dim, info.VectorDim)
+			m.SetState(StateWaitingForVault)
+			m.lastError.Store(msg)
+			m.SetBootError(&domain.BootError{Kind: domain.BootErrConfigInvalid, Detail: msg, Hint: "Check that the vault's embedding_dim matches the runed model."})
+			slog.Error("boot: " + msg)
+			return bootRetry
+		}
 	}
 
 	// Relay the IVF centroid set from the vault down to runed so Embed can
@@ -559,7 +563,15 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	// activation — capture self-heals at the point of use (§9.2 C4: EmbedRoute
 	// FAILED_PRECONDITION → the service resyncs the set and retries once) —
 	// but a healthy path pushes it now so the first capture pays no resync.
-	if cs, err := vaultClient.Centroids(ctx); err != nil {
+	//
+	// Skip when runed already holds the manifest's exact set: Info just told
+	// us its version, and re-relaying it costs a ~16MB vault fetch + a ~16MB
+	// runed push per session boot for nothing. A cold runed (empty version)
+	// or any mismatch still takes the full relay, and the C3/C4 self-heal
+	// keeps covering post-boot centroid replacement.
+	if runedCentroidVer != "" && runedCentroidVer == bundle.CentroidSetVersion {
+		slog.Info("boot: centroid relay skipped — runed already holds the current set", "version", runedCentroidVer)
+	} else if cs, err := vaultClient.Centroids(ctx); err != nil {
 		slog.Warn("boot: centroid relay fetch failed (routing unavailable until retry)", "err", err)
 	} else if cs != nil && cs.Version != "" && len(cs.Vectors) > 0 {
 		if err := embedderClient.SetCentroids(ctx, cs.Version, cs.Dim, cs.Preset, cs.Vectors); err != nil {
