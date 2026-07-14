@@ -11,8 +11,8 @@ import (
 // These helpers replicate the transport interceptor: on a retryable vault
 // failure, wait for the pipeline to become active again, then retry once.
 
-func insertWithRecovery(ctx context.Context, state *lifecycle.Manager, c vault.Client, vec []float32, meta string) (string, error) {
-	id, err := c.Insert(ctx, vec, meta)
+func insertWithRecovery(ctx context.Context, state *lifecycle.Manager, c vault.Client, item vault.InsertItem) (string, error) {
+	id, err := c.Insert(ctx, item)
 	if err == nil {
 		return id, nil
 	}
@@ -22,7 +22,8 @@ func insertWithRecovery(ctx context.Context, state *lifecycle.Manager, c vault.C
 	if !state.WaitForActive(ctx, lifecycle.RecoverTimeout) {
 		return "", err
 	}
-	return c.Insert(ctx, vec, meta)
+	// Same item (same ID) — the forward is idempotent on retry.
+	return c.Insert(ctx, item)
 }
 
 func searchWithRecovery(ctx context.Context, state *lifecycle.Manager, c vault.Client, vec []float32, topK int) ([]vault.Hit, error) {

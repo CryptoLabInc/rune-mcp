@@ -4,8 +4,9 @@ A session-local MCP server for Rune's encrypted organizational memory. It is a G
 port of the agent-delegated path of Python rune v0.3.x.
 
 An agent host (Claude Code, Codex, etc.) spawns one instance per session over stdio.
-It takes capture/recall requests and runs embedding → AES encryption → enVector
-storage (or FHE search), delegating key management and decryption to Vault over gRPC.
+It takes capture/recall requests, runs embedding and client-side encryption, and
+sends them to Vault over gRPC. Vault holds all key management and decryption and is
+the sole client of the runespace vector engine (storage / FHE search).
 
 ## Build / Run
 
@@ -24,7 +25,7 @@ cmd/rune-mcp        entrypoint (stdio + boot loop)
 internal/mcp        MCP SDK wiring · 10 tool handlers · state gate
 internal/service    capture / recall / lifecycle orchestration
 internal/policy     pure logic (novelty · rerank · query · PII redaction)
-internal/adapters   external I/O (vault gRPC · envector SDK · embedder · config)
+internal/adapters   external I/O (vault gRPC · runespace crypto SDK · embedder · config)
 internal/domain     core types (leaf — no imports from other internal packages)
 internal/lifecycle  state machine · boot retry · graceful shutdown
 internal/obs        slog + request_id + sensitive-data redaction
@@ -51,6 +52,6 @@ tools run in a degraded mode.
 ## Dependencies
 
 - `runed` — shared daemon runtime
-- enVector Go SDK — vector storage/search (developed separately)
+- runespace Go SDK — client-side FHE encryption (developed separately)
 - Vault gRPC — key management · FHE decryption
 - MCP Go SDK — `modelcontextprotocol/go-sdk`

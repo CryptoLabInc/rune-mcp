@@ -2,26 +2,33 @@ package service_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/keymanager"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/runespacecrypto"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/seal"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 )
 
-// TestPipelineL3 exercises the full runespace pipeline through the mcp-side
-// clients against a LIVE local stack (runed + runevault + runespace):
+// TestPipelineL3 exercises the full client-side-crypto pipeline through the
+// mcp-side clients against a LIVE local stack (runed + runevault + runespace):
 //
-//	text → runed embed → vault.Insert → runespace   (capture)
-//	text → runed embed → vault.Search → decrypted hit (recall)
+//	manifest → save EncKey → open encryptor (cgo)
+//	centroid relay → runed SetCentroids
+//	text → EmbedRoute → EncryptFlat/Clustered + seal → vault.Insert (forward)
+//	query → EmbedSingle → vault.Search → opened plaintext hit
 //
-// Gated on RUNEVAULT_ADDR (e.g. 127.0.0.1:50051). Uses the demo token from
-// run/tokens.yaml and the already-running runed embedding socket.
+// Gated on RUNEVAULT_ADDR (e.g. 127.0.0.1:50051). The vault must be a build
+// that distributes EncKey/agent_dek (pre_encrypted capability).
 //
-//	RUNEVAULT_ADDR=127.0.0.1:50051 go test ./internal/service -run PipelineL3 -v
+//	RUNEVAULT_ADDR=127.0.0.1:50051 RUNE_HOME=$(mktemp -d) go test ./internal/service -run PipelineL3 -v
 func TestPipelineL3(t *testing.T) {
 	addr := os.Getenv("RUNEVAULT_ADDR")
 	if addr == "" {
@@ -31,6 +38,8 @@ func TestPipelineL3(t *testing.T) {
 	if token == "" {
 		token = "evt_0000000000000000000000000000test"
 	}
+	// Isolate key storage so we do not touch a real ~/.rune.
+	t.Setenv("RUNE_HOME", t.TempDir())
 
 	vc, err := vault.NewClient(addr, token, vault.ClientOpts{TLSDisable: true})
 	if err != nil {
@@ -44,30 +53,75 @@ func TestPipelineL3(t *testing.T) {
 	}
 	defer emb.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	// ── capture ──
-	insight := "The team chose PostgreSQL over MongoDB for the ledger because ACID transactions were non-negotiable."
-	vec, err := emb.EmbedSingle(ctx, insight)
+	// ── manifest → EncKey → encryptor ──
+	bundle, err := vc.GetAgentManifest(ctx)
 	if err != nil {
-		t.Fatalf("embed insight: %v", err)
+		t.Fatalf("GetAgentManifest: %v", err)
 	}
-	t.Logf("embedded insight: dim=%d", len(vec))
+	if bundle.InsertCapability != "pre_encrypted" {
+		t.Fatalf("vault capability = %q, want pre_encrypted", bundle.InsertCapability)
+	}
+	keyDir, err := keymanager.SaveEncKeys(bundle.KeyID, bundle.EncKeyJSON, bundle.MMEncKey)
+	if err != nil {
+		t.Fatalf("SaveEncKeys: %v", err)
+	}
+	enc, err := runespacecrypto.Open(keyDir, bundle.KeyID, bundle.Dim)
+	if err != nil {
+		t.Fatalf("open encryptor: %v", err)
+	}
+	defer enc.Close()
 
+	// ── centroid relay → runed ──
+	cs, err := vc.Centroids(ctx)
+	if err != nil {
+		t.Fatalf("Centroids relay: %v", err)
+	}
+	if err := emb.SetCentroids(ctx, cs.Version, cs.Dim, cs.Preset, cs.Vectors); err != nil {
+		t.Fatalf("SetCentroids to runed: %v", err)
+	}
+	t.Logf("centroids synced: version=%s nlist=%d", cs.Version, len(cs.Vectors))
+
+	// ── capture: embed+route → encrypt → seal → forward ──
+	insight := "The team chose PostgreSQL over MongoDB for the ledger because ACID transactions were non-negotiable. " + t.Name()
+	routed, err := emb.EmbedRoute(ctx, insight)
+	if err != nil {
+		t.Fatalf("EmbedRoute: %v", err)
+	}
+	rmp, err := enc.EncryptFlat(routed.Vector)
+	if err != nil {
+		t.Fatalf("EncryptFlat: %v", err)
+	}
+	mm, err := enc.EncryptClustered(routed.Vector)
+	if err != nil {
+		t.Fatalf("EncryptClustered: %v", err)
+	}
 	meta, _ := json.Marshal(map[string]any{
 		"id":               "rec-db-choice",
 		"title":            "Database choice",
 		"reusable_insight": insight,
 		"domain":           "architecture",
 	})
-	id, err := vc.Insert(ctx, vec, string(meta))
+	sealed, err := seal.Seal(bundle.AgentDEK, bundle.AgentID, meta)
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	id, err := vc.Insert(ctx, vault.InsertItem{
+		ID:                 "l3-" + base64.RawURLEncoding.EncodeToString([]byte(t.Name()))[:12],
+		RMPItem:            rmp,
+		MMItem:             mm,
+		ClusterID:          routed.ClusterID,
+		CentroidSetVersion: routed.CentroidSetVersion,
+		SealedMetadata:     sealed,
+	})
 	if err != nil {
 		t.Fatalf("vault.Insert: %v", err)
 	}
-	t.Logf("capture ok: id=%s", id)
+	t.Logf("capture ok: id=%s (client-encrypted)", id)
 
-	// ── recall ──
+	// ── recall: plaintext query → vault decrypts + opens ──
 	qvec, err := emb.EmbedSingle(ctx, "which database did we pick for the ledger and why?")
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
@@ -83,16 +137,14 @@ func TestPipelineL3(t *testing.T) {
 	if len(hits) == 0 {
 		t.Fatal("recall returned 0 hits")
 	}
-
-	// The captured record should surface with its plaintext metadata intact.
 	found := false
 	for _, h := range hits {
 		if strings.Contains(h.Metadata, "PostgreSQL") && strings.Contains(h.Metadata, "Database choice") {
 			found = true
-			break
 		}
 	}
 	if !found {
-		t.Fatalf("captured record not found in recall results")
+		t.Fatal("captured record not found in recall with opened plaintext metadata")
 	}
+	_ = filepath.Separator
 }

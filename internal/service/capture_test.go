@@ -11,7 +11,7 @@ import (
 // a "[batch_capture]" placeholder record (which poisoned the corpus and caused
 // cascading false near_duplicate). Rejection is enforced by Handle's shared D14
 // guard (empty Text + !extraction.HasContent()), which fires before any adapter
-// call, so a zero-value service (nil Embedder/Envector/Vault) is sufficient.
+// call, so a zero-value service (nil Embedder/Vault) is sufficient.
 func TestBatch_RejectsContentlessItems(t *testing.T) {
 	s := &CaptureService{}
 	items := `[

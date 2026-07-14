@@ -12,8 +12,10 @@ package vault
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 
@@ -36,19 +38,33 @@ const DefaultTimeout = 30 * time.Second
 // HealthCheckTimeout — override on health probes.
 const HealthCheckTimeout = 5 * time.Second
 
-// Bundle is the agent config returned by GetAgentManifest (no keys).
+// Bundle is the agent manifest returned by GetAgentManifest. Under the
+// client-side-crypto model it carries the PUBLIC EncKey pair and the caller's
+// derived agent_dek so rune-mcp can encrypt/seal locally; SecKey and
+// team_secret stay in the Vault.
 type Bundle struct {
 	AgentID   string
 	KeyID     string
 	IndexName string
 	Dim       int
+
+	EncKeyJSON         []byte // RMP EncKey envelope (verbatim)
+	MMEncKey           []byte // MM EncKey raw bytes (base64-decoded)
+	AgentDEK           []byte // metadata seal key (base64-decoded)
+	CentroidSetVersion string // engine's current set; "" = none loaded yet
+	InsertCapability   string // "pre_encrypted" for the target vault
 }
 
 type manifestJSON struct {
-	AgentID   string `json:"agent_id"`
-	KeyID     string `json:"key_id"`
-	IndexName string `json:"index_name"`
-	Dim       int    `json:"dim"`
+	AgentID            string `json:"agent_id"`
+	KeyID              string `json:"key_id"`
+	IndexName          string `json:"index_name"`
+	Dim                int    `json:"dim"`
+	EncKeyJSON         string `json:"EncKey.json"`
+	MMEncKey           string `json:"mm_enc_key"`
+	AgentDEK           string `json:"agent_dek"`
+	CentroidSetVersion string `json:"centroid_set_version"`
+	Insert             string `json:"insert"`
 }
 
 func ParseManifestJSON(raw string) (*Bundle, error) {
@@ -56,12 +72,30 @@ func ParseManifestJSON(raw string) (*Bundle, error) {
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		return nil, fmt.Errorf("vault: parse manifest_json: %w", err)
 	}
-	return &Bundle{
-		AgentID:   m.AgentID,
-		KeyID:     m.KeyID,
-		IndexName: m.IndexName,
-		Dim:       m.Dim,
-	}, nil
+	b := &Bundle{
+		AgentID:            m.AgentID,
+		KeyID:              m.KeyID,
+		IndexName:          m.IndexName,
+		Dim:                m.Dim,
+		EncKeyJSON:         []byte(m.EncKeyJSON),
+		CentroidSetVersion: m.CentroidSetVersion,
+		InsertCapability:   m.Insert,
+	}
+	if m.MMEncKey != "" {
+		mm, err := base64.StdEncoding.DecodeString(m.MMEncKey)
+		if err != nil {
+			return nil, fmt.Errorf("vault: decode mm_enc_key: %w", err)
+		}
+		b.MMEncKey = mm
+	}
+	if m.AgentDEK != "" {
+		dek, err := base64.StdEncoding.DecodeString(m.AgentDEK)
+		if err != nil {
+			return nil, fmt.Errorf("vault: decode agent_dek: %w", err)
+		}
+		b.AgentDEK = dek
+	}
+	return b, nil
 }
 
 // Hit is one decrypted, ranked search result. Metadata is plaintext JSON
@@ -72,11 +106,33 @@ type Hit struct {
 	Metadata string
 }
 
+// InsertItem is a client-encrypted capture item forwarded verbatim to
+// runespace via the Vault. ID is client-generated so retries are idempotent.
+type InsertItem struct {
+	ID                 string
+	RMPItem            []byte // EncryptFlat output
+	MMItem             []byte // EncryptClustered output
+	ClusterID          uint32
+	CentroidSetVersion string
+	SealedMetadata     string // client-sealed {"a","c"} envelope
+}
+
+// CentroidSet is the relayed IVF centroid set (runespace -> vault -> here).
+// Preset is a version-hash ingredient — relayed through to runed so it can
+// recompute and verify the content hash ("" when the vault predates it).
+type CentroidSet struct {
+	Version string
+	Dim     int
+	Preset  string
+	Vectors [][]float32
+}
+
 // Client interface — implemented by gRPC client (and test mocks).
 type Client interface {
 	GetAgentManifest(ctx context.Context) (*Bundle, error)
-	Insert(ctx context.Context, vector []float32, metadata string) (string, error)
+	Insert(ctx context.Context, item InsertItem) (string, error)
 	Search(ctx context.Context, vector []float32, topK int) ([]Hit, error)
+	Centroids(ctx context.Context) (*CentroidSet, error)
 	HealthCheck(ctx context.Context) (bool, error)
 	Endpoint() string
 	Close() error
@@ -181,14 +237,18 @@ func (c *client) GetAgentManifest(ctx context.Context) (*Bundle, error) {
 	return ParseManifestJSON(resp.GetManifestJson())
 }
 
-func (c *client) Insert(ctx context.Context, vector []float32, metadata string) (string, error) {
+func (c *client) Insert(ctx context.Context, item InsertItem) (string, error) {
 	ctx, cancel := withTimeout(c.authCtx(ctx), DefaultTimeout)
 	defer cancel()
 
 	resp, err := c.stub.Insert(ctx, &vaultpb.InsertRequest{
-		Token:    c.token,
-		Vector:   vector,
-		Metadata: metadata,
+		Token:              c.token,
+		Id:                 item.ID,
+		RmpItem:            item.RMPItem,
+		MmItem:             item.MMItem,
+		ClusterId:          item.ClusterID,
+		CentroidSetVersion: item.CentroidSetVersion,
+		Metadata:           item.SealedMetadata,
 	})
 	if err != nil {
 		return "", MapGRPCError(err)
@@ -197,6 +257,41 @@ func (c *client) Insert(ctx context.Context, vector []float32, metadata string) 
 		return "", &Error{Code: ErrVaultInternal.Code, Message: "Insert: " + msg, Retryable: true}
 	}
 	return resp.GetId(), nil
+}
+
+// Centroids pulls the relayed IVF centroid set (header + id-ordered batches).
+func (c *client) Centroids(ctx context.Context) (*CentroidSet, error) {
+	ctx, cancel := withTimeout(c.authCtx(ctx), DefaultTimeout)
+	defer cancel()
+
+	stream, err := c.stub.GetCentroids(ctx, &vaultpb.GetCentroidsRequest{Token: c.token})
+	if err != nil {
+		return nil, MapGRPCError(err)
+	}
+	cs := &CentroidSet{}
+	for {
+		chunk, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, MapGRPCError(err)
+		}
+		switch p := chunk.GetPayload().(type) {
+		case *vaultpb.CentroidChunk_Header:
+			cs.Version = p.Header.GetVersion()
+			cs.Dim = int(p.Header.GetDim())
+			cs.Preset = p.Header.GetPreset()
+			if n := p.Header.GetNlist(); n > 0 {
+				cs.Vectors = make([][]float32, 0, n)
+			}
+		case *vaultpb.CentroidChunk_Batch:
+			for _, ct := range p.Batch.GetCentroids() {
+				cs.Vectors = append(cs.Vectors, ct.GetVec())
+			}
+		}
+	}
+	return cs, nil
 }
 
 func (c *client) Search(ctx context.Context, vector []float32, topK int) ([]Hit, error) {

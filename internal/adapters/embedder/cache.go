@@ -47,11 +47,12 @@ func (ic *infoCache) Get(ctx context.Context) (InfoSnapshot, error) {
 		return InfoSnapshot{}, err
 	}
 	ic.snap = InfoSnapshot{
-		DaemonVersion: resp.GetDaemonVersion(),
-		ModelIdentity: resp.GetModelIdentity(),
-		VectorDim:     int(resp.GetVectorDim()),
-		MaxTextLength: int(resp.GetMaxTextLength()),
-		MaxBatchSize:  int(resp.GetMaxBatchSize()),
+		DaemonVersion:      resp.GetDaemonVersion(),
+		ModelIdentity:      resp.GetModelIdentity(),
+		VectorDim:          int(resp.GetVectorDim()),
+		MaxTextLength:      int(resp.GetMaxTextLength()),
+		MaxBatchSize:       int(resp.GetMaxBatchSize()),
+		CentroidSetVersion: resp.GetCentroidSetVersion(),
 	}
 	ic.loaded = true
 	ic.lastErr = nil

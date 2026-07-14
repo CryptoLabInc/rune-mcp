@@ -127,7 +127,6 @@ type DiagnosticsResult struct {
 	Keys          KeysInfo      `json:"keys"`
 	Pipelines     PipelinesInfo `json:"pipelines"`
 	Embedding     EmbeddingInfo `json:"embedding"`
-	Envector      EnvectorInfo  `json:"envector"`
 }
 
 // EnvInfo — OS, Go runtime version, cwd.
@@ -158,12 +157,12 @@ type VaultInfo struct {
 
 // KeysInfo — key custody status. In the runespace model the vault is the sole
 // key custodian (EncKey/EvalKey/SecKey never leave it); the mcp process holds
-// no key material. Provisioned reports that the vault has keys ready for this
-// index.
+// no key material. Key readiness is not reported here: it has no signal
+// independent of vault.healthy (the same HealthCheck probe), so callers should
+// read vault.healthy instead.
 type KeysInfo struct {
-	Custodian   string `json:"custodian"`   // "vault" — sole key holder
-	Provisioned bool   `json:"provisioned"` // vault has keys ready
-	KeyID       string `json:"key_id,omitempty"`
+	Custodian string `json:"custodian"` // "vault" — sole key holder
+	KeyID     string `json:"key_id,omitempty"`
 }
 
 // PipelinesInfo — scribe/retriever init state.
@@ -193,20 +192,10 @@ type EmbeddingInfo struct {
 	HealthError   string `json:"health_error,omitempty"`
 }
 
-// EnvectorInfo — reachability probe
-type EnvectorInfo struct {
-	Reachable bool    `json:"reachable"`
-	LatencyMs float64 `json:"latency_ms,omitempty"`
-	Error     string  `json:"error,omitempty"`
-	ErrorType string  `json:"error_type,omitempty"` // connection_refused|auth_failure|deadline_exceeded|timeout|unknown
-	ElapsedMs float64 `json:"elapsed_ms,omitempty"`
-	Hint      string  `json:"hint,omitempty"`
-}
-
-// DiagnosticsTimeout — Python ENVECTOR_DIAGNOSIS_TIMEOUT (server.py:L633). 5s.
+// DiagnosticsTimeout — per-probe deadline for diagnostics HealthCheck calls. 5s.
 const DiagnosticsTimeout = 5 * time.Second
 
-// Diagnostics collects all 7 sections + derives top-level OK.
+// Diagnostics collects all 6 sections + derives top-level OK.
 func (s *LifecycleService) Diagnostics(ctx context.Context) *DiagnosticsResult {
 	r := &DiagnosticsResult{OK: true}
 
@@ -237,9 +226,8 @@ func (s *LifecycleService) Diagnostics(ctx context.Context) *DiagnosticsResult {
 
 	// Keys
 	r.Keys = KeysInfo{
-		Custodian:   "vault",
-		Provisioned: r.Vault.Healthy,
-		KeyID:       s.KeyID,
+		Custodian: "vault",
+		KeyID:     s.KeyID,
 	}
 
 	// Pipelines
@@ -250,9 +238,6 @@ func (s *LifecycleService) Diagnostics(ctx context.Context) *DiagnosticsResult {
 
 	// Embedding
 	r.Embedding = s.collectEmbedding(ctx, DiagnosticsTimeout)
-
-	// Envector
-	r.Envector = s.collectEnvector(ctx, DiagnosticsTimeout)
 
 	if s.Vault != nil && !r.Vault.Healthy {
 		r.OK = false
@@ -327,57 +312,6 @@ func (s *LifecycleService) collectEmbedding(ctx context.Context, timeout time.Du
 	}
 
 	return info
-}
-
-func (s *LifecycleService) collectEnvector(ctx context.Context, timeout time.Duration) EnvectorInfo {
-	if s.Vault == nil {
-		return EnvectorInfo{}
-	}
-	info, _ := s.probeEnvector(ctx, timeout)
-	return info
-}
-
-// probeEnvector reports runespace reachability via the vault (mcp no longer
-// talks to the vector engine directly — the vault is the sole client).
-func (s *LifecycleService) probeEnvector(ctx context.Context, timeout time.Duration) (EnvectorInfo, error) {
-	ctx2, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	ch := make(chan error, 1)
-	t0 := time.Now()
-
-	go func() {
-		_, err := s.Vault.HealthCheck(ctx2)
-		ch <- err
-	}()
-
-	select {
-	case probeErr := <-ch:
-		elapsed := time.Since(t0)
-		if probeErr == nil {
-			return EnvectorInfo{
-				Reachable: true,
-				LatencyMs: float64(elapsed.Milliseconds()),
-			}, nil
-		}
-		errType, hint := ClassifyEnvectorError(probeErr, elapsed)
-		return EnvectorInfo{
-			Error:     probeErr.Error(),
-			ErrorType: string(errType),
-			Hint:      hint,
-			ElapsedMs: float64(elapsed.Milliseconds()),
-		}, probeErr
-	case <-ctx2.Done():
-		elapsed := time.Since(t0)
-		return EnvectorInfo{
-			Error: fmt.Sprintf(
-				"Health check timed out after %.0fs (elapsed: %.1fms).",
-				timeout.Seconds(), float64(elapsed.Milliseconds()),
-			),
-			ErrorType: string(EnvErrTimeout),
-			ElapsedMs: float64(elapsed.Milliseconds()),
-		}, ctx2.Err()
-	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -481,18 +415,18 @@ func (s *LifecycleService) DeleteCapture(ctx context.Context, args DeleteCapture
 		embedText = hit.PayloadText
 	}
 
-	vec, err := s.Embedder().EmbedSingle(ctx, embedText)
-	if err != nil {
-		return nil, fmt.Errorf("delete: re-embed: %w", err)
-	}
-
 	body, err := json.Marshal(metadata)
 	if err != nil {
 		return nil, fmt.Errorf("delete: marshal: %w", err)
 	}
 
-	// Re-insert via the vault (vault encrypts + seals + stores).
-	if _, err := s.Vault.Insert(ctx, vec, string(body)); err != nil {
+	// Re-insert the tombstone via the capture service's client-side crypto
+	// path (encrypt + seal + forward). Requires the capture service (which
+	// owns the encryptor/agent_dek) — delete_capture is only wired when it is.
+	if capSvc == nil {
+		return nil, fmt.Errorf("delete: capture service required for re-insert")
+	}
+	if _, err := capSvc.EncryptSealInsert(ctx, embedText, string(body)); err != nil {
 		return nil, fmt.Errorf("delete: re-insert: %w", err)
 	}
 
@@ -883,12 +817,12 @@ type ReloadPipelinesResult struct {
 	// needed for the common case of "reload finished, boot failed, here's
 	// why". Populated only when state != "active" AND a classified error
 	// is available; nil otherwise.
-	LastBootError  *domain.BootError `json:"last_boot_error,omitempty"`
-	Errors         []string          `json:"errors,omitempty"`
-	EnvectorWarmup *WarmupInfo       `json:"envector_warmup,omitempty"`
+	LastBootError *domain.BootError `json:"last_boot_error,omitempty"`
+	Errors        []string          `json:"errors,omitempty"`
+	VaultWarmup   *WarmupInfo       `json:"vault_warmup,omitempty"`
 }
 
-// WarmupInfo — GetIndexList probe (60s timeout).
+// WarmupInfo — Vault HealthCheck probe (60s timeout).
 type WarmupInfo struct {
 	OK        bool     `json:"ok"`
 	LatencyMs *float64 `json:"latency_ms,omitempty"`
@@ -898,7 +832,7 @@ type WarmupInfo struct {
 // WarmupTimeout — Python WARMUP_TIMEOUT (server.py:L1059). 60s.
 const WarmupTimeout = 60 * time.Second
 
-// ReloadPipelines — re-trigger the boot loop from Dormant + warmup envector.
+// ReloadPipelines — re-trigger the boot loop from Dormant + warmup the vault.
 //
 // On a terminal Dormant state (boot loop's goroutine has exited), call
 // Manager.Retrigger to spawn a fresh RunBootLoop bound to the same ctx +
@@ -936,8 +870,8 @@ func (s *LifecycleService) ReloadPipelines(ctx context.Context) (*ReloadPipeline
 	}
 
 	if s.Vault != nil {
-		warmup := s.warmupEnvector(ctx, WarmupTimeout)
-		result.EnvectorWarmup = warmup
+		warmup := s.warmupVault(ctx, WarmupTimeout)
+		result.VaultWarmup = warmup
 	}
 
 	return result, nil
@@ -977,8 +911,8 @@ func (s *LifecycleService) waitForBootProgress(ctx context.Context, timeout time
 	}
 }
 
-// warmupEnvector — GetIndexList under 60s timeout.
-func (s *LifecycleService) warmupEnvector(ctx context.Context, timeout time.Duration) *WarmupInfo {
+// warmupVault — Vault HealthCheck under a 60s timeout.
+func (s *LifecycleService) warmupVault(ctx context.Context, timeout time.Duration) *WarmupInfo {
 	ctx2, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 

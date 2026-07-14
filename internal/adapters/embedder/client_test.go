@@ -28,6 +28,7 @@ type fakeRuned struct {
 	embedBatchFn func(*runedv1.EmbedBatchRequest) (*runedv1.EmbedBatchResponse, error)
 	infoFn       func(*runedv1.InfoRequest) (*runedv1.InfoResponse, error)
 	healthFn     func(*runedv1.HealthRequest) (*runedv1.HealthResponse, error)
+	setCentroidsFn func(runedv1.RunedService_SetCentroidsServer) error
 
 	infoCalls       int32 // atomic — counts Info RPC attempts (success cached, error retried after cooldown)
 	embedCalls      int32 // atomic — used by retry test to count attempts

@@ -319,12 +319,12 @@ func applyPhaseFallback(be *domain.BootError, c BootErrCtx) {
 	case domain.BootPhaseEmbedderDial:
 		be.Kind = domain.BootErrEmbedderUnreachable
 		be.Hint = "Embedder daemon (runed) is not reachable on its UDS socket. Start it with `runed start`."
-	case domain.BootPhaseEnvectorInit:
-		be.Kind = domain.BootErrEnvectorInit
-		be.Hint = "Envector client could not be initialized — check the manifest's envector_endpoint and api_key."
-	case domain.BootPhaseEnvectorIndex:
-		be.Kind = domain.BootErrEnvectorIndex
-		be.Hint = "Envector index could not be opened. The index may be missing on the server, or auth failed."
+	case domain.BootPhaseRunespaceInit:
+		be.Kind = domain.BootErrRunespaceInit
+		be.Hint = "The client-side runespace encryptor could not be initialized — the EncKey from the vault manifest may be invalid. Re-run /rune:configure."
+	case domain.BootPhaseRunespaceIndex:
+		be.Kind = domain.BootErrRunespaceIndex
+		be.Hint = "The runespace index is unavailable. mcp reaches it via the vault — check vault→runespace connectivity with your Vault admin."
 	default:
 		be.Kind = domain.BootErrUnknown
 		be.Hint = "Unrecognized boot failure. Detail field has the raw error — share with your Vault admin."

@@ -13,7 +13,7 @@ import (
 //
 // Sequence:
 //  1. drain inflight tool calls (timeout ShutdownTimeout = 30s)
-//  2. close adapters: envector (Keys + Index + Client) → Vault conn → embedder
+//  2. close adapters: encryptor (client-side FHE key context) → Vault conn → embedder
 //  3. zeroize DEK(s) (best-effort — not hard guarantee, GC may already copy)
 //  4. return — caller os.Exit
 
@@ -39,7 +39,7 @@ func (t *InflightTracker) End() { t.active.Add(-1) }
 // Active returns current inflight count.
 func (t *InflightTracker) Active() int32 { return t.active.Load() }
 
-// Closer — all adapters (vault.Client, envector.Client, embedder.Client) satisfy this.
+// Closer — all adapters (vault.Client, embedder.Client, the encryptor) satisfy this.
 type Closer interface {
 	Close() error
 }
@@ -47,7 +47,7 @@ type Closer interface {
 // GracefulShutdown orchestrates the 3-step Exit sequence.
 //
 //	tracker   — pass the process-wide inflight tracker (may be nil to skip drain)
-//	closers   — ordered adapter close list (envector before vault recommended)
+//	closers   — ordered adapter close list (encryptor before vault recommended)
 //	deks      — byte slices to zeroize (agent_dek, any local AES key caches)
 func GracefulShutdown(ctx context.Context, tracker *InflightTracker, closers []Closer, deks ...[]byte) error {
 	// Step 1 — drain inflight

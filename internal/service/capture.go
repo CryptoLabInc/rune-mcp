@@ -18,8 +18,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/logio"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/seal"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
@@ -31,18 +34,103 @@ import (
 type CaptureService struct {
 	Vault      vault.Client
 	Embedder   embedder.Client
+	Encryptor  Encryptor
 	CaptureLog *logio.CaptureLog
 	State      *lifecycle.Manager
 
 	// Injected from Vault bundle at boot.
 	IndexName string
+	AgentID   string // for the seal envelope's "a" field
+	AgentDEK  []byte // metadata seal key (agent_dek from manifest)
 
 	Now func() time.Time // injectable clock (default: time.Now)
+}
+
+// Encryptor is the client-side FHE encrypt surface (runespacecrypto). Kept as
+// an interface so capture tests need no cgo. EncryptFlat/EncryptClustered take
+// an l2-normalized vector and return the tier ciphertexts.
+type Encryptor interface {
+	EncryptFlat(vec []float32) ([]byte, error)
+	EncryptClustered(vec []float32) ([]byte, error)
 }
 
 // NewCaptureService constructs with default clock.
 func NewCaptureService() *CaptureService {
 	return &CaptureService{Now: time.Now}
+}
+
+// EncryptSealInsert embeds+routes text, encrypts the vector (EncKey), seals
+// metadataJSON (agent_dek), and forwards the ciphertext item to the vault
+// under a fresh idempotent id. Shared by the capture flow and DeleteCapture's
+// tombstone re-insert so there is one client-side crypto path.
+//
+// Centroid desync self-heals here (§9.2): buildInsertItem covers C4 (runed has
+// no set), and a WRONG_CENTROID_VERSION rejection covers C3 — resync, rebuild
+// the item under the new set (fresh cluster_id + version, same id), and retry
+// exactly once.
+func (s *CaptureService) EncryptSealInsert(ctx context.Context, text, metadataJSON string) (string, error) {
+	if s.Encryptor == nil {
+		return "", fmt.Errorf("capture: encryptor not initialized")
+	}
+	id := uuid.NewString()
+	item, err := s.buildInsertItem(ctx, id, text, metadataJSON)
+	if err != nil {
+		return "", err
+	}
+	insertedID, err := insertWithRecovery(ctx, s.State, s.Vault, item)
+	if err == nil || !isWrongCentroidVersion(err) {
+		return insertedID, err
+	}
+	// C3: the engine replaced its centroid set after we routed. The vault has
+	// already dropped its stale cache, so a resync now yields the new set.
+	slog.Warn("capture: insert rejected for stale centroid version; resyncing and retrying once", "id", id)
+	if rerr := s.resyncCentroids(ctx); rerr != nil {
+		return "", fmt.Errorf("insert rejected (%w) and centroid resync failed: %w", err, rerr)
+	}
+	item, err = s.buildInsertItem(ctx, id, text, metadataJSON)
+	if err != nil {
+		return "", err
+	}
+	return insertWithRecovery(ctx, s.State, s.Vault, item)
+}
+
+// buildInsertItem runs the client-side crypto pipeline — embed+route (runed) →
+// encrypt (EncKey) → seal (agent_dek) — and assembles the vault item under the
+// given idempotent id. On runed FAILED_PRECONDITION (no centroid set — C4,
+// e.g. the best-effort boot relay failed or runed restarted with a cold cache)
+// it pushes the set once and retries the route.
+func (s *CaptureService) buildInsertItem(ctx context.Context, id, text, metadataJSON string) (vault.InsertItem, error) {
+	routed, err := s.Embedder.EmbedRoute(ctx, text)
+	if isNoCentroids(err) {
+		slog.Warn("capture: runed has no centroid set; resyncing and retrying once")
+		if rerr := s.resyncCentroids(ctx); rerr != nil {
+			return vault.InsertItem{}, fmt.Errorf("embed route: %w (centroid resync failed: %w)", err, rerr)
+		}
+		routed, err = s.Embedder.EmbedRoute(ctx, text)
+	}
+	if err != nil {
+		return vault.InsertItem{}, fmt.Errorf("embed route: %w", err)
+	}
+	rmp, err := s.Encryptor.EncryptFlat(routed.Vector)
+	if err != nil {
+		return vault.InsertItem{}, fmt.Errorf("encrypt flat: %w", err)
+	}
+	mm, err := s.Encryptor.EncryptClustered(routed.Vector)
+	if err != nil {
+		return vault.InsertItem{}, fmt.Errorf("encrypt clustered: %w", err)
+	}
+	sealed, err := seal.Seal(s.AgentDEK, s.AgentID, []byte(metadataJSON))
+	if err != nil {
+		return vault.InsertItem{}, fmt.Errorf("seal metadata: %w", err)
+	}
+	return vault.InsertItem{
+		ID:                 id,
+		RMPItem:            rmp,
+		MMItem:             mm,
+		ClusterID:          routed.ClusterID,
+		CentroidSetVersion: routed.CentroidSetVersion,
+		SealedMetadata:     sealed,
+	}, nil
 }
 
 // Handle — single capture. Called by internal/mcp/tools.go ToolCapture.
@@ -53,11 +141,11 @@ func NewCaptureService() *CaptureService {
 //	Phase 1 (in handler): state gate → PIPELINE_NOT_READY if not active
 //	Phase 2: validate text + parse extracted (Detection + ExtractionResult split)
 //	Phase 3: embedder.EmbedSingle(text_to_embed) — reusable_insight > payload.text
-//	Phase 4: envector.Score → Vault.DecryptScores(top_k=3) → novelty classify
+//	Phase 4: Vault.Score → Vault.DecryptScores(top_k=3) → novelty classify
 //	         near_duplicate (≥0.95) → return {captured:false, novelty{class, score, related}}
 //	         failures non-fatal (server.py:L1370-1372 logger.warning)
-//	Phase 5: policy.BuildPhases → embedder.EmbedBatch(texts) → envector.Seal × N
-//	Phase 6: envector.Insert (atomic batch, D17)
+//	Phase 5: policy.BuildPhases → embedder.EmbedBatch(texts) → seal.Seal × N
+//	Phase 6: Vault.Insert (atomic batch, D17)
 //	Phase 7: capture_log append (degrade per D19) → respond
 func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest) (*domain.CaptureResponse, error) {
 	// Phase 2
@@ -122,24 +210,22 @@ func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest)
 	}
 
 	// Phase 5: embed. Metadata is the plaintext record JSON; the vault seals it.
-	texts := make([]string, len(records))
-	for i := range records {
-		texts[i] = pickEmbedText(&records[i])
+	// Phase 5-6: embed (with IVF routing), encrypt each record locally
+	// (EncKey), seal its metadata (agent_dek), and forward the ciphertext to
+	// the vault. Plaintext vectors and metadata never leave this process.
+	if s.Encryptor == nil {
+		return nil, fmt.Errorf("capture: encryptor not initialized")
 	}
-
-	vectors, err := s.Embedder.EmbedBatch(ctx, texts)
-	if err != nil {
-		return nil, fmt.Errorf("embed batch: %w", err)
+	if s.Encryptor == nil {
+		return nil, fmt.Errorf("capture: encryptor not initialized")
 	}
-
-	// Phase 6: insert each record via the vault (vault encrypts + seals + stores).
 	for i := range records {
 		body, err := json.Marshal(records[i])
 		if err != nil {
 			return nil, fmt.Errorf("marshal record %d: %w", i, err)
 		}
-		if _, err := insertWithRecovery(ctx, s.State, s.Vault, vectors[i], string(body)); err != nil {
-			return nil, fmt.Errorf("vault insert: %w", err)
+		if _, err := s.EncryptSealInsert(ctx, pickEmbedText(&records[i]), string(body)); err != nil {
+			return nil, fmt.Errorf("vault insert %d: %w", i, err)
 		}
 	}
 
@@ -183,8 +269,8 @@ func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest)
 //
 // Future optimizations:
 //   - Phase 3/5 embed: runed.EmbedBatch (N to 1 call)
-//   - Phase 4 score: envector native multi-vector query
-//   - Phase 6 insert: envector.Insert is already batch-native (N to 1 call)
+//   - Phase 4 score: Vault native multi-vector query
+//   - Phase 6 insert: Vault.Insert is already batch-native (N to 1 call)
 func (s *CaptureService) Batch(ctx context.Context, args BatchCaptureArgs) (*BatchCaptureResult, error) {
 	var rawItems []map[string]any
 	if err := json.Unmarshal([]byte(args.Items), &rawItems); err != nil {

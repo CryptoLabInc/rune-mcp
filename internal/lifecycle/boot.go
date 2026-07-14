@@ -27,6 +27,8 @@ import (
 
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/keymanager"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/runespacecrypto"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/recovery"
@@ -39,7 +41,20 @@ import (
 type BootAdapterInjector interface {
 	InjectVault(client vault.Client)
 	InjectEmbedder(client embedder.Client)
+	InjectEncryptor(enc Encryptor)
 	ApplyVaultBundle(bundle *vault.Bundle)
+}
+
+// Encryptor is the client-side FHE encrypt surface the boot loop opens from
+// the manifest's EncKey and injects. A superset of service.Encryptor (the
+// encrypt methods) plus Close, because the boot loop owns the handle's
+// lifecycle: the cgo key context behind it is invisible to the GC and is
+// released only by Close — on replacement (re-boot) and at process exit.
+// Declared here to avoid a lifecycle->service import cycle.
+type Encryptor interface {
+	EncryptFlat(vec []float32) ([]byte, error)
+	EncryptClustered(vec []float32) ([]byte, error)
+	Close() error
 }
 
 // State — atomic-safe enum.
@@ -266,13 +281,13 @@ const (
 //   - config.State="dormant"          → terminal Dormant (user explicit)
 //   - vault endpoint/token empty      → terminal Dormant (await /rune:configure)
 //   - vault dial / GetAgentManifest   → state=WaitingForVault, exp backoff retry
-//   - keymanager / embedder / envector init → exp backoff retry (might be
+//   - keymanager / embedder / encryptor init → exp backoff retry (might be
 //     transient — daemon down, etc.)
 //   - other config error (parse fail) → exp backoff retry (user might be editing)
 //   - ctx cancellation                → return immediately
 //
 // Every attempt that fails after a successful Vault dial closes the partial
-// adapter conns it created (vault, embedder, envector) before retrying so
+// adapter conns it created (vault, embedder) before retrying so
 // gRPC connections do not leak across retries.
 func RunBootLoop(ctx context.Context, m *Manager, deps BootAdapterInjector) {
 	m.SetState(StateStarting)
@@ -442,8 +457,75 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		return bootRetry
 	}
 
+	// Persist the PUBLIC EncKey pair from the manifest and open the local
+	// encryptor (cgo). Capture encrypts here so plaintext vectors never reach
+	// the vault; SecKey stays in the vault, so this opens Enc-only.
+	if bundle.InsertCapability != "pre_encrypted" {
+		m.SetState(StateWaitingForVault)
+		msg := fmt.Sprintf("vault manifest lacks pre_encrypted insert capability (got %q) — vault too old for client-side crypto", bundle.InsertCapability)
+		m.lastError.Store(msg)
+		m.SetBootError(&domain.BootError{Kind: domain.BootErrVaultManifest, Detail: msg, Hint: "Update Rune-Vault to a build that distributes EncKey/agent_dek."})
+		slog.Error("boot: " + msg)
+		_ = vaultClient.Close()
+		return bootRetry
+	}
+
+	// §9.1 B1: reject a malformed bundle at the point of receipt, before the
+	// bad material overwrites the on-disk key copies or — worse — boots into
+	// active and fails far away (a missing agent_dek only surfaces at the
+	// first capture's seal step otherwise). Format-level checks only; real
+	// cryptographic validity is judged where the material is used
+	// (runespacecrypto.Open for keys, the vault's openMeta for the dek).
+	if msg := validateBundle(bundle); msg != "" {
+		m.SetState(StateWaitingForVault)
+		m.lastError.Store(msg)
+		m.SetBootError(&domain.BootError{Kind: domain.BootErrVaultManifest, Detail: msg, Hint: "The vault answered with an incomplete manifest — check the vault's version and key state."})
+		slog.Error("boot: " + msg)
+		_ = vaultClient.Close()
+		return bootRetry
+	}
+
+	// §9.2 C1 (2026-07-12 개정): every insert carries the RMP+MM dual
+	// representation — the engine, the vault proto, and the SDK all reject an
+	// MM-less item — so a cluster-less (flat-only) runespace is an unsupported
+	// deployment, not a mode. An empty centroid_set_version means either that,
+	// or the vault could not reach the engine while building the manifest;
+	// both block capture, so fail the boot loudly here instead of activating
+	// into a state where every capture would fail. The boot loop retries, so a
+	// transient engine outage recovers by itself.
+	if bundle.CentroidSetVersion == "" {
+		m.SetState(StateWaitingForVault)
+		msg := "vault manifest carries no centroid_set_version — runespace has no cluster tier (flat-only, unsupported) or the vault cannot reach the engine"
+		m.lastError.Store(msg)
+		m.SetBootError(&domain.BootError{Kind: domain.BootErrVaultManifest, Detail: msg, Hint: "Configure the runespace cluster tier (centroid set) and check vault→runespace connectivity."})
+		slog.Error("boot: " + msg)
+		_ = vaultClient.Close()
+		return bootRetry
+	}
+	keyDir, err := keymanager.SaveEncKeys(bundle.KeyID, bundle.EncKeyJSON, bundle.MMEncKey)
+	if err != nil {
+		m.lastError.Store(fmt.Sprintf("save enc keys: %v", err))
+		m.SetBootError(&domain.BootError{Kind: domain.BootErrKeySave, Detail: err.Error(), Hint: "Check ~/.rune/keys is writable."})
+		slog.Error("boot: failed to save EncKey", "err", err)
+		_ = vaultClient.Close()
+		return bootRetry
+	}
+	enc, err := runespacecrypto.Open(keyDir, bundle.KeyID, bundle.Dim)
+	if err != nil {
+		m.lastError.Store(fmt.Sprintf("open encryptor: %v", err))
+		m.SetBootError(&domain.BootError{Kind: domain.BootErrRunespaceInit, Detail: err.Error(), Hint: "The EncKey may be corrupt; re-run /rune:configure."})
+		slog.Error("boot: failed to open encryptor", "err", err)
+		_ = vaultClient.Close()
+		return bootRetry
+	}
+	// Share the clients only now — after every gate (capability, bundle
+	// validation, centroid guard, key save, encryptor open) has passed. The
+	// failure exits above close a client nothing else references yet, so the
+	// services keep the previous boot's still-live vault client during retry
+	// windows and diagnostics stay truthful (§ finding: closed-client refs).
 	deps.InjectVault(vaultClient)
 	deps.ApplyVaultBundle(bundle)
+	deps.InjectEncryptor(enc)
 
 	embedderClient, err := embedder.New(embedder.ResolveSocketPath(""), embedder.Opts{
 		UnaryInterceptors: []grpc.UnaryClientInterceptor{
@@ -457,6 +539,47 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		return bootRetry
 	}
 	deps.InjectEmbedder(embedderClient)
+
+	// §9.1 B4: the manifest's dim (which also sized the encryptor keys — Open
+	// above enforces key/dim agreement) must match the vectors runed actually
+	// produces, or captures would encrypt wrong-sized vectors. Best-effort:
+	// while runed is still bootstrapping, Info may fail or report 0 — skip
+	// rather than block the boot (the bootstrap wait covers that window).
+	var runedCentroidVer string
+	if info, ierr := embedderClient.Info(ctx); ierr == nil {
+		runedCentroidVer = info.CentroidSetVersion
+		if info.VectorDim > 0 && info.VectorDim != bundle.Dim {
+			msg := fmt.Sprintf("dim mismatch: manifest/keys=%d, runed=%d — vault and embedder disagree on the embedding dimension", bundle.Dim, info.VectorDim)
+			m.SetState(StateWaitingForVault)
+			m.lastError.Store(msg)
+			m.SetBootError(&domain.BootError{Kind: domain.BootErrConfigInvalid, Detail: msg, Hint: "Check that the vault's embedding_dim matches the runed model."})
+			slog.Error("boot: " + msg)
+			return bootRetry
+		}
+	}
+
+	// Relay the IVF centroid set from the vault down to runed so Embed can
+	// route inserts. Best-effort at boot: a failure here does not block
+	// activation — capture self-heals at the point of use (§9.2 C4: EmbedRoute
+	// FAILED_PRECONDITION → the service resyncs the set and retries once) —
+	// but a healthy path pushes it now so the first capture pays no resync.
+	//
+	// Skip when runed already holds the manifest's exact set: Info just told
+	// us its version, and re-relaying it costs a ~16MB vault fetch + a ~16MB
+	// runed push per session boot for nothing. A cold runed (empty version)
+	// or any mismatch still takes the full relay, and the C3/C4 self-heal
+	// keeps covering post-boot centroid replacement.
+	if runedCentroidVer != "" && runedCentroidVer == bundle.CentroidSetVersion {
+		slog.Info("boot: centroid relay skipped — runed already holds the current set", "version", runedCentroidVer)
+	} else if cs, err := vaultClient.Centroids(ctx); err != nil {
+		slog.Warn("boot: centroid relay fetch failed (routing unavailable until retry)", "err", err)
+	} else if cs != nil && cs.Version != "" && len(cs.Vectors) > 0 {
+		if err := embedderClient.SetCentroids(ctx, cs.Version, cs.Dim, cs.Preset, cs.Vectors); err != nil {
+			slog.Warn("boot: centroid push to runed failed", "err", err)
+		} else {
+			slog.Info("boot: centroid set synced to runed", "version", cs.Version, "nlist", len(cs.Vectors))
+		}
+	}
 
 	return bootActive
 }

@@ -25,7 +25,6 @@ const maxRecallTopK = 50
 //   - waiting_for_vault   → "Last vault error: {err}. Run /rune:vault_status"
 //   - dormant(user)       → "Run /rune:activate"
 //   - dormant(vault)      → "Check config.vault.endpoint"
-//   - dormant(envector)   → "Check network · API key"
 func CheckState(m *lifecycle.Manager) error {
 	if m == nil {
 		return withHint(domain.ErrPipelineNotReady, "rune-mcp boot has not been wired (Deps.State == nil).")

@@ -1,8 +1,12 @@
 package domain
 
-// RuneError — 8-code taxonomy (Python 7 bit-identical + Go-specific EMBEDDER_UNREACHABLE).
+// RuneError — 8-code taxonomy (Python 7 + Go-specific EMBEDDER_UNREACHABLE).
 // Spec: docs/v04/spec/components/rune-mcp.md §에러 처리.
 // Python: mcp/server/errors.py (118 LoC).
+//
+// The two vector-backend codes are RUNESPACE_* per the design contract (§9);
+// they were ENVECTOR_* in the enVector-era Python server before mcp's direct
+// link to the vector engine was removed (mcp now reaches it only via the vault).
 
 import "errors"
 
@@ -11,8 +15,8 @@ const (
 	CodeInternal            = "INTERNAL_ERROR"
 	CodeVaultConnection     = "VAULT_CONNECTION_ERROR"
 	CodeVaultDecryption     = "VAULT_DECRYPTION_ERROR"
-	CodeEnvectorConnection  = "ENVECTOR_CONNECTION_ERROR"
-	CodeEnvectorInsert      = "ENVECTOR_INSERT_ERROR"
+	CodeRunespaceConnection = "RUNESPACE_CONNECTION_ERROR"
+	CodeRunespaceInsert     = "RUNESPACE_INSERT_ERROR"
 	CodePipelineNotReady    = "PIPELINE_NOT_READY"
 	CodeInvalidInput        = "INVALID_INPUT"
 	CodeTopKLimit           = "TOPK_LIMIT"           // top_k exceeds the vault token's role limit (distinct from generic INVALID_INPUT)
@@ -36,8 +40,8 @@ var (
 	ErrInternal            = &RuneError{Code: CodeInternal, Retryable: false}
 	ErrVaultConnection     = &RuneError{Code: CodeVaultConnection, Retryable: true}
 	ErrVaultDecryption     = &RuneError{Code: CodeVaultDecryption, Retryable: false}
-	ErrEnvectorConnection  = &RuneError{Code: CodeEnvectorConnection, Retryable: true}
-	ErrEnvectorInsert      = &RuneError{Code: CodeEnvectorInsert, Retryable: true}
+	ErrRunespaceConnection = &RuneError{Code: CodeRunespaceConnection, Retryable: true}
+	ErrRunespaceInsert     = &RuneError{Code: CodeRunespaceInsert, Retryable: true}
 	ErrPipelineNotReady    = &RuneError{Code: CodePipelineNotReady, Retryable: false}
 	ErrInvalidInput        = &RuneError{Code: CodeInvalidInput, Retryable: false}
 	ErrTopKLimit           = &RuneError{Code: CodeTopKLimit, Retryable: false}

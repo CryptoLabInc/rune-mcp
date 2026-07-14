@@ -37,6 +37,10 @@ type InfoSnapshot struct {
 	VectorDim     int
 	MaxTextLength int
 	MaxBatchSize  int
+	// CentroidSetVersion is runed's CURRENT routing set at snapshot time.
+	// Unlike the fields above it is mutable (SetCentroids replaces it), so
+	// a successful push invalidates the cache below.
+	CentroidSetVersion string
 }
 
 // Status: OK / LOADING / DEGRADED / SHUTTING_DOWN
@@ -53,10 +57,24 @@ type HealthSnapshot struct {
 	Message       string
 }
 
+// Routed is an embedding plus its IVF cluster assignment (with_route).
+type Routed struct {
+	Vector             []float32
+	ClusterID          uint32
+	CentroidSetVersion string
+}
+
 // Client interface — thin wrapper over generated gRPC stub.
 type Client interface {
 	EmbedSingle(ctx context.Context, text string) ([]float32, error)
 	EmbedBatch(ctx context.Context, texts []string) ([][]float32, error)
+	// EmbedRoute embeds and returns the cluster assignment. Fails with
+	// FAILED_PRECONDITION if runed has no centroid set (push via SetCentroids).
+	EmbedRoute(ctx context.Context, text string) (Routed, error)
+	// SetCentroids pushes an IVF centroid set to runed for routing. preset is
+	// the version-hash ingredient runed needs to verify the content hash
+	// (empty = legacy chain, runed skips verification).
+	SetCentroids(ctx context.Context, version string, dim int, preset string, vectors [][]float32) error
 	Info(ctx context.Context) (InfoSnapshot, error)
 	Health(ctx context.Context) (HealthSnapshot, error)
 	SocketPath() string
@@ -113,14 +131,91 @@ func newWithConn(sockPath string, conn *grpc.ClientConn) *client {
 	}
 }
 
+// Hang guards. A wedged-but-listening runed (SIGSTOP, blocked disk I/O)
+// answers nothing — the one failure class that produces no error, so every
+// error path stays silent and the caller blocks forever (worst case: the boot
+// relay, freezing the boot loop with no retry and no boot_error). An upper
+// bound converts that silence into DeadlineExceeded, which the existing
+// retry/surface machinery already handles. Applied only when the caller
+// brought no deadline of its own; per attempt, so retries and the bootstrap
+// wait each get a fresh budget. Vars so tests can shrink them.
+var (
+	EmbedCallTimeout    = 120 * time.Second // forward pass + idle-suspend wake + max batch
+	CentroidPushTimeout = 60 * time.Second  // 16MB local stream + gob persist (measured <1s)
+	ControlCallTimeout  = 10 * time.Second  // Info / Health probes
+)
+
+// withDefaultTimeout bounds ctx by d unless the caller already set a deadline.
+func withDefaultTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, d)
+}
+
 func (c *client) EmbedSingle(ctx context.Context, text string) ([]float32, error) {
 	resp, err := retry(ctx, func(ctx context.Context) (*runedv1.EmbedResponse, error) {
+		ctx, cancel := withDefaultTimeout(ctx, EmbedCallTimeout)
+		defer cancel()
 		return c.pb.Embed(ctx, &runedv1.EmbedRequest{Text: text})
 	})
 	if err != nil {
 		return nil, err
 	}
 	return resp.GetVector(), nil
+}
+
+func (c *client) EmbedRoute(ctx context.Context, text string) (Routed, error) {
+	resp, err := retry(ctx, func(ctx context.Context) (*runedv1.EmbedResponse, error) {
+		ctx, cancel := withDefaultTimeout(ctx, EmbedCallTimeout)
+		defer cancel()
+		return c.pb.Embed(ctx, &runedv1.EmbedRequest{Text: text, WithRoute: true})
+	})
+	if err != nil {
+		return Routed{}, err
+	}
+	return Routed{
+		Vector:             resp.GetVector(),
+		ClusterID:          resp.GetClusterId(),
+		CentroidSetVersion: resp.GetCentroidSetVersion(),
+	}, nil
+}
+
+// centroidPushBatch bounds one SetCentroids frame (64 x dim 1024 x 4B ~ 256KB).
+const centroidPushBatch = 64
+
+func (c *client) SetCentroids(ctx context.Context, version string, dim int, preset string, vectors [][]float32) error {
+	ctx, cancel := withDefaultTimeout(ctx, CentroidPushTimeout)
+	defer cancel()
+	stream, err := c.pb.SetCentroids(ctx)
+	if err != nil {
+		return fmt.Errorf("embedder: set centroids open: %w", err)
+	}
+	if err := stream.Send(&runedv1.SetCentroidsRequest{Payload: &runedv1.SetCentroidsRequest_Header{
+		Header: &runedv1.CentroidSetHeader{Version: version, Dim: uint32(dim), Nlist: uint32(len(vectors)), Preset: preset},
+	}}); err != nil {
+		return fmt.Errorf("embedder: set centroids header: %w", err)
+	}
+	for lo := 0; lo < len(vectors); lo += centroidPushBatch {
+		hi := lo + centroidPushBatch
+		if hi > len(vectors) {
+			hi = len(vectors)
+		}
+		batch := make([]*runedv1.Centroid, 0, hi-lo)
+		for i := lo; i < hi; i++ {
+			batch = append(batch, &runedv1.Centroid{Id: uint32(i), Vec: vectors[i]})
+		}
+		if err := stream.Send(&runedv1.SetCentroidsRequest{Payload: &runedv1.SetCentroidsRequest_Batch{
+			Batch: &runedv1.CentroidBatch{Centroids: batch},
+		}}); err != nil {
+			return fmt.Errorf("embedder: set centroids batch: %w", err)
+		}
+	}
+	if _, err := stream.CloseAndRecv(); err != nil {
+		return fmt.Errorf("embedder: set centroids close: %w", err)
+	}
+	c.info.invalidate() // the push changed runed's CentroidSetVersion
+	return nil
 }
 
 // EmbedBatch splits len(texts) > Info.MaxBatchSize into chunks and submits
@@ -155,6 +250,8 @@ func (c *client) EmbedBatch(ctx context.Context, texts []string) ([][]float32, e
 
 func (c *client) embedBatchOnce(ctx context.Context, texts []string) ([][]float32, error) {
 	resp, err := retry(ctx, func(ctx context.Context) (*runedv1.EmbedBatchResponse, error) {
+		ctx, cancel := withDefaultTimeout(ctx, EmbedCallTimeout)
+		defer cancel()
 		return c.pb.EmbedBatch(ctx, &runedv1.EmbedBatchRequest{Texts: texts})
 	})
 	if err != nil {
@@ -170,7 +267,11 @@ func (c *client) embedBatchOnce(ctx context.Context, texts []string) ([][]float3
 	return out, nil
 }
 
-func (c *client) Info(ctx context.Context) (InfoSnapshot, error) { return c.info.Get(ctx) }
+func (c *client) Info(ctx context.Context) (InfoSnapshot, error) {
+	ctx, cancel := withDefaultTimeout(ctx, ControlCallTimeout)
+	defer cancel()
+	return c.info.Get(ctx)
+}
 
 func (c *client) SocketPath() string { return c.sockPath }
 
@@ -182,6 +283,8 @@ func (c *client) SocketPath() string { return c.sockPath }
 // Health is NOT retried — D8 says first embed call drives connectivity; Health
 // is a diagnostic tool surface (vault_status, diagnostics).
 func (c *client) Health(ctx context.Context) (HealthSnapshot, error) {
+	ctx, cancel := withDefaultTimeout(ctx, ControlCallTimeout)
+	defer cancel()
 	resp, err := c.pb.Health(ctx, &runedv1.HealthRequest{})
 	if err != nil {
 		return HealthSnapshot{}, MapGRPCError(err)
