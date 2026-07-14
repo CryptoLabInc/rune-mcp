@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	runedv1 "github.com/CryptoLabInc/runed/gen/runed/v1"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
+	runedv1 "github.com/CryptoLabInc/runed/gen/runed/v1"
 )
 
 // SetCentroids delegates to the per-test fn (nil → Unimplemented default).

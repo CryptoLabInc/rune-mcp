@@ -1,16 +1,16 @@
 // Package seal produces the client-side AES-256-CTR metadata envelope used
-// on the capture path. rune-mcp holds the agent_dek (delivered in the Vault
+// on the capture path. rune-mcp holds the agent_dek (delivered in the Console
 // manifest) and seals metadata locally, so plaintext metadata never leaves
-// the developer machine; the Vault opens the envelope on recall (it owns
+// the developer machine; the Console opens the envelope on recall (it owns
 // team_secret and every agent's dek).
 //
 // Envelope: {"a": agent_id, "c": base64(IV(16B) || AES-256-CTR(dek, plaintext))}.
 //
 // AES-CTR is unauthenticated (no MAC/AAD). A wrong-key open yields garbage
-// rather than an error; the Vault guards that on recall (utf8 check) and the
+// rather than an error; the Console guards that on recall (utf8 check) and the
 // planned AES-GCM migration removes the malleability. Restored from the
 // pre-integration adapter (git fe751b4^ internal/adapters/envector/aes_ctr.go);
-// Open lives on the Vault, not here.
+// Open lives on the Console, not here.
 package seal
 
 import (
@@ -24,14 +24,14 @@ import (
 )
 
 // envelope is the on-wire/at-rest shape; field names are the stable contract
-// the Vault's openMeta unmarshals.
+// the Console's openMeta unmarshals.
 type envelope struct {
 	A string `json:"a"` // agent_id
 	C string `json:"c"` // base64(IV || ciphertext)
 }
 
 // Seal encrypts plaintext with AES-256-CTR under dek (32 bytes) and a fresh
-// random IV, returning the JSON envelope. agentID is stored so the Vault can
+// random IV, returning the JSON envelope. agentID is stored so the Console can
 // re-derive the same dek on open.
 func Seal(dek []byte, agentID string, plaintext []byte) (string, error) {
 	if len(dek) != 32 {

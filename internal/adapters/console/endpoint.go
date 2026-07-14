@@ -1,4 +1,4 @@
-package vault
+package console
 
 import (
 	"net"
@@ -6,10 +6,7 @@ import (
 	"strings"
 )
 
-// NormalizeEndpoint — Python: mcp/adapter/vault_client.py:L116-140 _derive_grpc_target.
-// Spec: docs/v04/spec/components/vault.md §Endpoint 파싱·정규화.
-//
-// Input formats (priority order — env RUNEVAULT_GRPC_TARGET > config):
+// Input formats (priority order — env RUNECONSOLE_GRPC_TARGET > config):
 //
 //	"tcp://host:port"         → "host:port"
 //	"http://host:port/path"   → "host:port"
@@ -32,7 +29,7 @@ const defaultGRPCPort = "50051"
 func NormalizeEndpoint(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "", &Error{Code: "VAULT_BAD_ENDPOINT", Message: "endpoint is empty"}
+		return "", &Error{Code: "CONSOLE_BAD_ENDPOINT", Message: "endpoint is empty"}
 	}
 
 	var host string
@@ -42,7 +39,7 @@ func NormalizeEndpoint(raw string) (string, error) {
 		strings.HasPrefix(raw, "https://"):
 		u, err := url.Parse(raw)
 		if err != nil {
-			return "", &Error{Code: "VAULT_BAD_ENDPOINT", Message: "parse endpoint: " + err.Error()}
+			return "", &Error{Code: "CONSOLE_BAD_ENDPOINT", Message: "parse endpoint: " + err.Error()}
 		}
 		host = u.Host
 	default:
@@ -50,7 +47,7 @@ func NormalizeEndpoint(raw string) (string, error) {
 	}
 
 	if host == "" {
-		return "", &Error{Code: "VAULT_BAD_ENDPOINT", Message: "endpoint missing host: " + raw}
+		return "", &Error{Code: "CONSOLE_BAD_ENDPOINT", Message: "endpoint missing host: " + raw}
 	}
 
 	// Append default port unless one is already present. Treat trailing

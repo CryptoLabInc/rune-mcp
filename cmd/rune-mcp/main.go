@@ -2,17 +2,17 @@
 // (agent-delegated path only — see docs/v04/overview/architecture.md §Scope).
 //
 // Spawn model: Claude Code launches one instance per session via stdio.
-// Lifecycle: starting → waiting_for_vault → active ↔ dormant.
+// Lifecycle: starting → waiting_for_console → active ↔ dormant.
 // Tools: 9 MCP tools (activate, batch_capture, capture, capture_history,
 //
 //	configure, diagnostics, recall,
-//	reload_pipelines, vault_status).
+//	reload_pipelines, console_status).
 //	(delete_capture is implemented but HIDDEN this release — registration
 //	 gated in internal/mcp/tools.go.)
 //
-// Wiring: Deps holds a State manager + 3 services. Adapter clients (vault /
+// Wiring: Deps holds a State manager + 3 services. Adapter clients (console /
 // embedder) are populated on the services by the boot loop after
-// Vault returns the bundle. Until boot completes, write tools fail with
+// Console returns the bundle. Until boot completes, write tools fail with
 // PIPELINE_NOT_READY through CheckState; read-only tools work degraded.
 //
 // Python reference: mcp/server/server.py (2002 LoC)
@@ -133,7 +133,7 @@ func main() {
 
 // gracefulExit wires lifecycle.GracefulShutdown with everything the process
 // holds: the inflight tracker, the adapter closers in dependency order
-// (encryptor before its vault/embedder feeds is not required — closes are
+// (encryptor before its console/embedder feeds is not required — closes are
 // independent), the boot log, and the DEK to zeroize.
 func gracefulExit(deps *mcp.Deps) {
 	ctx, cancel := context.WithTimeout(context.Background(), lifecycle.ShutdownTimeout+5*time.Second)
@@ -143,8 +143,8 @@ func gracefulExit(deps *mcp.Deps) {
 	if deps.Encryptor != nil {
 		closers = append(closers, deps.Encryptor)
 	}
-	if deps.Vault != nil {
-		closers = append(closers, deps.Vault)
+	if deps.Console != nil {
+		closers = append(closers, deps.Console)
 	}
 	if deps.Embedder != nil {
 		closers = append(closers, deps.Embedder)
@@ -183,8 +183,8 @@ func isNormalShutdown(err error) bool {
 }
 
 // buildDeps wires the state manager + 3 services so that handler dispatch can
-// proceed immediately. Adapter clients (vault.Client, embedder.Client) and
-// DEK/key state are populated by RunBootLoop once Vault
+// proceed immediately. Adapter clients (console.Client, embedder.Client) and
+// DEK/key state are populated by RunBootLoop once Console
 // returns the bundle — until then, the services see nil adapters and write
 // tools are state-gated to PIPELINE_NOT_READY.
 //

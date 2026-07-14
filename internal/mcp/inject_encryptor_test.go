@@ -15,7 +15,7 @@ func (f *fakeEncryptor) Close() error                               { f.closed.S
 
 // A replaced encryptor's cgo handle must be released (after the drain
 // interval); the current one must stay open. Guards the re-boot leak:
-// vault restart / boot retry / reload_pipelines each re-open and inject.
+// console restart / boot retry / reload_pipelines each re-open and inject.
 func TestInjectEncryptor_ClosesReplacedHandle(t *testing.T) {
 	prevInterval := staleClientCloseTime
 	staleClientCloseTime = 10 * time.Millisecond
