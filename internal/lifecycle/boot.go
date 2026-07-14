@@ -1,6 +1,4 @@
 // Package lifecycle manages rune-mcp boot sequence + state machine.
-// Spec: docs/v04/spec/components/rune-mcp.md §부팅 시퀀스 + §상태 머신.
-// Python: mcp/server/server.py main() + _init_pipelines + RunMCPServer.
 //
 // State machine:
 //
@@ -233,7 +231,7 @@ func (m *Manager) Attempts() int {
 	return int(m.attempts.Load())
 }
 
-// BootBackoffs — Python server.py Console retry schedule.
+// BootBackoffs — Console retry schedule.
 // Total to cap: 1s → 2s → 5s → 15s → 30s → 60s (then loop at 60s).
 var BootBackoffs = []time.Duration{
 	1 * time.Second,
@@ -245,7 +243,7 @@ var BootBackoffs = []time.Duration{
 }
 
 // DefaultKeyDim is the FHE slot dimension matching the Qwen3-Embedding-0.6B
-// production deployment (spec/components/embedder.md §불변 계약). The Console
+// production deployment. The Console
 // manifest does not currently carry a dim field; once embedder.Info is
 // available end-to-end, the boot loop should source dim from there instead.
 const DefaultKeyDim = 1024
@@ -270,8 +268,8 @@ const (
 	bootDormant
 )
 
-// RunBootLoop drives the boot sequence per spec/components/rune-mcp.md §부팅
-// 시퀀스. It runs to completion (Active or Dormant terminal) then returns.
+// RunBootLoop drives the boot sequence. It runs to completion (Active or
+// Dormant terminal) then returns.
 // Re-init after dormant↔active transitions is the responsibility of
 // service.LifecycleService.ReloadPipelines (which spawns a fresh RunBootLoop
 // goroutine).
@@ -345,8 +343,7 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		if errors.Is(err, fs.ErrNotExist) {
 			// Fresh install — config.json not provisioned. Retrying won't help;
 			// user must run /rune:configure first. Persist the dormant state
-			// to config.json so the next boot picks up the same reason
-			// (Python parity: server.py _set_dormant_with_reason).
+			// to config.json so the next boot picks up the same reason.
 			m.SetState(StateDormant)
 			m.lastError.Store("config.json not found — run /rune:configure to set up")
 			m.SetBootError(ClassifyDormantReason("not_configured"))
@@ -374,8 +371,7 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	//   - ""               — fresh install or hand-edited config without state
 	//   - other / unknown  — corrupted config
 	//
-	// Python parity: server.py:L1544 — `if rune_config.state != "active":
-	// return result`. Strict check covers all non-active values uniformly.
+	// Strict check covers all non-active values uniformly.
 	// /rune:activate transitions config.State back to "active" and re-spawns
 	// RunBootLoop.
 	if cfg.State != "active" {
@@ -470,7 +466,7 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		return bootRetry
 	}
 
-	// §9.1 B1: reject a malformed bundle at the point of receipt, before the
+	// B1: reject a malformed bundle at the point of receipt, before the
 	// bad material overwrites the on-disk key copies or — worse — boots into
 	// active and fails far away (a missing agent_dek only surfaces at the
 	// first capture's seal step otherwise). Format-level checks only; real
@@ -485,7 +481,7 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		return bootRetry
 	}
 
-	// §9.2 C1 (2026-07-12 개정): every insert carries the RMP+MM dual
+	// C1 (2026-07-12): every insert carries the RMP+MM dual
 	// representation — the engine, the console proto, and the SDK all reject an
 	// MM-less item — so a cluster-less (flat-only) runespace is an unsupported
 	// deployment, not a mode. An empty centroid_set_version means either that,
@@ -522,7 +518,7 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	// validation, centroid guard, key save, encryptor open) has passed. The
 	// failure exits above close a client nothing else references yet, so the
 	// services keep the previous boot's still-live console client during retry
-	// windows and diagnostics stay truthful (§ finding: closed-client refs).
+	// windows and diagnostics stay truthful (finding: closed-client refs).
 	deps.InjectConsole(consoleClient)
 	deps.ApplyConsoleBundle(bundle)
 	deps.InjectEncryptor(enc)
@@ -540,7 +536,7 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	}
 	deps.InjectEmbedder(embedderClient)
 
-	// §9.1 B4: the manifest's dim (which also sized the encryptor keys — Open
+	// B4: the manifest's dim (which also sized the encryptor keys — Open
 	// above enforces key/dim agreement) must match the vectors runed actually
 	// produces, or captures would encrypt wrong-sized vectors. Best-effort:
 	// while runed is still bootstrapping, Info may fail or report 0 — skip
@@ -560,7 +556,7 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 
 	// Relay the IVF centroid set from the console down to runed so Embed can
 	// route inserts. Best-effort at boot: a failure here does not block
-	// activation — capture self-heals at the point of use (§9.2 C4: EmbedRoute
+	// activation — capture self-heals at the point of use (C4: EmbedRoute
 	// FAILED_PRECONDITION → the service resyncs the set and retries once) —
 	// but a healthy path pushes it now so the first capture pays no resync.
 	//

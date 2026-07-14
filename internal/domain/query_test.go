@@ -1,8 +1,7 @@
 package domain_test
 
-// Tests for query/recall domain helpers — port of Python's SearchResult
-// is_reliable / is_phase predicates plus the v0.4-simplified payload
-// extraction. Python: agents/retriever/searcher.py.
+// Tests for query/recall domain helpers — the IsReliable / IsPhase
+// predicates plus the v0.4-simplified payload extraction.
 
 import (
 	"testing"
@@ -10,11 +9,11 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 )
 
-// SearchHit.IsReliable — Python: searcher.py:SearchResult.is_reliable
-// (returns true iff certainty is "supported" or "partially_supported").
+// SearchHit.IsReliable — returns true iff certainty is "supported" or
+// "partially_supported".
 //
-// Canonical Certainty values per Python schema (agents/common/schemas.py
-// Certainty enum): supported, partially_supported, unsupported, unknown.
+// Canonical Certainty values: supported, partially_supported, unsupported,
+// unknown.
 // Test covers all 4 + empty-string + an unrelated value to lock the
 // predicate against accidental broadening (e.g., "high" being added later
 // without owner intent).
@@ -41,8 +40,7 @@ func TestSearchHit_IsReliable(t *testing.T) {
 	}
 }
 
-// SearchHit.IsPhase — Python: searcher.py:SearchResult.is_phase
-// (returns true iff group_id is not None). Go uses pointer presence.
+// SearchHit.IsPhase — returns true iff GroupID is set (pointer presence).
 func TestSearchHit_IsPhase(t *testing.T) {
 	gid := "grp_2026-01-01_arch_strategy"
 	empty := ""
@@ -57,8 +55,7 @@ func TestSearchHit_IsPhase(t *testing.T) {
 		{name: "group_id_nil", groupID: nil, want: false},
 		{name: "group_id_set", groupID: &gid, want: true},
 		// TODO(yg): confirm with team — should pointer-to-empty-string be
-		// treated as "no phase"? Current Go and Python both say "phase"
-		// (Python: `group_id = ""` is `not None` → True). Locking in current
+		// treated as "no phase"? Current Go says "phase". Locking in current
 		// behavior; flip if the predicate is ever tightened.
 		{
 			name:    "group_id_pointer_to_empty_string",
@@ -79,10 +76,8 @@ func TestSearchHit_IsPhase(t *testing.T) {
 }
 
 // ExtractPayloadText — strict v2.1 (D32). No v1/v2.0 fallback path.
-// This is an INTENTIONAL simplification of Python's _extract_payload_text
-// (searcher.py:L487-496), which has 3 fallback paths
-// (metadata.text → raw.text → decision.what). Go drops them; only
-// payload.text is read. See domain/query.go:121 for the design comment.
+// This is an INTENTIONAL simplification. Only payload.text is read.
+// See domain/query.go:121 for the design comment.
 func TestExtractPayloadText(t *testing.T) {
 	cases := []struct {
 		name string

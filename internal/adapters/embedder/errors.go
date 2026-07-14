@@ -39,7 +39,7 @@ var (
 	ErrEmbedderInternal = &Error{Code: "EMBEDDER_INTERNAL", Retryable: false}
 	// ErrEmbedderNoCentroids — runed has no centroid set loaded, surfaced as
 	// FAILED_PRECONDITION by Embed with_route. Not retryable as-is: push a set
-	// via SetCentroids first, then retry (§9.2 C4 — capture self-heals this way).
+	// via SetCentroids first, then retry (capture self-heals this way).
 	ErrEmbedderNoCentroids = &Error{Code: "EMBEDDER_NO_CENTROIDS", Retryable: false}
 )
 
@@ -97,7 +97,7 @@ func MapGRPCError(err error) error {
 	case codes.FailedPrecondition:
 		// runed uses FailedPrecondition for two opposite conditions, told
 		// apart by the ErrorInfo reason: BOOTSTRAPPING (model loading — wait
-		// and retry) vs NO_CENTROID_SET (push a set — §9.2 C4). A missing
+		// and retry) vs NO_CENTROID_SET (push a set). A missing
 		// reason means a legacy runed; fall back to the centroid case, which
 		// preserves the pre-reason behavior.
 		if grpcErrorReason(err) == reasonBootstrapping {

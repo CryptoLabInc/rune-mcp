@@ -1,23 +1,18 @@
 package domain
 
 // MCP Capture tool I/O.
-// Spec: docs/v04/spec/types.md §4.1.
-// Python: mcp/server/server.py:L698-806 (entry) · L1208-1407 (_capture_single).
-// Flow: docs/v04/spec/flows/capture.md (7-phase).
 
-// CaptureRequest — §4.1.
 // Extracted is the flat wire format split into Detection + ExtractionResult
-// internally (see types.md §3a.4 mapping).
+// internally.
 type CaptureRequest struct {
 	Text      string         `json:"text" jsonschema:"Raw source text the decision was extracted from."`
 	Source    string         `json:"source" jsonschema:"Source identifier for the capture (e.g. channel, doc, or session name)."`
 	User      string         `json:"user,omitempty" jsonschema:"Optional author of the captured context."`
 	Channel   string         `json:"channel,omitempty" jsonschema:"Optional channel the context originated from."`
-	Extracted map[string]any `json:"extracted" jsonschema:"FLAT extraction object (the agent-delegated extraction result). Fields: {title, decision, problem, rationale, domain?, status?, tags?[]}. Do not nest these under another key; the object itself is the extraction."` // see types.md §3a.4
+	Extracted map[string]any `json:"extracted" jsonschema:"FLAT extraction object (the agent-delegated extraction result). Fields: {title, decision, problem, rationale, domain?, status?, tags?[]}. Do not nest these under another key; the object itself is the extraction."`
 }
 
-// CaptureResponse — §4.1.
-// Note: no `similar_to` field (D10 Archived — Python parity). Duplicate record
+// Note: no `similar_to` field (D10 Archived). Duplicate record
 // info flows via Novelty.Related[] (see NoveltyInfo in query.go).
 type CaptureResponse struct {
 	OK       bool   `json:"ok"`
@@ -33,11 +28,9 @@ type CaptureResponse struct {
 }
 
 // RawEvent — input to record_builder.BuildPhases.
-// Python: agents/scribe/record_builder.py RawEvent (dataclass at top of file).
 type RawEvent struct {
 	Text    string
 	Source  string
 	User    string
 	Channel string
-	// TS, metadata fields — see Python original
 }

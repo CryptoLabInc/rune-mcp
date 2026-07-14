@@ -1,11 +1,9 @@
 package domain
 
-// RuneError — 8-code taxonomy (Python 7 + Go-specific EMBEDDER_UNREACHABLE).
-// Spec: docs/v04/spec/components/rune-mcp.md §에러 처리.
-// Python: mcp/server/errors.py (118 LoC).
+// RuneError — 8-code taxonomy.
 //
-// The two vector-backend codes are RUNESPACE_* per the design contract (§9);
-// they were ENVECTOR_* in the enVector-era Python server before mcp's direct
+// The two vector-backend codes are RUNESPACE_* per the design contract;
+// they were ENVECTOR_* in the enVector-era server before mcp's direct
 // link to the vector engine was removed (mcp now reaches it only via the console).
 
 import "errors"
@@ -25,7 +23,7 @@ const (
 	CodeExtractionMissing   = "EXTRACTION_MISSING"   // D14 — agent must provide pre_extraction
 )
 
-// RuneError — MCP error response body (Python make_error equivalent).
+// RuneError — MCP error response body.
 type RuneError struct {
 	Code         string `json:"code"`
 	Message      string `json:"message"`
@@ -35,7 +33,7 @@ type RuneError struct {
 
 func (e *RuneError) Error() string { return e.Message }
 
-// Predefined errors (Python errors.py equivalents).
+// Predefined errors.
 var (
 	ErrInternal            = &RuneError{Code: CodeInternal, Retryable: false}
 	ErrConsoleConnection   = &RuneError{Code: CodeConsoleConnection, Retryable: true}
@@ -50,7 +48,7 @@ var (
 	ErrExtractionMissing   = &RuneError{Code: CodeExtractionMissing, Retryable: false}
 )
 
-// MakeError — Python make_error equivalent. Wraps an error as MCP response.
+// MakeError — Wraps an error as MCP response.
 func MakeError(err error) map[string]any {
 	var runeErr *RuneError
 	if errors.As(err, &runeErr) {

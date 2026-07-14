@@ -2,12 +2,9 @@ package policy_test
 
 // Tests for ApplyRecencyWeighting + FilterByTime + rerank constants.
 //
-// Python parity: agents/retriever/searcher.py:L273-300 (rerank) +
-// L523-559 (filter). Python has NO test file for these — Go is
-// establishing first-time coverage. Every case below either ports a
-// behavioral assertion implicit in the Python code or gates a
-// Go-specific contract (math.Floor age, type-switch on metadata
-// timestamp, sort.SliceStable).
+// Go is establishing first-time coverage. Every case below either ports
+// a behavioral assertion or gates a Go-specific contract (math.Floor
+// age, type-switch on metadata timestamp, sort.SliceStable).
 //
 // Black-box style — exercises only the public surface. Internal
 // arithmetic is gated through observable AdjustedScore values, computed
@@ -35,8 +32,8 @@ var fixedNow = time.Date(2026, 4, 29, 0, 0, 0, 0, time.UTC)
 // field of the given concrete type. The two metadata types
 // ApplyRecencyWeighting handles are:
 //
-//	string  — RFC3339 (Python parity: datetime.fromisoformat)
-//	float64 — Unix seconds (Python parity: datetime.fromtimestamp)
+//	string  — RFC3339
+//	float64 — Unix seconds
 //
 // Anything else (int, nil, missing) leaves ageDays = 0 / decay = 1.0.
 func hitWithTS(score float64, status string, tsValue any) domain.SearchHit {
@@ -61,22 +58,21 @@ func almostEqual(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 // reranked recall result. Lock the bytes.
 //
 // HalfLifeDays / SimilarityWeight / RecencyWeight are defined in
-// rerank.go:L14-18. Python: searcher.py:L31-33.
+// rerank.go:L14-18.
 func TestRerankConstants_LockedToPythonValues(t *testing.T) {
 	if got := policy.HalfLifeDays; got != 90.0 {
-		t.Errorf("HalfLifeDays = %v, want 90.0 (Python searcher.py:L31)", got)
+		t.Errorf("HalfLifeDays = %v, want 90.0", got)
 	}
 	if got := policy.SimilarityWeight; got != 0.7 {
-		t.Errorf("SimilarityWeight = %v, want 0.7 (Python searcher.py:L32)", got)
+		t.Errorf("SimilarityWeight = %v, want 0.7", got)
 	}
 	if got := policy.RecencyWeight; got != 0.3 {
-		t.Errorf("RecencyWeight = %v, want 0.3 (Python searcher.py:L33)", got)
+		t.Errorf("RecencyWeight = %v, want 0.3", got)
 	}
 }
 
 // StatusMultiplier — wire-significant: capture/recall behavior depends
-// on these exact multipliers. Lock all 4 keys + values. Python:
-// searcher.py:L36-39.
+// on these exact multipliers. Lock all 4 keys + values.
 func TestStatusMultiplier_AllFourEntriesLocked(t *testing.T) {
 	want := map[string]float64{
 		"accepted":   1.0,
@@ -100,9 +96,8 @@ func TestStatusMultiplier_AllFourEntriesLocked(t *testing.T) {
 	}
 }
 
-// TimeRanges — gate every TimeScope key + duration. Python:
-// searcher.py:L532-535. AllTime is intentionally absent (filter
-// short-circuits via the missing-key path).
+// TimeRanges — gate every TimeScope key + duration. AllTime is
+// intentionally absent (filter short-circuits via the missing-key path).
 func TestTimeRanges_AllFourEntriesLocked(t *testing.T) {
 	want := map[domain.TimeScope]time.Duration{
 		domain.TimeScopeLastWeek:    7 * 24 * time.Hour,
@@ -256,20 +251,14 @@ func TestApplyRecencyWeighting_FormulaGate(t *testing.T) {
 		{
 			name: "int_timestamp_is_skipped_go_specific_zero_age_masks_divergence",
 			hit:  hitWithTS(1.0, "accepted", int(fixedNow.Unix())),
-			// Same-day int — both Python (coerce → 0d) and Go (skip → 0d)
-			// converge on ageDays=0. Locks the Go contract on this safe path.
-			// See "int_timestamp_90d_diverges_from_python" below for the
-			// case where the divergence becomes observable.
+			// Same-day int — Go skips it → ageDays=0. Locks the Go contract
+			// on this safe path.
 			wantAdj:  1.0,
 			wantNote: "same-day int: both langs reach age=0",
 		},
 		{
 			name: "int_timestamp_90d_diverges_from_python",
 			hit:  hitWithTS(1.0, "accepted", int(fixedNow.Add(-90*24*time.Hour).Unix())),
-			// **Python ↔ Go DIVERGENCE** (Phase-A documented gap).
-			// Python (searcher.py:L286-292): if ts_str is not str, runs
-			// `datetime.fromtimestamp(float(ts_str), tz=...)` which coerces
-			// int → 90d age → decay 0.5 → adj 0.85.
 			// Go (rerank.go:L49-56): type-switch only matches string and
 			// float64; int falls through to ageDays=0 → decay=1.0 → adj=1.0.
 			// Locked at Go semantics here. In production, JSON-decoded
@@ -285,7 +274,6 @@ func TestApplyRecencyWeighting_FormulaGate(t *testing.T) {
 			name: "rfc3339_with_explicit_offset_zero",
 			hit: hitWithTS(1.0, "accepted",
 				fixedNow.Add(-90*24*time.Hour).Format("2006-01-02T15:04:05-07:00")),
-			// Python uses `ts_str.replace("Z", "+00:00")` then fromisoformat;
 			// Go's time.RFC3339 layout natively accepts both `Z` and
 			// `+00:00`. Same expected adj as the same-90d-`Z` case (0.85).
 			wantAdj:  0.85,
@@ -294,9 +282,8 @@ func TestApplyRecencyWeighting_FormulaGate(t *testing.T) {
 		{
 			name: "empty_string_timestamp_treats_age_as_zero",
 			hit:  hitWithTS(1.0, "accepted", ""),
-			// Python `if ts_str:` short-circuits on empty (falsy); Go's
-			// type assertion to string of "" succeeds, time.Parse("")
-			// fails → ageDays unchanged = 0. Both paths reach decay=1.0.
+			// Go's type assertion to string of "" succeeds, time.Parse("")
+			// fails → ageDays unchanged = 0.
 			wantAdj:  1.0,
 			wantNote: "empty string: same outcome via different code paths",
 		},
@@ -305,7 +292,6 @@ func TestApplyRecencyWeighting_FormulaGate(t *testing.T) {
 			hit:  hitWithTS(1.0, "accepted", []string{"weird"}),
 			// Symmetric with the FilterByTime "wrong_type_ts" case.
 			// Type-switch matches neither string nor float64 → ageDays=0.
-			// Python coerces via `float(["weird"])` → TypeError caught → age=0.
 			wantAdj:  1.0,
 			wantNote: "wrong type: type-switch fall-through symmetry with FilterByTime",
 		},
@@ -355,7 +341,7 @@ func TestApplyRecencyWeighting_StatusMultiplierAllValues(t *testing.T) {
 		{"proposed", "proposed", bracket * 0.9},
 		{"superseded", "superseded", bracket * 0.5},
 		{"reverted", "reverted", bracket * 0.3},
-		// unknown status defaults to 1.0 (Python: dict.get(s, 1.0))
+		// unknown status defaults to 1.0
 		{"unknown_value", "weird_unknown_value", bracket * 1.0},
 		{"empty_string", "", bracket * 1.0},
 	}
@@ -374,7 +360,7 @@ func TestApplyRecencyWeighting_StatusMultiplierAllValues(t *testing.T) {
 	}
 }
 
-// sort — descending by AdjustedScore. Python: list.sort(key=..., reverse=True).
+// sort — descending by AdjustedScore.
 //
 // Critical contract: sort key is AdjustedScore, NOT raw Score. The case
 // below picks values so a "sort by raw Score desc" mutation produces a
@@ -435,9 +421,9 @@ func TestApplyRecencyWeighting_SortsDescending(t *testing.T) {
 }
 
 // stable sort — when two hits have identical adjusted_score, their
-// relative input order must survive. Python's list.sort is stable;
-// Go uses sort.SliceStable. Without this test, a future maintainer
-// could swap to sort.Slice (unstable) and silently re-order ties.
+// relative input order must survive. Go uses sort.SliceStable. Without
+// this test, a future maintainer could swap to sort.Slice (unstable)
+// and silently re-order ties.
 func TestApplyRecencyWeighting_StableSortPreservesInputOrderOnTies(t *testing.T) {
 	mkSame := func(id string) domain.SearchHit {
 		return domain.SearchHit{
@@ -458,9 +444,8 @@ func TestApplyRecencyWeighting_StableSortPreservesInputOrderOnTies(t *testing.T)
 }
 
 // in-place mutation — ApplyRecencyWeighting mutates the slice it was
-// given AND returns it (Python: searcher.py:L299 results.sort(...);
-// return results — same semantics). Both behaviors are part of the
-// contract; the returned reference must share the backing array.
+// given AND returns it. Both behaviors are part of the contract; the
+// returned reference must share the backing array.
 //
 // Uses 2 hits with DIFFERENT scores so a "make + copy + sort + return"
 // refactor (which would still produce position-0 alias by accident if
@@ -547,8 +532,6 @@ func TestFilterByTime_AllTimeAndUnknownScopeReturnUnchanged(t *testing.T) {
 }
 
 // FilterByTime keeps records with no timestamp / invalid timestamp.
-// Python parity (searcher.py:L546-557): the explicit "else: append"
-// branches for both missing-key and parse-failure paths.
 //
 // Rationale: dropping unparseable records would silently lose data on
 // schema drift; keeping them surfaces it via downstream search results.
@@ -568,7 +551,6 @@ func TestFilterByTime_KeepsRecordsWithMissingOrInvalidTimestamp(t *testing.T) {
 
 // FilterByTime cutoff boundary — `ts.Before(cutoff)` is strict. A
 // record with ts == cutoff is kept; one nanosecond older is dropped.
-// This is the exact boundary the Python code asserts via `ts >= cutoff`.
 //
 // Uses time.RFC3339Nano on both sides — plain time.RFC3339 truncates
 // sub-second precision (the older record would round-trip as exactly

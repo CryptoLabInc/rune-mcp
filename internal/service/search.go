@@ -10,7 +10,7 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 )
 
-// SearchByID — shared helper used by delete_capture (lifecycle §5).
+// SearchByID — shared helper used by delete_capture.
 //
 // Embeds "ID: {record_id}" as a query and searches top-5 via the console, then
 // filters results by exact record_id match. Relies on the self-embedding
