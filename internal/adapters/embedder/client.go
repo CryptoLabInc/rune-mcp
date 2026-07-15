@@ -15,6 +15,7 @@ package embedder
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync/atomic"
 	"time"
 
@@ -194,7 +195,7 @@ func (c *client) SetCentroids(ctx context.Context, version string, dim int, pres
 	if err := stream.Send(&runedv1.SetCentroidsRequest{Payload: &runedv1.SetCentroidsRequest_Header{
 		Header: &runedv1.CentroidSetHeader{Version: version, Dim: uint32(dim), Nlist: uint32(len(vectors)), Preset: preset},
 	}}); err != nil {
-		return fmt.Errorf("embedder: set centroids header: %w", err)
+		return centroidSendErr(stream, "header", err)
 	}
 	for lo := 0; lo < len(vectors); lo += centroidPushBatch {
 		hi := lo + centroidPushBatch
@@ -208,7 +209,7 @@ func (c *client) SetCentroids(ctx context.Context, version string, dim int, pres
 		if err := stream.Send(&runedv1.SetCentroidsRequest{Payload: &runedv1.SetCentroidsRequest_Batch{
 			Batch: &runedv1.CentroidBatch{Centroids: batch},
 		}}); err != nil {
-			return fmt.Errorf("embedder: set centroids batch: %w", err)
+			return centroidSendErr(stream, "batch", err)
 		}
 	}
 	if _, err := stream.CloseAndRecv(); err != nil {
@@ -216,6 +217,20 @@ func (c *client) SetCentroids(ctx context.Context, version string, dim int, pres
 	}
 	c.info.invalidate() // the push changed runed's CentroidSetVersion
 	return nil
+}
+
+// centroidSendErr turns a SetCentroids Send failure into a useful error. A Send
+// that returns io.EOF means runed closed the stream early (it rejected the
+// push); the real status lives in CloseAndRecv, so surface that instead of the
+// opaque "EOF".
+func centroidSendErr(stream runedv1.RunedService_SetCentroidsClient, stage string, sendErr error) error {
+	if sendErr == io.EOF {
+		if _, rerr := stream.CloseAndRecv(); rerr != nil {
+			return fmt.Errorf("embedder: set centroids %s rejected by runed: %w", stage, rerr)
+		}
+		return fmt.Errorf("embedder: set centroids %s: runed closed the stream (no detail)", stage)
+	}
+	return fmt.Errorf("embedder: set centroids %s: %w", stage, sendErr)
 }
 
 // EmbedBatch splits len(texts) > Info.MaxBatchSize into chunks and submits

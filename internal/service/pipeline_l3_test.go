@@ -2,13 +2,14 @@ package service_test
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
@@ -41,7 +42,13 @@ func TestPipelineL3(t *testing.T) {
 	// Isolate key storage so we do not touch a real ~/.rune.
 	t.Setenv("RUNE_HOME", t.TempDir())
 
-	vc, err := console.NewClient(addr, token, console.ClientOpts{TLSDisable: true})
+	// Default to plaintext; when RUNECONSOLE_CA points at a PEM the console is
+	// TLS and we verify + pin against it (the 3-stage bootstrap's persisted CA).
+	opts := console.ClientOpts{TLSDisable: true}
+	if ca := os.Getenv("RUNECONSOLE_CA"); ca != "" {
+		opts = console.ClientOpts{CACertPath: ca}
+	}
+	vc, err := console.NewClient(addr, token, opts)
 	if err != nil {
 		t.Fatalf("console.NewClient: %v", err)
 	}
@@ -106,7 +113,7 @@ func TestPipelineL3(t *testing.T) {
 		t.Fatalf("seal: %v", err)
 	}
 	id, err := vc.Insert(ctx, console.InsertItem{
-		ID:                 "l3-" + base64.RawURLEncoding.EncodeToString([]byte(t.Name()))[:12],
+		ID:                 uuid.NewString(), // runespace requires a UUID item id
 		RMPItem:            rmp,
 		MMItem:             mm,
 		ClusterID:          routed.ClusterID,
