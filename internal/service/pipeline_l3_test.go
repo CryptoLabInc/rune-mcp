@@ -10,40 +10,40 @@ import (
 	"testing"
 	"time"
 
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/keymanager"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/runespacecrypto"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/seal"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 )
 
 // TestPipelineL3 exercises the full client-side-crypto pipeline through the
-// mcp-side clients against a LIVE local stack (runed + runeconsole + runespace):
+// mcp-side clients against a LIVE local stack (runed + runevault + runespace):
 //
 //	manifest → save EncKey → open encryptor (cgo)
 //	centroid relay → runed SetCentroids
-//	text → EmbedRoute → EncryptFlat/Clustered + seal → console.Insert (forward)
-//	query → EmbedSingle → console.Search → opened plaintext hit
+//	text → EmbedRoute → EncryptFlat/Clustered + seal → vault.Insert (forward)
+//	query → EmbedSingle → vault.Search → opened plaintext hit
 //
-// Gated on RUNECONSOLE_ADDR (e.g. 127.0.0.1:50051). The console must be a build
+// Gated on RUNEVAULT_ADDR (e.g. 127.0.0.1:50051). The vault must be a build
 // that distributes EncKey/agent_dek (pre_encrypted capability).
 //
-//	RUNECONSOLE_ADDR=127.0.0.1:50051 RUNE_HOME=$(mktemp -d) go test ./internal/service -run PipelineL3 -v
+//	RUNEVAULT_ADDR=127.0.0.1:50051 RUNE_HOME=$(mktemp -d) go test ./internal/service -run PipelineL3 -v
 func TestPipelineL3(t *testing.T) {
-	addr := os.Getenv("RUNECONSOLE_ADDR")
+	addr := os.Getenv("RUNEVAULT_ADDR")
 	if addr == "" {
-		t.Skip("set RUNECONSOLE_ADDR to run the live L3 pipeline test")
+		t.Skip("set RUNEVAULT_ADDR to run the live L3 pipeline test")
 	}
-	token := os.Getenv("RUNECONSOLE_TOKEN")
+	token := os.Getenv("RUNEVAULT_TOKEN")
 	if token == "" {
 		token = "evt_0000000000000000000000000000test"
 	}
 	// Isolate key storage so we do not touch a real ~/.rune.
 	t.Setenv("RUNE_HOME", t.TempDir())
 
-	vc, err := console.NewClient(addr, token, console.ClientOpts{TLSDisable: true})
+	vc, err := vault.NewClient(addr, token, vault.ClientOpts{TLSDisable: true})
 	if err != nil {
-		t.Fatalf("console.NewClient: %v", err)
+		t.Fatalf("vault.NewClient: %v", err)
 	}
 	defer vc.Close()
 
@@ -62,7 +62,7 @@ func TestPipelineL3(t *testing.T) {
 		t.Fatalf("GetAgentManifest: %v", err)
 	}
 	if bundle.InsertCapability != "pre_encrypted" {
-		t.Fatalf("console capability = %q, want pre_encrypted", bundle.InsertCapability)
+		t.Fatalf("vault capability = %q, want pre_encrypted", bundle.InsertCapability)
 	}
 	keyDir, err := keymanager.SaveEncKeys(bundle.KeyID, bundle.EncKeyJSON, bundle.MMEncKey)
 	if err != nil {
@@ -108,7 +108,7 @@ func TestPipelineL3(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seal: %v", err)
 	}
-	id, err := vc.Insert(ctx, console.InsertItem{
+	id, err := vc.Insert(ctx, vault.InsertItem{
 		ID:                 "l3-" + base64.RawURLEncoding.EncodeToString([]byte(t.Name()))[:12],
 		RMPItem:            rmp,
 		MMItem:             mm,
@@ -117,18 +117,18 @@ func TestPipelineL3(t *testing.T) {
 		SealedMetadata:     sealed,
 	})
 	if err != nil {
-		t.Fatalf("console.Insert: %v", err)
+		t.Fatalf("vault.Insert: %v", err)
 	}
 	t.Logf("capture ok: id=%s (client-encrypted)", id)
 
-	// ── recall: plaintext query → console decrypts + opens ──
+	// ── recall: plaintext query → vault decrypts + opens ──
 	qvec, err := emb.EmbedSingle(ctx, "which database did we pick for the ledger and why?")
 	if err != nil {
 		t.Fatalf("embed query: %v", err)
 	}
 	hits, err := vc.Search(ctx, qvec, 5)
 	if err != nil {
-		t.Fatalf("console.Search: %v", err)
+		t.Fatalf("vault.Search: %v", err)
 	}
 	t.Logf("recall returned %d hits", len(hits))
 	for i, h := range hits {

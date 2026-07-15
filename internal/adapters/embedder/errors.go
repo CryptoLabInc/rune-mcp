@@ -6,7 +6,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// Mirrors console.Error.
+// Mirrors vault.Error.
 type Error struct {
 	Code      string
 	Message   string

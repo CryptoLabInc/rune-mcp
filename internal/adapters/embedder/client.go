@@ -281,7 +281,7 @@ func (c *client) SocketPath() string { return c.sockPath }
 // SHUTTING_DOWN / UNSPECIFIED).
 //
 // Health is NOT retried — D8 says first embed call drives connectivity; Health
-// is a diagnostic tool surface (console_status, diagnostics).
+// is a diagnostic tool surface (vault_status, diagnostics).
 func (c *client) Health(ctx context.Context) (HealthSnapshot, error) {
 	ctx, cancel := withDefaultTimeout(ctx, ControlCallTimeout)
 	defer cancel()

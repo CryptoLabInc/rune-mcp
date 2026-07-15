@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/logio"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
 	"github.com/CryptoLabInc/rune-mcp/internal/spawn"
@@ -23,12 +23,12 @@ import (
 // LifecycleService holds the 6 lifecycle/operational tool implementations.
 // Spec: docs/v04/spec/flows/lifecycle.md.
 type LifecycleService struct {
-	Console   console.Client
+	Vault     vault.Client
 	State     *lifecycle.Manager
 	IndexName string
 	ConfigDir string // for CaptureHistory reading capture_log.jsonl
 
-	// Key state (for diagnostics). In the runespace model the console is the sole
+	// Key state (for diagnostics). In the runespace model the vault is the sole
 	// key custodian; mcp holds no key material, only the KeyID from the manifest.
 	KeyID string
 
@@ -57,54 +57,54 @@ func (s *LifecycleService) SetEmbedder(c embedder.Client) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. console_status — read-only. server.py:L496-528. Spec §1.
+// 1. rune_vault_status — read-only. server.py:L496-528. Spec §1.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ConsoleStatusResult — lifecycle.md §1.
-type ConsoleStatusResult struct {
+// VaultStatusResult — lifecycle.md §1.
+type VaultStatusResult struct {
 	OK                    bool    `json:"ok"`
-	ConsoleConfigured     bool    `json:"console_configured"`
-	ConsoleEndpoint       *string `json:"console_endpoint,omitempty"`
+	VaultConfigured       bool    `json:"vault_configured"`
+	VaultEndpoint         *string `json:"vault_endpoint,omitempty"`
 	SecureSearchAvailable bool    `json:"secure_search_available"`
-	Mode                  string  `json:"mode"` // "secure (Console-backed)" | "standard (no Console)"
-	ConsoleHealthy        *bool   `json:"console_healthy,omitempty"`
+	Mode                  string  `json:"mode"` // "secure (Vault-backed)" | "standard (no Vault)"
+	VaultHealthy          *bool   `json:"vault_healthy,omitempty"`
 	TeamIndexName         *string `json:"team_index_name,omitempty"`
 	Warning               *string `json:"warning,omitempty"`
 }
 
-// ConsoleStatus — branches on console == nil (standard mode) vs configured.
-func (s *LifecycleService) ConsoleStatus(ctx context.Context) (*ConsoleStatusResult, error) {
-	if s.Console == nil {
-		warning := "secret key may be accessible locally. Configure Console for secure mode."
-		return &ConsoleStatusResult{
-			OK:                true,
-			ConsoleConfigured: false,
-			Mode:              "standard (no Console)",
-			Warning:           &warning,
+// VaultStatus — branches on vault == nil (standard mode) vs configured.
+func (s *LifecycleService) VaultStatus(ctx context.Context) (*VaultStatusResult, error) {
+	if s.Vault == nil {
+		warning := "secret key may be accessible locally. Configure Vault for secure mode."
+		return &VaultStatusResult{
+			OK:              true,
+			VaultConfigured: false,
+			Mode:            "standard (no Vault)",
+			Warning:         &warning,
 		}, nil
 	}
 
-	endpoint := s.Console.Endpoint()
-	healthy, err := s.Console.HealthCheck(ctx)
+	endpoint := s.Vault.Endpoint()
+	healthy, err := s.Vault.HealthCheck(ctx)
 	if err != nil {
-		slog.Warn("console health check failed", "err", err)
+		slog.Warn("vault health check failed", "err", err)
 		h := false
-		return &ConsoleStatusResult{
-			OK:                true,
-			ConsoleConfigured: true,
-			ConsoleEndpoint:   &endpoint,
-			ConsoleHealthy:    &h,
-			Mode:              "secure (Console-backed)",
+		return &VaultStatusResult{
+			OK:              true,
+			VaultConfigured: true,
+			VaultEndpoint:   &endpoint,
+			VaultHealthy:    &h,
+			Mode:            "secure (Vault-backed)",
 		}, nil
 	}
 
-	return &ConsoleStatusResult{
+	return &VaultStatusResult{
 		OK:                    true,
-		ConsoleConfigured:     true,
-		ConsoleEndpoint:       &endpoint,
+		VaultConfigured:       true,
+		VaultEndpoint:         &endpoint,
 		SecureSearchAvailable: healthy,
-		Mode:                  "secure (Console-backed)",
-		ConsoleHealthy:        &healthy,
+		Mode:                  "secure (Vault-backed)",
+		VaultHealthy:          &healthy,
 	}, nil
 }
 
@@ -123,7 +123,7 @@ type DiagnosticsResult struct {
 	State         *string       `json:"state,omitempty"`
 	DormantReason *string       `json:"dormant_reason,omitempty"`
 	DormantSince  *string       `json:"dormant_since,omitempty"`
-	Console       ConsoleInfo   `json:"console"`
+	Vault         VaultInfo     `json:"vault"`
 	Keys          KeysInfo      `json:"keys"`
 	Pipelines     PipelinesInfo `json:"pipelines"`
 	Embedding     EmbeddingInfo `json:"embedding"`
@@ -137,17 +137,17 @@ type EnvInfo struct {
 	GOArch  string `json:"goarch"`
 }
 
-// ConsoleInfo — subset exposed in diagnostics.
+// VaultInfo — subset exposed in diagnostics.
 //
-// Configured = a Console gRPC client is wired (boot loop reached Active).
+// Configured = a Vault gRPC client is wired (boot loop reached Active).
 // Healthy    = the most recent HealthCheck succeeded.
 // Error      = HealthCheck error (operational, set only when Healthy=false).
 // LastBootError = structured boot failure from lifecycle.Manager. Surfaces
 //
-//	the actual reason for waiting_for_console state — agents
+//	the actual reason for waiting_for_vault state — agents
 //	branch on .kind to fast-fail without manual probing. Nil
 //	when boot has succeeded or no attempt has been made yet.
-type ConsoleInfo struct {
+type VaultInfo struct {
 	Configured    bool              `json:"configured"`
 	Healthy       bool              `json:"healthy"`
 	Endpoint      string            `json:"endpoint,omitempty"`
@@ -155,13 +155,13 @@ type ConsoleInfo struct {
 	LastBootError *domain.BootError `json:"last_boot_error,omitempty"`
 }
 
-// KeysInfo — key custody status. In the runespace model the console is the sole
+// KeysInfo — key custody status. In the runespace model the vault is the sole
 // key custodian (EncKey/EvalKey/SecKey never leave it); the mcp process holds
 // no key material. Key readiness is not reported here: it has no signal
-// independent of console.healthy (the same HealthCheck probe), so callers should
-// read console.healthy instead.
+// independent of vault.healthy (the same HealthCheck probe), so callers should
+// read vault.healthy instead.
 type KeysInfo struct {
-	Custodian string `json:"custodian"` // "console" — sole key holder
+	Custodian string `json:"custodian"` // "vault" — sole key holder
 	KeyID     string `json:"key_id,omitempty"`
 }
 
@@ -221,12 +221,12 @@ func (s *LifecycleService) Diagnostics(ctx context.Context) *DiagnosticsResult {
 		}
 	}
 
-	// Console
-	r.Console = s.collectConsole(ctx, DiagnosticsTimeout)
+	// Vault
+	r.Vault = s.collectVault(ctx, DiagnosticsTimeout)
 
 	// Keys
 	r.Keys = KeysInfo{
-		Custodian: "console",
+		Custodian: "vault",
 		KeyID:     s.KeyID,
 	}
 
@@ -239,18 +239,18 @@ func (s *LifecycleService) Diagnostics(ctx context.Context) *DiagnosticsResult {
 	// Embedding
 	r.Embedding = s.collectEmbedding(ctx, DiagnosticsTimeout)
 
-	if s.Console != nil && !r.Console.Healthy {
+	if s.Vault != nil && !r.Vault.Healthy {
 		r.OK = false
 	}
 
 	return r
 }
 
-func (s *LifecycleService) collectConsole(ctx context.Context, timeout time.Duration) ConsoleInfo {
-	info := ConsoleInfo{Configured: s.Console != nil}
+func (s *LifecycleService) collectVault(ctx context.Context, timeout time.Duration) VaultInfo {
+	info := VaultInfo{Configured: s.Vault != nil}
 
 	// Surface the most recent boot failure regardless of client state.
-	// When the boot loop is stuck on waiting_for_console, s.Console is nil but
+	// When the boot loop is stuck on waiting_for_vault, s.Vault is nil but
 	// LastBootError holds the actual reason — agents need this to skip
 	// expensive trial-and-error diagnosis.
 	if s.State != nil {
@@ -259,16 +259,16 @@ func (s *LifecycleService) collectConsole(ctx context.Context, timeout time.Dura
 		}
 	}
 
-	if s.Console == nil {
+	if s.Vault == nil {
 		return info
 	}
 
-	info.Endpoint = s.Console.Endpoint()
+	info.Endpoint = s.Vault.Endpoint()
 
 	ctx2, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	healthy, err := s.Console.HealthCheck(ctx2)
+	healthy, err := s.Vault.HealthCheck(ctx2)
 	if err != nil {
 		info.Error = err.Error()
 	}
@@ -390,7 +390,7 @@ type DeleteCaptureResult struct {
 //  4. capture_log append with mode="soft-delete", action="deleted"
 func (s *LifecycleService) DeleteCapture(ctx context.Context, args DeleteCaptureArgs, capSvc *CaptureService) (*DeleteCaptureResult, error) {
 	// Search by ID
-	hit, err := SearchByID(ctx, s.Embedder(), s.Console, s.IndexName, args.RecordID)
+	hit, err := SearchByID(ctx, s.Embedder(), s.Vault, s.IndexName, args.RecordID)
 	if err != nil {
 		return nil, fmt.Errorf("delete: search by ID: %w", err)
 	}
@@ -452,7 +452,7 @@ func (s *LifecycleService) DeleteCapture(ctx context.Context, args DeleteCapture
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5. rune_configure — write Console credentials to $HOME/.rune/config.json.
+// 5. rune_configure — write Vault credentials to $HOME/.rune/config.json.
 // ─────────────────────────────────────────────────────────────────────────────
 
 type ConfigureArgs struct {
@@ -471,8 +471,8 @@ type ConfigureResult struct {
 
 	// Reachable=nil  : skip probe
 	// Reachable-false: HealthCheck failed, ProbeError is the reason
-	ConsoleReachable *bool  `json:"console_reachable,omitempty"`
-	ProbeError       string `json:"probe_error,omitempty"`
+	VaultReachable *bool  `json:"vault_reachable,omitempty"`
+	ProbeError     string `json:"probe_error,omitempty"`
 }
 
 const ConfigureProbeTimeout = 5 * time.Second
@@ -490,7 +490,7 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 		cfg = &config.Config{} // fall back to fresh config
 	}
 
-	cfg.Console = config.ConsoleConfig{
+	cfg.Vault = config.VaultConfig{
 		Endpoint:   args.Endpoint,
 		Token:      args.Token,
 		CACert:     args.CACertPath,
@@ -518,11 +518,11 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 		ConfiguredAt: now,
 	}
 
-	// Console HealthCheck
+	// Vault HealthCheck
 	probeCtx, cancel := context.WithTimeout(ctx, ConfigureProbeTimeout)
 	defer cancel()
 
-	vc, probeErr := console.NewClient(args.Endpoint, args.Token, console.ClientOpts{
+	vc, probeErr := vault.NewClient(args.Endpoint, args.Token, vault.ClientOpts{
 		CACertPath: args.CACertPath,
 		TLSDisable: args.TLSDisable,
 	})
@@ -532,10 +532,10 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 	}
 
 	reachable := probeErr == nil
-	result.ConsoleReachable = &reachable
+	result.VaultReachable = &reachable
 	if probeErr != nil {
 		result.ProbeError = probeErr.Error()
-		result.NextStep = "Console unreachable from this host - verify endpoint/token, then run /rune:activate to retry"
+		result.NextStep = "Vault unreachable from this host - verify endpoint/token, then run /rune:activate to retry"
 	} else {
 		result.NextStep = "Run /rune:activate to apply the new credentials"
 	}
@@ -547,16 +547,16 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 // 6. rune_activate - pre-check + reload
 //
 //  ActivateStatus:
-//	  configure_required  - config.json missing or console block empty
+//	  configure_required  - config.json missing or vault block empty
 //	  install_pending     - runed socket absent (daemon not installed/running)
-//	  active / waiting_for_console / dormant - passed through from reload
+//	  active / waiting_for_vault / dormant - passed through from reload
 // ─────────────────────────────────────────────────────────────────────────────
 
 const (
 	ActivateStatusConfigureRequired   = "configure_required"
 	ActivateStatusInstallPending      = "install_pending"
 	ActivateStatusActive              = "active"
-	ActivateStatusWaitingForConsole   = "waiting_for_console"
+	ActivateStatusWaitingForVault     = "waiting_for_vault"
 	ActivateStatusWaitingForBootstrap = "waiting_for_bootstrap"
 	ActivateStatusDormant             = "dormant"
 )
@@ -569,7 +569,7 @@ type BootstrapDetail struct {
 	Message    string `json:"message,omitempty"`     // free-text detail for end-user display
 }
 
-// When Status is active / waiting_for_console / dormant, Reload mirrors ReloadPipilines
+// When Status is active / waiting_for_vault / dormant, Reload mirrors ReloadPipilines
 // When Status is waiting_for_bootstrap, Bootstrap mirrors runed's self-bootstrap progress
 type ActivateResult struct {
 	OK        bool                   `json:"ok"`
@@ -588,14 +588,14 @@ func (s *LifecycleService) Activate(ctx context.Context) (*ActivateResult, error
 		return &ActivateResult{
 			OK:     true,
 			Status: ActivateStatusConfigureRequired,
-			Hint:   "Run /rune:configure to write Console credentials.",
+			Hint:   "Run /rune:configure to write Vault credentials.",
 		}, nil
 	}
-	if cfg.Console.Endpoint == "" || cfg.Console.Token == "" {
+	if cfg.Vault.Endpoint == "" || cfg.Vault.Token == "" {
 		return &ActivateResult{
 			OK:     true,
 			Status: ActivateStatusConfigureRequired,
-			Hint:   "Console endpoint/token missing in ~/.rune/config.json. Run /rune:configure.",
+			Hint:   "Vault endpoint/token missing in ~/.rune/config.json. Run /rune:configure.",
 		}, nil
 	}
 
@@ -609,7 +609,7 @@ func (s *LifecycleService) Activate(ctx context.Context) (*ActivateResult, error
 	// reload below is a no-op and activation never takes effect.
 	//
 	// Scope is deliberately limited to user-deactivation: substrate-driven
-	// dormancy (not_configured / console_unconfigured) is already handled by the
+	// dormancy (not_configured / vault_unconfigured) is already handled by the
 	// configure_required pre-checks above, so reaching this point means valid
 	// credentials exist and the user's own deactivation is the only thing
 	// pinning the daemon dormant.
@@ -812,17 +812,17 @@ type ReloadPipelinesResult struct {
 	State                string `json:"state"`
 	ScribeInitialized    bool   `json:"scribe_initialized"`
 	RetrieverInitialized bool   `json:"retriever_initialized"`
-	// LastBootError mirrors ConsoleInfo.LastBootError so callers (agent, UI)
+	// LastBootError mirrors VaultInfo.LastBootError so callers (agent, UI)
 	// can fast-fail on this single response — no follow-up diagnostics call
 	// needed for the common case of "reload finished, boot failed, here's
 	// why". Populated only when state != "active" AND a classified error
 	// is available; nil otherwise.
 	LastBootError *domain.BootError `json:"last_boot_error,omitempty"`
 	Errors        []string          `json:"errors,omitempty"`
-	ConsoleWarmup *WarmupInfo       `json:"console_warmup,omitempty"`
+	VaultWarmup   *WarmupInfo       `json:"vault_warmup,omitempty"`
 }
 
-// WarmupInfo — Console HealthCheck probe (60s timeout).
+// WarmupInfo — Vault HealthCheck probe (60s timeout).
 type WarmupInfo struct {
 	OK        bool     `json:"ok"`
 	LatencyMs *float64 `json:"latency_ms,omitempty"`
@@ -832,19 +832,19 @@ type WarmupInfo struct {
 // WarmupTimeout — Python WARMUP_TIMEOUT (server.py:L1059). 60s.
 const WarmupTimeout = 60 * time.Second
 
-// ReloadPipelines — re-trigger the boot loop from Dormant + warmup the console.
+// ReloadPipelines — re-trigger the boot loop from Dormant + warmup the vault.
 //
 // On a terminal Dormant state (boot loop's goroutine has exited), call
 // Manager.Retrigger to spawn a fresh RunBootLoop bound to the same ctx +
 // Deps; main.go wires the spawn callback at startup. Manager.Retrigger
-// is a silent no-op when state is Starting / WaitingForConsole / Active —
+// is a silent no-op when state is Starting / WaitingForVault / Active —
 // safe to call unconditionally if the trigger surface ever widens.
 //
 // /rune:activate from a freshly-spawned MCP server (no ~/.rune/config.json
 // at boot, then user ran /rune:configure) reaches Active via this path.
 // No process restart is required.
 func (s *LifecycleService) ReloadPipelines(ctx context.Context) (*ReloadPipelinesResult, error) {
-	// Always re-trigger so config changes such as new console endpoint and rotated token are picked
+	// Always re-trigger so config changes such as new vault endpoint and rotated token are picked
 	// without restarting MCP
 	s.State.Retrigger()
 	s.waitForBootProgress(ctx, 5*time.Second)
@@ -869,9 +869,9 @@ func (s *LifecycleService) ReloadPipelines(ctx context.Context) (*ReloadPipeline
 		}
 	}
 
-	if s.Console != nil {
-		warmup := s.warmupConsole(ctx, WarmupTimeout)
-		result.ConsoleWarmup = warmup
+	if s.Vault != nil {
+		warmup := s.warmupVault(ctx, WarmupTimeout)
+		result.VaultWarmup = warmup
 	}
 
 	return result, nil
@@ -880,7 +880,7 @@ func (s *LifecycleService) ReloadPipelines(ctx context.Context) (*ReloadPipeline
 // waitForBootProgress polls Manager.Current() until either Active or a
 // terminal Dormant is reached, or the deadline elapses. The caller has
 // already triggered a fresh boot loop; this just gives it room to make
-// progress before we snapshot state for the response. WaitingForConsole
+// progress before we snapshot state for the response. WaitingForVault
 // (transient retry) is treated as still-in-progress because the loop is
 // actively retrying with backoff and may yet reach Active.
 //
@@ -911,13 +911,13 @@ func (s *LifecycleService) waitForBootProgress(ctx context.Context, timeout time
 	}
 }
 
-// warmupConsole — Console HealthCheck under a 60s timeout.
-func (s *LifecycleService) warmupConsole(ctx context.Context, timeout time.Duration) *WarmupInfo {
+// warmupVault — Vault HealthCheck under a 60s timeout.
+func (s *LifecycleService) warmupVault(ctx context.Context, timeout time.Duration) *WarmupInfo {
 	ctx2, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	t0 := time.Now()
-	_, err := s.Console.HealthCheck(ctx2)
+	_, err := s.Vault.HealthCheck(ctx2)
 	elapsed := float64(time.Since(t0).Milliseconds())
 
 	if err != nil {

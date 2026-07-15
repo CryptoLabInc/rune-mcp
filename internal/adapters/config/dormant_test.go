@@ -53,12 +53,12 @@ func TestMarkDormant_FreshInstall_CreatesConfig(t *testing.T) {
 	}
 }
 
-func TestMarkDormant_ExistingConfig_PreservesConsoleFields(t *testing.T) {
+func TestMarkDormant_ExistingConfig_PreservesVaultFields(t *testing.T) {
 	home := withTempHome(t)
 
-	// Pre-write a config with console creds.
+	// Pre-write a config with vault creds.
 	cfg := &config.Config{
-		Console: config.ConsoleConfig{
+		Vault: config.VaultConfig{
 			Endpoint: "tcp://existing:50051",
 			Token:    "evt_keep_me",
 		},
@@ -68,26 +68,26 @@ func TestMarkDormant_ExistingConfig_PreservesConsoleFields(t *testing.T) {
 		t.Fatalf("setup: Save: %v", err)
 	}
 
-	// Now mark dormant — console fields must survive.
-	if err := config.MarkDormant("console_unconfigured"); err != nil {
+	// Now mark dormant — vault fields must survive.
+	if err := config.MarkDormant("vault_unconfigured"); err != nil {
 		t.Fatalf("MarkDormant: %v", err)
 	}
 
 	got := readConfig(t, home)
-	console, ok := got["console"].(map[string]any)
+	vault, ok := got["vault"].(map[string]any)
 	if !ok {
-		t.Fatalf("console section missing")
+		t.Fatalf("vault section missing")
 	}
-	if console["endpoint"] != "tcp://existing:50051" {
-		t.Errorf("console.endpoint clobbered: got %v", console["endpoint"])
+	if vault["endpoint"] != "tcp://existing:50051" {
+		t.Errorf("vault.endpoint clobbered: got %v", vault["endpoint"])
 	}
-	if console["token"] != "evt_keep_me" {
-		t.Errorf("console.token clobbered: got %v", console["token"])
+	if vault["token"] != "evt_keep_me" {
+		t.Errorf("vault.token clobbered: got %v", vault["token"])
 	}
 	if got["state"] != "dormant" {
 		t.Errorf("state: got %v, want dormant", got["state"])
 	}
-	if got["dormant_reason"] != "console_unconfigured" {
+	if got["dormant_reason"] != "vault_unconfigured" {
 		t.Errorf("dormant_reason: got %v", got["dormant_reason"])
 	}
 }
@@ -126,15 +126,15 @@ func TestMarkDormant_NewReasonOverwrites(t *testing.T) {
 	if err := config.MarkDormant("not_configured"); err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	if err := config.MarkDormant("console_unconfigured"); err != nil {
+	if err := config.MarkDormant("vault_unconfigured"); err != nil {
 		t.Fatalf("second: %v", err)
 	}
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.DormantReason != "console_unconfigured" {
-		t.Errorf("reason: got %q, want console_unconfigured", cfg.DormantReason)
+	if cfg.DormantReason != "vault_unconfigured" {
+		t.Errorf("reason: got %q, want vault_unconfigured", cfg.DormantReason)
 	}
 }
 
@@ -181,9 +181,9 @@ func TestClearDormant_RestoresActiveAndClearsMarkers(t *testing.T) {
 	home := withTempHome(t)
 
 	// A daemon put to sleep by /rune:deactivate: dormant + user_deactivated,
-	// console creds present.
+	// vault creds present.
 	cfg := &config.Config{
-		Console:       config.ConsoleConfig{Endpoint: "tcp://existing:50051", Token: "evt_keep_me"},
+		Vault:         config.VaultConfig{Endpoint: "tcp://existing:50051", Token: "evt_keep_me"},
 		State:         "dormant",
 		DormantReason: "user_deactivated",
 		DormantSince:  time.Now().UTC().Format(time.RFC3339),
@@ -206,10 +206,10 @@ func TestClearDormant_RestoresActiveAndClearsMarkers(t *testing.T) {
 	if _, ok := got["dormant_since"]; ok {
 		t.Errorf("dormant_since should be cleared (omitempty), got %v", got["dormant_since"])
 	}
-	// Console creds must survive the transition.
-	console, ok := got["console"].(map[string]any)
-	if !ok || console["endpoint"] != "tcp://existing:50051" || console["token"] != "evt_keep_me" {
-		t.Errorf("console section clobbered: got %v", got["console"])
+	// Vault creds must survive the transition.
+	vault, ok := got["vault"].(map[string]any)
+	if !ok || vault["endpoint"] != "tcp://existing:50051" || vault["token"] != "evt_keep_me" {
+		t.Errorf("vault section clobbered: got %v", got["vault"])
 	}
 }
 
@@ -217,8 +217,8 @@ func TestClearDormant_IdempotentWhenAlreadyActive(t *testing.T) {
 	withTempHome(t)
 
 	cfg := &config.Config{
-		Console: config.ConsoleConfig{Endpoint: "tcp://existing:50051", Token: "t"},
-		State:   "active",
+		Vault: config.VaultConfig{Endpoint: "tcp://existing:50051", Token: "t"},
+		State: "active",
 	}
 	if err := config.Save(cfg); err != nil {
 		t.Fatalf("setup: Save: %v", err)
@@ -261,8 +261,8 @@ func TestSave_WritesValidJSON(t *testing.T) {
 	withTempHome(t)
 
 	cfg := &config.Config{
-		Console: config.ConsoleConfig{Endpoint: "tcp://test:50051", Token: "t"},
-		State:   "active",
+		Vault: config.VaultConfig{Endpoint: "tcp://test:50051", Token: "t"},
+		State: "active",
 	}
 	if err := config.Save(cfg); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -272,7 +272,7 @@ func TestSave_WritesValidJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load roundtrip: %v", err)
 	}
-	if got.Console.Endpoint != "tcp://test:50051" || got.State != "active" {
+	if got.Vault.Endpoint != "tcp://test:50051" || got.State != "active" {
 		t.Errorf("roundtrip: got %+v", got)
 	}
 }

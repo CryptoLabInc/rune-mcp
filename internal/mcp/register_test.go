@@ -27,10 +27,10 @@ var expectedTools = []string{
 	"capture",
 	"capture_history",
 	"configure",
-	"console_status",
 	"diagnostics",
 	"recall",
 	"reload_pipelines",
+	"vault_status",
 }
 
 // newSession spins up an in-memory MCP server with all registered tools
@@ -40,7 +40,7 @@ var expectedTools = []string{
 // Deps mirrors a "boot has not progressed past starting" state: the Manager
 // is freshly constructed (StateStarting) and services are zero-valued. With
 // State == StateStarting, write tools return PIPELINE_NOT_READY through the
-// CheckState gate. Read-only tools (console_status / diagnostics /
+// CheckState gate. Read-only tools (vault_status / diagnostics /
 // capture_history) bypass the gate but their service nil-checks must hold.
 func newSession(t *testing.T) *sdkmcp.ClientSession {
 	t.Helper()
@@ -175,7 +175,7 @@ func TestRegister_BatchCaptureItemsDescribed(t *testing.T) {
 //
 // reload_pipelines is intentionally NOT gated (it is the dormant→active
 // unblocker / `/rune:activate` handler per rune-mcp.md). Smoke tests for it
-// live in the diagnostic suite once a console mock is in place.
+// live in the diagnostic suite once a vault mock is in place.
 func TestRegister_WriteToolsGated(t *testing.T) {
 	cs := newSession(t)
 
@@ -242,7 +242,7 @@ func TestRegister_DeleteCaptureHidden(t *testing.T) {
 	}
 }
 
-// TestRegister_ReadOnlyToolsBypassGate — console_status / diagnostics /
+// TestRegister_ReadOnlyToolsBypassGate — vault_status / diagnostics /
 // capture_history must respond successfully (no PIPELINE_NOT_READY) even
 // when State == StateStarting. Per rune-mcp.md these tools work
 // degraded so the operator can troubleshoot pre-active.
@@ -262,10 +262,10 @@ func TestRegister_ReadOnlyToolsBypassGate(t *testing.T) {
 		mustNotContain []string
 	}{
 		{
-			// nil Console → "standard mode"
-			name:        "console_status",
+			// nil Vault → "standard mode"
+			name:        "vault_status",
 			args:        nil,
-			mustContain: []string{`"console_configured":false`, "standard"},
+			mustContain: []string{`"vault_configured":false`, "standard"},
 			mustNotContain: []string{
 				"PIPELINE_NOT_READY",
 			},
@@ -278,7 +278,7 @@ func TestRegister_ReadOnlyToolsBypassGate(t *testing.T) {
 			// `LifecycleService.Diagnostics` for the read path.
 			name:        "diagnostics",
 			args:        nil,
-			mustContain: []string{`"environment"`, `"console"`, `"keys"`, `"embedding"`},
+			mustContain: []string{`"environment"`, `"vault"`, `"keys"`, `"embedding"`},
 			mustNotContain: []string{
 				"PIPELINE_NOT_READY",
 			},
@@ -304,7 +304,7 @@ func TestRegister_ReadOnlyToolsBypassGate(t *testing.T) {
 				`"state":"active"`,
 				`"configured_at"`,
 				`"next_step"`,
-				`"console_reachable":false`,
+				`"vault_reachable":false`,
 				`"probe_error"`,
 			},
 			mustNotContain: []string{

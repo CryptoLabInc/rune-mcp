@@ -10,7 +10,7 @@ import (
 
 // TestValidateRecallArgs_TopKCeiling — the client-side cap is a sanity ceiling
 // (50), not the authoritative per-token limit. A top_k within the ceiling must
-// pass so a high-limit console token is never falsely blocked; only clearly
+// pass so a high-limit vault token is never falsely blocked; only clearly
 // excessive values are rejected with INVALID_INPUT.
 func TestValidateRecallArgs_TopKCeiling(t *testing.T) {
 	cases := []struct {

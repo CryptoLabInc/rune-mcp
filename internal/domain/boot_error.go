@@ -23,34 +23,34 @@ const (
 	BootErrUnknown BootErrorKind = "unknown"
 
 	// ── Config-side (terminal Dormant) ───────────────────────────────
-	BootErrConfigMissing        BootErrorKind = "config_missing"         // ~/.rune/config.json absent
-	BootErrConfigInvalid        BootErrorKind = "config_invalid"         // state=unknown / parse fail
-	BootErrConfigParse          BootErrorKind = "config_parse"           // JSON parse fail
-	BootErrUserDeactivated      BootErrorKind = "user_deactivated"       // state=dormant by /rune:deactivate
-	BootErrConsoleNotConfigured BootErrorKind = "console_not_configured" // endpoint/token empty
+	BootErrConfigMissing      BootErrorKind = "config_missing"       // ~/.rune/config.json absent
+	BootErrConfigInvalid      BootErrorKind = "config_invalid"       // state=unknown / parse fail
+	BootErrConfigParse        BootErrorKind = "config_parse"         // JSON parse fail
+	BootErrUserDeactivated    BootErrorKind = "user_deactivated"     // state=dormant by /rune:deactivate
+	BootErrVaultNotConfigured BootErrorKind = "vault_not_configured" // endpoint/token empty
 
-	// ── Console dial / NewClient (sync, before any RPC) ────────────────
-	BootErrConsoleBadEndpoint BootErrorKind = "console_bad_endpoint" // ParseEndpoint failed
-	BootErrConsoleCAFile      BootErrorKind = "console_ca_file"      // CA cert path unreadable / not PEM
-	BootErrConsoleDialOpts    BootErrorKind = "console_dial_opts"    // grpc.NewClient rejected options
+	// ── Vault dial / NewClient (sync, before any RPC) ────────────────
+	BootErrVaultBadEndpoint BootErrorKind = "vault_bad_endpoint" // ParseEndpoint failed
+	BootErrVaultCAFile      BootErrorKind = "vault_ca_file"      // CA cert path unreadable / not PEM
+	BootErrVaultDialOpts    BootErrorKind = "vault_dial_opts"    // grpc.NewClient rejected options
 
-	// ── Console RPC (GetAgentManifest path) ────────────────────────────
-	BootErrConsoleTLSHandshake BootErrorKind = "console_tls_handshake" // x509: signed by unknown authority / expired / etc.
-	BootErrConsoleTLSHostname  BootErrorKind = "console_tls_hostname"  // cert SAN does not match endpoint host
-	BootErrConsoleDNS          BootErrorKind = "console_dns"           // hostname resolution failed
-	BootErrConsoleNetwork      BootErrorKind = "console_network"       // TCP unreachable / refused / reset
-	BootErrConsoleTimeout      BootErrorKind = "console_timeout"       // gRPC DeadlineExceeded
-	BootErrConsoleAuth         BootErrorKind = "console_auth"          // gRPC Unauthenticated (bad token)
-	BootErrConsolePermission   BootErrorKind = "console_permission"    // gRPC PermissionDenied (role lacks scope)
-	BootErrConsoleRateLimit    BootErrorKind = "console_rate_limit"    // gRPC ResourceExhausted
-	BootErrConsoleInvalidInput BootErrorKind = "console_invalid_input" // gRPC InvalidArgument
-	BootErrConsoleManifest     BootErrorKind = "console_manifest"      // Console responded but manifest empty/invalid/unparseable
-	BootErrConsoleInternal     BootErrorKind = "console_internal"      // gRPC Internal / other server-side
+	// ── Vault RPC (GetAgentManifest path) ────────────────────────────
+	BootErrVaultTLSHandshake BootErrorKind = "vault_tls_handshake" // x509: signed by unknown authority / expired / etc.
+	BootErrVaultTLSHostname  BootErrorKind = "vault_tls_hostname"  // cert SAN does not match endpoint host
+	BootErrVaultDNS          BootErrorKind = "vault_dns"           // hostname resolution failed
+	BootErrVaultNetwork      BootErrorKind = "vault_network"       // TCP unreachable / refused / reset
+	BootErrVaultTimeout      BootErrorKind = "vault_timeout"       // gRPC DeadlineExceeded
+	BootErrVaultAuth         BootErrorKind = "vault_auth"          // gRPC Unauthenticated (bad token)
+	BootErrVaultPermission   BootErrorKind = "vault_permission"    // gRPC PermissionDenied (role lacks scope)
+	BootErrVaultRateLimit    BootErrorKind = "vault_rate_limit"    // gRPC ResourceExhausted
+	BootErrVaultInvalidInput BootErrorKind = "vault_invalid_input" // gRPC InvalidArgument
+	BootErrVaultManifest     BootErrorKind = "vault_manifest"      // Vault responded but manifest empty/invalid/unparseable
+	BootErrVaultInternal     BootErrorKind = "vault_internal"      // gRPC Internal / other server-side
 
-	// ── Post-Console adapters ──────────────────────────────────────────
+	// ── Post-Vault adapters ──────────────────────────────────────────
 	BootErrEmbedderUnreachable BootErrorKind = "embedder_unreachable" // UDS socket missing / runed down
 	BootErrRunespaceInit       BootErrorKind = "runespace_init"       // client-side runespace encryptor (runespacecrypto.Open) failed
-	BootErrRunespaceIndex      BootErrorKind = "runespace_index"      // runespace index unavailable (reached via the console, not mcp)
+	BootErrRunespaceIndex      BootErrorKind = "runespace_index"      // runespace index unavailable (reached via the vault, not mcp)
 	BootErrKeySave             BootErrorKind = "key_save"             // SaveEncKey / KeyDir filesystem failure
 	BootErrLocalIO             BootErrorKind = "local_io"             // generic local FS / permissions
 )
@@ -60,25 +60,25 @@ const (
 type BootPhase string
 
 const (
-	BootPhaseConfigLoad      BootPhase = "config_load"
-	BootPhaseConfigCheck     BootPhase = "config_check"
-	BootPhaseConsoleDial     BootPhase = "console_dial"
-	BootPhaseConsoleManifest BootPhase = "console_manifest"
-	BootPhaseKeySave         BootPhase = "key_save"
-	BootPhaseEmbedderDial    BootPhase = "embedder_dial"
-	BootPhaseRunespaceInit   BootPhase = "runespace_init"
-	BootPhaseRunespaceIndex  BootPhase = "runespace_index"
+	BootPhaseConfigLoad    BootPhase = "config_load"
+	BootPhaseConfigCheck   BootPhase = "config_check"
+	BootPhaseVaultDial     BootPhase = "vault_dial"
+	BootPhaseVaultManifest BootPhase = "vault_manifest"
+	BootPhaseKeySave       BootPhase = "key_save"
+	BootPhaseEmbedderDial   BootPhase = "embedder_dial"
+	BootPhaseRunespaceInit  BootPhase = "runespace_init"
+	BootPhaseRunespaceIndex BootPhase = "runespace_index"
 )
 
-// BootError — surfaced via diagnostics.console.last_boot_error.
+// BootError — surfaced via diagnostics.vault.last_boot_error.
 //
 // JSON shape (stable contract for SKILL.md / agents):
 //
 //	{
-//	  "kind":     "console_tls_handshake",
+//	  "kind":     "vault_tls_handshake",
 //	  "detail":   "rpc error: code = Unavailable desc = ... x509: ...",
-//	  "hint":     "CA cert at /Users/.../ca.pem does not verify server cert from tcp://X. Re-fetch the current CA from your Console admin.",
-//	  "phase":    "console_manifest",
+//	  "hint":     "CA cert at /Users/.../ca.pem does not verify server cert from tcp://X. Re-fetch the current CA from your Vault admin.",
+//	  "phase":    "vault_manifest",
 //	  "at":       "2026-05-16T10:09:23Z",
 //	  "attempts": 4
 //	}
@@ -112,16 +112,16 @@ func (e *BootError) Retryable() bool {
 		BootErrConfigInvalid,
 		BootErrConfigParse,
 		BootErrUserDeactivated,
-		BootErrConsoleNotConfigured,
-		BootErrConsoleBadEndpoint,
-		BootErrConsoleCAFile,
-		BootErrConsoleDialOpts,
-		BootErrConsoleTLSHandshake,
-		BootErrConsoleTLSHostname,
-		BootErrConsoleAuth,
-		BootErrConsolePermission,
-		BootErrConsoleInvalidInput,
-		BootErrConsoleManifest:
+		BootErrVaultNotConfigured,
+		BootErrVaultBadEndpoint,
+		BootErrVaultCAFile,
+		BootErrVaultDialOpts,
+		BootErrVaultTLSHandshake,
+		BootErrVaultTLSHostname,
+		BootErrVaultAuth,
+		BootErrVaultPermission,
+		BootErrVaultInvalidInput,
+		BootErrVaultManifest:
 		return false
 	default:
 		// Transient: network blips, DNS, timeouts, rate limits, daemon down

@@ -4,9 +4,9 @@
 //
 // State machine:
 //
-//	(spawn) → starting ──(Console OK)──→ active ←──┐
+//	(spawn) → starting ──(Vault OK)──→ active ←──┐
 //	              ↓                      ↓       │
-//	              └─(Console fail)→ waiting_for_console │
+//	              └─(Vault fail)→ waiting_for_vault │
 //	                                     ↕       │
 //	                                /rune:deactivate
 //	                                     ↕       │
@@ -26,23 +26,23 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/keymanager"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/runespacecrypto"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/recovery"
 )
 
 // BootAdapterInjector decouples lifecycle from mcp.Deps to break the
 // adapter ↔ handler import cycle. The boot loop pushes adapter clients +
-// per-token Console bundle metadata through this interface; the concrete
+// per-token Vault bundle metadata through this interface; the concrete
 // implementation (mcp.Deps) propagates them onto the 3 service structs.
 type BootAdapterInjector interface {
-	InjectConsole(client console.Client)
+	InjectVault(client vault.Client)
 	InjectEmbedder(client embedder.Client)
 	InjectEncryptor(enc Encryptor)
-	ApplyConsoleBundle(bundle *console.Bundle)
+	ApplyVaultBundle(bundle *vault.Bundle)
 }
 
 // Encryptor is the client-side FHE encrypt surface the boot loop opens from
@@ -62,7 +62,7 @@ type State int32
 
 const (
 	StateStarting State = iota
-	StateWaitingForConsole
+	StateWaitingForVault
 	StateActive
 	StateDormant
 )
@@ -71,8 +71,8 @@ func (s State) String() string {
 	switch s {
 	case StateStarting:
 		return "starting"
-	case StateWaitingForConsole:
-		return "waiting_for_console"
+	case StateWaitingForVault:
+		return "waiting_for_vault"
 	case StateActive:
 		return "active"
 	case StateDormant:
@@ -81,7 +81,7 @@ func (s State) String() string {
 	return "unknown"
 }
 
-// Manager — atomic state + Console boot loop control.
+// Manager — atomic state + Vault boot loop control.
 type Manager struct {
 	state       atomic.Int32
 	lastError   atomic.Value // string — free-form, kept for slog parity
@@ -233,7 +233,7 @@ func (m *Manager) Attempts() int {
 	return int(m.attempts.Load())
 }
 
-// BootBackoffs — Python server.py Console retry schedule.
+// BootBackoffs — Python server.py Vault retry schedule.
 // Total to cap: 1s → 2s → 5s → 15s → 30s → 60s (then loop at 60s).
 var BootBackoffs = []time.Duration{
 	1 * time.Second,
@@ -245,7 +245,7 @@ var BootBackoffs = []time.Duration{
 }
 
 // DefaultKeyDim is the FHE slot dimension matching the Qwen3-Embedding-0.6B
-// production deployment (spec/components/embedder.md §불변 계약). The Console
+// production deployment (spec/components/embedder.md §불변 계약). The Vault
 // manifest does not currently carry a dim field; once embedder.Info is
 // available end-to-end, the boot loop should source dim from there instead.
 const DefaultKeyDim = 1024
@@ -254,15 +254,15 @@ const DefaultKeyDim = 1024
 type bootResult int
 
 const (
-	// bootRetry — transient failure (Console unreachable, network blip, partial
+	// bootRetry — transient failure (Vault unreachable, network blip, partial
 	// init error). Caller should backoff and try again.
 	bootRetry bootResult = iota
 
-	// bootActive — full success: Console dialed, manifest parsed, keys persisted,
+	// bootActive — full success: Vault dialed, manifest parsed, keys persisted,
 	// adapters wired, services injected. Caller should set StateActive and exit.
 	bootActive
 
-	// bootDormant — terminal: config missing, config.State="dormant", or console
+	// bootDormant — terminal: config missing, config.State="dormant", or vault
 	// endpoint/token unconfigured. Retrying won't help — only /rune:configure
 	// (or a process restart) will. Caller should set StateDormant and exit;
 	// service.LifecycleService.ReloadPipelines is responsible for re-spawning
@@ -279,15 +279,15 @@ const (
 // Failure modes:
 //   - config.json missing             → terminal Dormant (await /rune:configure)
 //   - config.State="dormant"          → terminal Dormant (user explicit)
-//   - console endpoint/token empty      → terminal Dormant (await /rune:configure)
-//   - console dial / GetAgentManifest   → state=WaitingForConsole, exp backoff retry
+//   - vault endpoint/token empty      → terminal Dormant (await /rune:configure)
+//   - vault dial / GetAgentManifest   → state=WaitingForVault, exp backoff retry
 //   - keymanager / embedder / encryptor init → exp backoff retry (might be
 //     transient — daemon down, etc.)
 //   - other config error (parse fail) → exp backoff retry (user might be editing)
 //   - ctx cancellation                → return immediately
 //
-// Every attempt that fails after a successful Console dial closes the partial
-// adapter conns it created (console, embedder) before retrying so
+// Every attempt that fails after a successful Vault dial closes the partial
+// adapter conns it created (vault, embedder) before retrying so
 // gRPC connections do not leak across retries.
 func RunBootLoop(ctx context.Context, m *Manager, deps BootAdapterInjector) {
 	m.SetState(StateStarting)
@@ -405,17 +405,17 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		return bootDormant
 	}
 
-	if cfg.Console.Endpoint == "" || cfg.Console.Token == "" {
-		// Config exists but Console credentials are missing. Same UX as missing
+	if cfg.Vault.Endpoint == "" || cfg.Vault.Token == "" {
+		// Config exists but Vault credentials are missing. Same UX as missing
 		// config — user must run /rune:configure. No retry. Persist to disk
 		// so the next boot picks up the same dormant_reason.
 		m.SetState(StateDormant)
-		m.lastError.Store("console endpoint or token missing in config — run /rune:configure")
-		m.SetBootError(ClassifyDormantReason("console_unconfigured"))
-		if dErr := config.MarkDormant("console_unconfigured"); dErr != nil {
+		m.lastError.Store("vault endpoint or token missing in config — run /rune:configure")
+		m.SetBootError(ClassifyDormantReason("vault_unconfigured"))
+		if dErr := config.MarkDormant("vault_unconfigured"); dErr != nil {
 			slog.Warn("boot: failed to persist dormant state to config.json", "err", dErr)
 		}
-		slog.Warn("boot: console endpoint/token missing — entering dormant",
+		slog.Warn("boot: vault endpoint/token missing — entering dormant",
 			"hint", "run /rune:configure")
 		return bootDormant
 	}
@@ -425,48 +425,48 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	// out so each error site stays a single readable line.
 	classify := func(err error, phase domain.BootPhase) *domain.BootError {
 		return ClassifyBootError(err, BootErrCtx{
-			Phase:           phase,
-			ConsoleEndpoint: cfg.Console.Endpoint,
-			ConsoleCAPath:   cfg.Console.CACert,
-			Attempts:        attempt,
+			Phase:         phase,
+			VaultEndpoint: cfg.Vault.Endpoint,
+			VaultCAPath:   cfg.Vault.CACert,
+			Attempts:      attempt,
 		})
 	}
 
-	consoleClient, err := console.NewClient(cfg.Console.Endpoint, cfg.Console.Token, console.ClientOpts{
-		CACertPath: cfg.Console.CACert,
-		TLSDisable: cfg.Console.TLSDisable,
+	vaultClient, err := vault.NewClient(cfg.Vault.Endpoint, cfg.Vault.Token, vault.ClientOpts{
+		CACertPath: cfg.Vault.CACert,
+		TLSDisable: cfg.Vault.TLSDisable,
 		UnaryInterceptors: []grpc.UnaryClientInterceptor{
-			recovery.UnaryRecovery("console", m),
+			recovery.UnaryRecovery("vault", m),
 		},
 	})
 	if err != nil {
-		m.SetState(StateWaitingForConsole)
-		m.lastError.Store(fmt.Sprintf("console dial: %v", err))
-		m.SetBootError(classify(err, domain.BootPhaseConsoleDial))
-		slog.Error("boot: failed to connect to console", "err", err)
+		m.SetState(StateWaitingForVault)
+		m.lastError.Store(fmt.Sprintf("vault dial: %v", err))
+		m.SetBootError(classify(err, domain.BootPhaseVaultDial))
+		slog.Error("boot: failed to connect to vault", "err", err)
 		return bootRetry
 	}
 
-	bundle, err := consoleClient.GetAgentManifest(ctx)
+	bundle, err := vaultClient.GetAgentManifest(ctx)
 	if err != nil {
-		m.SetState(StateWaitingForConsole)
-		m.lastError.Store(fmt.Sprintf("console get manifest: %v", err))
-		m.SetBootError(classify(err, domain.BootPhaseConsoleManifest))
-		slog.Warn("boot: waiting for console...", "err", err)
-		_ = consoleClient.Close()
+		m.SetState(StateWaitingForVault)
+		m.lastError.Store(fmt.Sprintf("vault get manifest: %v", err))
+		m.SetBootError(classify(err, domain.BootPhaseVaultManifest))
+		slog.Warn("boot: waiting for vault...", "err", err)
+		_ = vaultClient.Close()
 		return bootRetry
 	}
 
 	// Persist the PUBLIC EncKey pair from the manifest and open the local
 	// encryptor (cgo). Capture encrypts here so plaintext vectors never reach
-	// the console; SecKey stays in the console, so this opens Enc-only.
+	// the vault; SecKey stays in the vault, so this opens Enc-only.
 	if bundle.InsertCapability != "pre_encrypted" {
-		m.SetState(StateWaitingForConsole)
-		msg := fmt.Sprintf("console manifest lacks pre_encrypted insert capability (got %q) — console too old for client-side crypto", bundle.InsertCapability)
+		m.SetState(StateWaitingForVault)
+		msg := fmt.Sprintf("vault manifest lacks pre_encrypted insert capability (got %q) — vault too old for client-side crypto", bundle.InsertCapability)
 		m.lastError.Store(msg)
-		m.SetBootError(&domain.BootError{Kind: domain.BootErrConsoleManifest, Detail: msg, Hint: "Update Rune-console to a build that distributes EncKey/agent_dek."})
+		m.SetBootError(&domain.BootError{Kind: domain.BootErrVaultManifest, Detail: msg, Hint: "Update Rune-Vault to a build that distributes EncKey/agent_dek."})
 		slog.Error("boot: " + msg)
-		_ = consoleClient.Close()
+		_ = vaultClient.Close()
 		return bootRetry
 	}
 
@@ -475,31 +475,31 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	// active and fails far away (a missing agent_dek only surfaces at the
 	// first capture's seal step otherwise). Format-level checks only; real
 	// cryptographic validity is judged where the material is used
-	// (runespacecrypto.Open for keys, the console's openMeta for the dek).
+	// (runespacecrypto.Open for keys, the vault's openMeta for the dek).
 	if msg := validateBundle(bundle); msg != "" {
-		m.SetState(StateWaitingForConsole)
+		m.SetState(StateWaitingForVault)
 		m.lastError.Store(msg)
-		m.SetBootError(&domain.BootError{Kind: domain.BootErrConsoleManifest, Detail: msg, Hint: "The console answered with an incomplete manifest — check the console's version and key state."})
+		m.SetBootError(&domain.BootError{Kind: domain.BootErrVaultManifest, Detail: msg, Hint: "The vault answered with an incomplete manifest — check the vault's version and key state."})
 		slog.Error("boot: " + msg)
-		_ = consoleClient.Close()
+		_ = vaultClient.Close()
 		return bootRetry
 	}
 
 	// §9.2 C1 (2026-07-12 개정): every insert carries the RMP+MM dual
-	// representation — the engine, the console proto, and the SDK all reject an
+	// representation — the engine, the vault proto, and the SDK all reject an
 	// MM-less item — so a cluster-less (flat-only) runespace is an unsupported
 	// deployment, not a mode. An empty centroid_set_version means either that,
-	// or the console could not reach the engine while building the manifest;
+	// or the vault could not reach the engine while building the manifest;
 	// both block capture, so fail the boot loudly here instead of activating
 	// into a state where every capture would fail. The boot loop retries, so a
 	// transient engine outage recovers by itself.
 	if bundle.CentroidSetVersion == "" {
-		m.SetState(StateWaitingForConsole)
-		msg := "console manifest carries no centroid_set_version — runespace has no cluster tier (flat-only, unsupported) or the console cannot reach the engine"
+		m.SetState(StateWaitingForVault)
+		msg := "vault manifest carries no centroid_set_version — runespace has no cluster tier (flat-only, unsupported) or the vault cannot reach the engine"
 		m.lastError.Store(msg)
-		m.SetBootError(&domain.BootError{Kind: domain.BootErrConsoleManifest, Detail: msg, Hint: "Configure the runespace cluster tier (centroid set) and check console→runespace connectivity."})
+		m.SetBootError(&domain.BootError{Kind: domain.BootErrVaultManifest, Detail: msg, Hint: "Configure the runespace cluster tier (centroid set) and check vault→runespace connectivity."})
 		slog.Error("boot: " + msg)
-		_ = consoleClient.Close()
+		_ = vaultClient.Close()
 		return bootRetry
 	}
 	keyDir, err := keymanager.SaveEncKeys(bundle.KeyID, bundle.EncKeyJSON, bundle.MMEncKey)
@@ -507,7 +507,7 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		m.lastError.Store(fmt.Sprintf("save enc keys: %v", err))
 		m.SetBootError(&domain.BootError{Kind: domain.BootErrKeySave, Detail: err.Error(), Hint: "Check ~/.rune/keys is writable."})
 		slog.Error("boot: failed to save EncKey", "err", err)
-		_ = consoleClient.Close()
+		_ = vaultClient.Close()
 		return bootRetry
 	}
 	enc, err := runespacecrypto.Open(keyDir, bundle.KeyID, bundle.Dim)
@@ -515,16 +515,16 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		m.lastError.Store(fmt.Sprintf("open encryptor: %v", err))
 		m.SetBootError(&domain.BootError{Kind: domain.BootErrRunespaceInit, Detail: err.Error(), Hint: "The EncKey may be corrupt; re-run /rune:configure."})
 		slog.Error("boot: failed to open encryptor", "err", err)
-		_ = consoleClient.Close()
+		_ = vaultClient.Close()
 		return bootRetry
 	}
 	// Share the clients only now — after every gate (capability, bundle
 	// validation, centroid guard, key save, encryptor open) has passed. The
 	// failure exits above close a client nothing else references yet, so the
-	// services keep the previous boot's still-live console client during retry
+	// services keep the previous boot's still-live vault client during retry
 	// windows and diagnostics stay truthful (§ finding: closed-client refs).
-	deps.InjectConsole(consoleClient)
-	deps.ApplyConsoleBundle(bundle)
+	deps.InjectVault(vaultClient)
+	deps.ApplyVaultBundle(bundle)
 	deps.InjectEncryptor(enc)
 
 	embedderClient, err := embedder.New(embedder.ResolveSocketPath(""), embedder.Opts{
@@ -549,29 +549,29 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	if info, ierr := embedderClient.Info(ctx); ierr == nil {
 		runedCentroidVer = info.CentroidSetVersion
 		if info.VectorDim > 0 && info.VectorDim != bundle.Dim {
-			msg := fmt.Sprintf("dim mismatch: manifest/keys=%d, runed=%d — console and embedder disagree on the embedding dimension", bundle.Dim, info.VectorDim)
-			m.SetState(StateWaitingForConsole)
+			msg := fmt.Sprintf("dim mismatch: manifest/keys=%d, runed=%d — vault and embedder disagree on the embedding dimension", bundle.Dim, info.VectorDim)
+			m.SetState(StateWaitingForVault)
 			m.lastError.Store(msg)
-			m.SetBootError(&domain.BootError{Kind: domain.BootErrConfigInvalid, Detail: msg, Hint: "Check that the console's embedding_dim matches the runed model."})
+			m.SetBootError(&domain.BootError{Kind: domain.BootErrConfigInvalid, Detail: msg, Hint: "Check that the vault's embedding_dim matches the runed model."})
 			slog.Error("boot: " + msg)
 			return bootRetry
 		}
 	}
 
-	// Relay the IVF centroid set from the console down to runed so Embed can
+	// Relay the IVF centroid set from the vault down to runed so Embed can
 	// route inserts. Best-effort at boot: a failure here does not block
 	// activation — capture self-heals at the point of use (§9.2 C4: EmbedRoute
 	// FAILED_PRECONDITION → the service resyncs the set and retries once) —
 	// but a healthy path pushes it now so the first capture pays no resync.
 	//
 	// Skip when runed already holds the manifest's exact set: Info just told
-	// us its version, and re-relaying it costs a ~16MB console fetch + a ~16MB
+	// us its version, and re-relaying it costs a ~16MB vault fetch + a ~16MB
 	// runed push per session boot for nothing. A cold runed (empty version)
 	// or any mismatch still takes the full relay, and the C3/C4 self-heal
 	// keeps covering post-boot centroid replacement.
 	if runedCentroidVer != "" && runedCentroidVer == bundle.CentroidSetVersion {
 		slog.Info("boot: centroid relay skipped — runed already holds the current set", "version", runedCentroidVer)
-	} else if cs, err := consoleClient.Centroids(ctx); err != nil {
+	} else if cs, err := vaultClient.Centroids(ctx); err != nil {
 		slog.Warn("boot: centroid relay fetch failed (routing unavailable until retry)", "err", err)
 	} else if cs != nil && cs.Version != "" && len(cs.Vectors) > 0 {
 		if err := embedderClient.SetCentroids(ctx, cs.Version, cs.Dim, cs.Preset, cs.Vectors); err != nil {

@@ -25,8 +25,8 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
 	"github.com/CryptoLabInc/rune-mcp/internal/service"
 )
@@ -36,10 +36,10 @@ import (
 // State + 3 services drive request handling. cmd/rune-mcp/main.go constructs
 // Deps after the boot loop has populated adapter clients on the services.
 // Until boot completes, write tools fail with PIPELINE_NOT_READY through
-// CheckState; read-only tools (console_status, diagnostics, capture_history)
+// CheckState; read-only tools (vault_status, diagnostics, capture_history)
 // can run pre-active for diagnostics.
 type Deps struct {
-	Console   console.Client
+	Vault     vault.Client
 	Embedder  embedder.Client
 	Encryptor lifecycle.Encryptor
 	State     *lifecycle.Manager
@@ -58,19 +58,19 @@ type Deps struct {
 // (var, not const, so tests can shrink the interval.)
 var staleClientCloseTime = 30 * time.Second
 
-func (d *Deps) InjectConsole(client console.Client) {
-	prev := d.Console
-	d.Console = client
+func (d *Deps) InjectVault(client vault.Client) {
+	prev := d.Vault
+	d.Vault = client
 	if d.Capture != nil {
-		d.Capture.Console = client
+		d.Capture.Vault = client
 	}
 	if d.Recall != nil {
-		d.Recall.Console = client
+		d.Recall.Vault = client
 	}
 	if d.Lifecycle != nil {
-		d.Lifecycle.Console = client
+		d.Lifecycle.Vault = client
 	}
-	closeAfterInterval("console", prev, client)
+	closeAfterInterval("vault", prev, client)
 }
 
 func (d *Deps) InjectEncryptor(enc lifecycle.Encryptor) {
@@ -80,8 +80,8 @@ func (d *Deps) InjectEncryptor(enc lifecycle.Encryptor) {
 	}
 	d.Encryptor = enc
 	// The replaced encryptor wraps a cgo (libevi) key context the GC cannot
-	// reclaim — drain in-flight captures, then Close it, same as the console /
-	// embedder injectors above. Without this every re-boot cycle (console
+	// reclaim — drain in-flight captures, then Close it, same as the vault /
+	// embedder injectors above. Without this every re-boot cycle (vault
 	// restart, boot retry, reload_pipelines) leaks one native key context.
 	closeAfterInterval("encryptor", prev, enc)
 }
@@ -119,12 +119,12 @@ func closeAfterInterval(name string, prev, next io.Closer) {
 	}()
 }
 
-// ApplyConsoleBundle propagates per-bundle config (IndexName / KeyID) to the
-// three services. Called by the boot loop after Console.GetAgentManifest.
+// ApplyVaultBundle propagates per-bundle config (IndexName / KeyID) to the
+// three services. Called by the boot loop after Vault.GetAgentManifest.
 //
-// Under the runespace model the manifest carries no FHE keys — the console holds
+// Under the runespace model the manifest carries no FHE keys — the vault holds
 // them and does all encrypt/decrypt/seal — so this only wires non-secret config.
-func (d *Deps) ApplyConsoleBundle(b *console.Bundle) {
+func (d *Deps) ApplyVaultBundle(b *vault.Bundle) {
 	if b == nil {
 		return
 	}
@@ -191,20 +191,20 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 	mustAdd(srv, deps.Inflight, "capture_history",
 		"List recent captures from local capture_log.jsonl (read-only).",
 		handleCaptureHistory(deps))
-	mustAdd(srv, deps.Inflight, "console_status",
-		"Probe Console connectivity and report secure-search mode.",
-		handleConsoleStatus(deps))
+	mustAdd(srv, deps.Inflight, "vault_status",
+		"Probe Vault connectivity and report secure-search mode.",
+		handleVaultStatus(deps))
 	mustAdd(srv, deps.Inflight, "diagnostics",
-		"Collect a 6-section health snapshot (env / state / console / keys / pipelines / embedding).",
+		"Collect a 6-section health snapshot (env / state / vault / keys / pipelines / embedding).",
 		handleDiagnostics(deps))
 	mustAdd(srv, deps.Inflight, "configure",
-		"Write Console credentials (endpoint, token, optional ca_cert_path / tls_disable) to $HOME/.rune/config.json and mark state=active.",
+		"Write Vault credentials (endpoint, token, optional ca_cert_path / tls_disable) to $HOME/.rune/config.json and mark state=active.",
 		handleConfigure(deps))
 	mustAdd(srv, deps.Inflight, "activate",
 		"Pre-check then reload_pipelines. Returns status=configure_required if $HOME/.rune/config.json is missing/empty, status=install_pending if the runed socket is absent, otherwise mirrors reload_pipelines.",
 		handleActivate(deps))
 	mustAdd(srv, deps.Inflight, "reload_pipelines",
-		"Re-initialize Console pipelines (BOOT replay) with a console warmup.",
+		"Re-initialize Vault pipelines (BOOT replay) with a vault warmup.",
 		handleReloadPipelines(deps))
 
 	return nil

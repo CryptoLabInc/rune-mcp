@@ -5,13 +5,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 )
 
-func goodBundle() *console.Bundle {
-	return &console.Bundle{
+func goodBundle() *vault.Bundle {
+	return &vault.Bundle{
 		AgentID:    "agent-1",
-		KeyID:      "runeconsole-key",
+		KeyID:      "vault-key",
 		IndexName:  "rune",
 		Dim:        1024,
 		EncKeyJSON: []byte(`{"k":"rmp"}`),
@@ -28,16 +28,16 @@ func TestValidateBundle(t *testing.T) {
 	}
 	cases := []struct {
 		name    string
-		mutate  func(*console.Bundle)
+		mutate  func(*vault.Bundle)
 		wantSub string
 	}{
-		{"missing EncKey", func(b *console.Bundle) { b.EncKeyJSON = nil }, "EncKey.json is empty"},
-		{"missing MM key", func(b *console.Bundle) { b.MMEncKey = nil }, "mm_enc_key is empty"},
-		{"missing dek", func(b *console.Bundle) { b.AgentDEK = nil }, "agent_dek is 0 bytes"},
-		{"short dek", func(b *console.Bundle) { b.AgentDEK = []byte{1, 2, 3} }, "agent_dek is 3 bytes"},
-		{"missing agent id", func(b *console.Bundle) { b.AgentID = "" }, "agent_id is empty"},
-		{"missing key id", func(b *console.Bundle) { b.KeyID = "" }, "key_id is empty"},
-		{"zero dim", func(b *console.Bundle) { b.Dim = 0 }, "dim is 0"},
+		{"missing EncKey", func(b *vault.Bundle) { b.EncKeyJSON = nil }, "EncKey.json is empty"},
+		{"missing MM key", func(b *vault.Bundle) { b.MMEncKey = nil }, "mm_enc_key is empty"},
+		{"missing dek", func(b *vault.Bundle) { b.AgentDEK = nil }, "agent_dek is 0 bytes"},
+		{"short dek", func(b *vault.Bundle) { b.AgentDEK = []byte{1, 2, 3} }, "agent_dek is 3 bytes"},
+		{"missing agent id", func(b *vault.Bundle) { b.AgentID = "" }, "agent_id is empty"},
+		{"missing key id", func(b *vault.Bundle) { b.KeyID = "" }, "key_id is empty"},
+		{"zero dim", func(b *vault.Bundle) { b.Dim = 0 }, "dim is 0"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

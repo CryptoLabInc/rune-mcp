@@ -3,11 +3,11 @@ package lifecycle
 import (
 	"fmt"
 
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 )
 
 // agentDEKSize is the seal contract (adapters/seal: AES-256, exactly 32
-// bytes). Checked here at manifest receipt so a bad console surfaces as a boot
+// bytes). Checked here at manifest receipt so a bad vault surfaces as a boot
 // error instead of a far-away seal failure on the first capture (§9.1 B1).
 const agentDEKSize = 32
 
@@ -17,7 +17,7 @@ const agentDEKSize = 32
 // Format checks only — cryptographic validity is judged where each material
 // is used (runespacecrypto.Open parses the keys; the dek proves itself at
 // seal/open time).
-func validateBundle(b *console.Bundle) string {
+func validateBundle(b *vault.Bundle) string {
 	switch {
 	case len(b.EncKeyJSON) == 0:
 		return "manifest defect: EncKey.json is empty"

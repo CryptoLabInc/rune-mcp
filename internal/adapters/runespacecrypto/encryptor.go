@@ -1,12 +1,12 @@
 // Package runespacecrypto wraps the runespace-go-sdk key set for the one
 // operation rune-mcp performs locally: FHE-encrypting an embedding with the
-// PUBLIC EncKey before handing the ciphertext to the Console. This is the only
+// PUBLIC EncKey before handing the ciphertext to the Vault. This is the only
 // cgo (libevi) surface in rune-mcp — keeping it in one package bounds the
 // build/platform constraint (evi archives are arm64-only).
 //
-// The Console delivers the EncKey pair (RMP JSON envelope + MM raw key) in the
+// The Vault delivers the EncKey pair (RMP JSON envelope + MM raw key) in the
 // agent manifest; keymanager persists them in the SDK's on-disk layout and
-// Open loads them Enc-only (no SecKey — decryption stays in the Console).
+// Open loads them Enc-only (no SecKey — decryption stays in the Vault).
 package runespacecrypto
 
 import (

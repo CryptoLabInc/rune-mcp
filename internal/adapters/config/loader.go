@@ -4,14 +4,13 @@
 //
 // Dropped sections (per scope SOT — docs/v04/overview/architecture.md):
 //
-//	runespace / embedding / llm / scribe / retriever — moved to Console bundle
+//	runespace / embedding / llm / scribe / retriever — moved to Vault bundle
 //	(memory only) or external embedder process.
 package config
 
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -19,19 +18,15 @@ import (
 
 // Config — top-level. Read-only by rune-mcp (write path: /rune:configure CLI).
 type Config struct {
-	Console ConsoleConfig `json:"console"`
-
-	// Deprecated: for backward compatibility which use previous "vault"
-	LegacyVault *ConsoleConfig `json:"vault,omitempty"`
-
+	Vault         VaultConfig    `json:"vault"`
 	State         string         `json:"state"` // "active" | "dormant"
 	DormantReason string         `json:"dormant_reason,omitempty"`
 	DormantSince  string         `json:"dormant_since,omitempty"` // RFC3339 UTC
 	Metadata      map[string]any `json:"metadata,omitempty"`      // configVersion/lastUpdated/installedFrom
 }
 
-// ConsoleConfig — connection + auth.
-type ConsoleConfig struct {
+// VaultConfig — connection + auth.
+type VaultConfig struct {
 	Endpoint   string `json:"endpoint"` // tcp://host:port | http(s)://... | host[:port]
 	Token      string `json:"token"`
 	CACert     string `json:"ca_cert,omitempty"`
@@ -96,24 +91,11 @@ func LoadFromPath(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: parse %s: %w", path, err)
 	}
 
-	migrateLegacyVault(&cfg, path)
-
 	if stateOverride := os.Getenv("RUNE_STATE"); stateOverride != "" {
 		cfg.State = stateOverride
 	}
 
 	return &cfg, nil
-}
-
-func migrateLegacyVault(cfg *Config, path string) {
-	// In-place update of old "vault" to new "console"
-	if cfg.LegacyVault != nil && cfg.Console == (ConsoleConfig{}) {
-		cfg.Console = *cfg.LegacyVault
-		slog.Warn(`config: the "vault" section is deprecated and migrated to "console"; re-run /rune:configure to rewrite file`,
-			"path", path)
-	}
-
-	cfg.LegacyVault = nil
 }
 
 func EnsureDirectories() error {

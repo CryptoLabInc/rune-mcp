@@ -10,8 +10,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
 	"github.com/CryptoLabInc/rune-mcp/internal/policy"
@@ -21,7 +21,7 @@ import (
 // Python: mcp/server/server.py:L910-1034 tool_recall + agents/retriever/searcher.py.
 // Spec: docs/v04/spec/flows/recall.md.
 type RecallService struct {
-	Console   console.Client
+	Vault     vault.Client
 	Embedder  embedder.Client
 	State     *lifecycle.Manager
 	IndexName string
@@ -35,11 +35,11 @@ func NewRecallService() *RecallService {
 
 // External-IO call deadlines (per call, not aggregate).
 //   - embedder: runed <100ms warm; 10s tolerates ggml cold start.
-//   - console Search: the console runs the blind search + FHE decrypt against
+//   - vault Search: the vault runs the blind search + FHE decrypt against
 //     runespace, the heaviest hop; 30s upper bound.
 const (
-	embedderCallTimeout  = 10 * time.Second
-	consoleSearchTimeout = 30 * time.Second
+	embedderCallTimeout = 10 * time.Second
+	vaultSearchTimeout  = 30 * time.Second
 )
 
 // Handle — Python: server.py:L910-1034 tool_recall + searcher.search().
@@ -94,15 +94,15 @@ func (s *RecallService) Handle(ctx context.Context, args *domain.RecallArgs) (*d
 // Phase 4 — search orchestration
 // ─────────────────────────────────────────────────────────────────────────────
 
-// topKLimitErr returns a domain TOPK_LIMIT error if err wraps a console top_k
+// topKLimitErr returns a domain TOPK_LIMIT error if err wraps a vault top_k
 // limit rejection, else nil. Unlike transient per-expansion failures (which
 // recall swallows best-effort), a top_k over the token's role limit is
 // deterministic — every expansion fails identically — so recall aborts and
 // surfaces a distinct, actionable error instead of silently returning zero
 // results or a generic INVALID_INPUT.
 func topKLimitErr(err error) *domain.RuneError {
-	var ve *console.Error
-	if errors.As(err, &ve) && ve.Code == console.ErrConsoleTopKExceeded.Code {
+	var ve *vault.Error
+	if errors.As(err, &ve) && ve.Code == vault.ErrVaultTopKExceeded.Code {
 		return &domain.RuneError{
 			Code:      domain.CodeTopKLimit,
 			Message:   ve.Message,
@@ -180,28 +180,28 @@ func (s *RecallService) searchWithExpansions(
 	return allHits, nil
 }
 
-// searchSingle runs one console Search and resolves each hit's (already
-// plaintext) metadata into a SearchHit. The console does the whole blind
+// searchSingle runs one vault Search and resolves each hit's (already
+// plaintext) metadata into a SearchHit. The vault does the whole blind
 // search + FHE decrypt + metadata open internally.
 func (s *RecallService) searchSingle(ctx context.Context, vec []float32, topk int) ([]domain.SearchHit, error) {
-	searchCtx, cancel := context.WithTimeout(ctx, consoleSearchTimeout)
-	hits, err := searchWithRecovery(searchCtx, s.State, s.Console, vec, topk)
+	searchCtx, cancel := context.WithTimeout(ctx, vaultSearchTimeout)
+	hits, err := searchWithRecovery(searchCtx, s.State, s.Vault, vec, topk)
 	cancel()
 	if err != nil {
-		slog.Warn("recall: console search failed", "err", err)
-		return nil, fmt.Errorf("console search: %w", err)
+		slog.Warn("recall: vault search failed", "err", err)
+		return nil, fmt.Errorf("vault search: %w", err)
 	}
-	slog.Info("recall: console search returned", "hits", len(hits), "topk", topk)
+	slog.Info("recall: vault search returned", "hits", len(hits), "topk", topk)
 	if len(hits) == 0 {
 		return nil, nil
 	}
 	return s.resolveHits(hits), nil
 }
 
-// resolveHits converts console hits into SearchHits. The console already decrypted
+// resolveHits converts vault hits into SearchHits. The vault already decrypted
 // the FHE scores and opened the metadata envelope, so Hit.Metadata is plaintext
 // JSON — we just parse it.
-func (s *RecallService) resolveHits(hits []console.Hit) []domain.SearchHit {
+func (s *RecallService) resolveHits(hits []vault.Hit) []domain.SearchHit {
 	out := make([]domain.SearchHit, 0, len(hits))
 	for _, h := range hits {
 		if h.Metadata == "" {

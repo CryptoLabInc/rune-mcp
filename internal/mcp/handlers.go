@@ -77,7 +77,7 @@ func handleDeleteCapture(deps *Deps) sdkmcp.ToolHandlerFor[service.DeleteCapture
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Read / diagnostic tools — bypass CheckState. Surface partial state to the
-// agent (console_status, diagnostics) so users can troubleshoot pre-active.
+// agent (vault_status, diagnostics) so users can troubleshoot pre-active.
 // ─────────────────────────────────────────────────────────────────────────────
 
 func handleCaptureHistory(deps *Deps) sdkmcp.ToolHandlerFor[service.CaptureHistoryArgs, service.CaptureHistoryResult] {
@@ -91,10 +91,10 @@ func handleCaptureHistory(deps *Deps) sdkmcp.ToolHandlerFor[service.CaptureHisto
 	}
 }
 
-func handleConsoleStatus(deps *Deps) sdkmcp.ToolHandlerFor[emptyArgs, service.ConsoleStatusResult] {
-	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, _ emptyArgs) (*sdkmcp.CallToolResult, service.ConsoleStatusResult, error) {
-		var zero service.ConsoleStatusResult
-		out, err := deps.Lifecycle.ConsoleStatus(ctx)
+func handleVaultStatus(deps *Deps) sdkmcp.ToolHandlerFor[emptyArgs, service.VaultStatusResult] {
+	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, _ emptyArgs) (*sdkmcp.CallToolResult, service.VaultStatusResult, error) {
+		var zero service.VaultStatusResult
+		out, err := deps.Lifecycle.VaultStatus(ctx)
 		if err != nil {
 			return errorResult(err), zero, nil
 		}
@@ -112,7 +112,7 @@ func handleDiagnostics(deps *Deps) sdkmcp.ToolHandlerFor[emptyArgs, service.Diag
 func handleConfigure(deps *Deps) sdkmcp.ToolHandlerFor[service.ConfigureArgs, service.ConfigureResult] {
 	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, in service.ConfigureArgs) (*sdkmcp.CallToolResult, service.ConfigureResult, error) {
 		var zero service.ConfigureResult
-		out, err := deps.Lifecycle.Configure(ctx, in) // write Console credentials to $HOME/.rune/config.json
+		out, err := deps.Lifecycle.Configure(ctx, in) // write Vault credentials to $HOME/.rune/config.json
 		if err != nil {
 			return errorResult(err), zero, nil
 		}

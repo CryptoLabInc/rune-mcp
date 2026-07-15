@@ -12,7 +12,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 )
 
@@ -39,13 +39,13 @@ func TestClassifyBootError_TypedX509UnknownAuthority(t *testing.T) {
 	// x509.UnknownAuthorityError zero value is fine — we only check the type.
 	err := x509.UnknownAuthorityError{}
 	be := ClassifyBootError(err, BootErrCtx{
-		Phase:           domain.BootPhaseConsoleManifest,
-		ConsoleEndpoint: "tcp://console.example:50051",
-		ConsoleCAPath:   "/home/user/.rune/certs/ca.pem",
-		Attempts:        3,
+		Phase:         domain.BootPhaseVaultManifest,
+		VaultEndpoint: "tcp://vault.example:50051",
+		VaultCAPath:   "/home/user/.rune/certs/ca.pem",
+		Attempts:      3,
 	})
-	if be.Kind != domain.BootErrConsoleTLSHandshake {
-		t.Fatalf("kind: got %q want %q", be.Kind, domain.BootErrConsoleTLSHandshake)
+	if be.Kind != domain.BootErrVaultTLSHandshake {
+		t.Fatalf("kind: got %q want %q", be.Kind, domain.BootErrVaultTLSHandshake)
 	}
 	if !strings.Contains(be.Hint, "/home/user/.rune/certs/ca.pem") {
 		t.Errorf("hint should mention CA path: %q", be.Hint)
@@ -64,28 +64,28 @@ func TestClassifyBootError_TLSStringFallback(t *testing.T) {
 			"tls: failed to verify certificate: x509: certificate signed by unknown authority\"",
 	)
 	be := ClassifyBootError(err, BootErrCtx{
-		Phase:           domain.BootPhaseConsoleManifest,
-		ConsoleEndpoint: "tcp://158.180.87.178:50051",
-		ConsoleCAPath:   "/u/.rune/certs/ca.pem",
+		Phase:         domain.BootPhaseVaultManifest,
+		VaultEndpoint: "tcp://158.180.87.178:50051",
+		VaultCAPath:   "/u/.rune/certs/ca.pem",
 	})
-	if be.Kind != domain.BootErrConsoleTLSHandshake {
-		t.Fatalf("kind: got %q want %q\ndetail: %s", be.Kind, domain.BootErrConsoleTLSHandshake, be.Detail)
+	if be.Kind != domain.BootErrVaultTLSHandshake {
+		t.Fatalf("kind: got %q want %q\ndetail: %s", be.Kind, domain.BootErrVaultTLSHandshake, be.Detail)
 	}
 	if !strings.Contains(be.Hint, "stale") && !strings.Contains(be.Hint, "regenerated") {
 		t.Errorf("hint should mention CA regeneration: %q", be.Hint)
 	}
 }
 
-func TestClassifyBootError_ConsoleAuth(t *testing.T) {
-	// MapGRPCError converts gRPC Unauthenticated → console.ErrConsoleAuthFailed.
+func TestClassifyBootError_VaultAuth(t *testing.T) {
+	// MapGRPCError converts gRPC Unauthenticated → vault.ErrVaultAuthFailed.
 	authErr := status.Error(codes.Unauthenticated, "token validation failed")
-	mapped := console.MapGRPCError(authErr)
+	mapped := vault.MapGRPCError(authErr)
 	be := ClassifyBootError(mapped, BootErrCtx{
-		Phase:           domain.BootPhaseConsoleManifest,
-		ConsoleEndpoint: "tcp://x:50051",
+		Phase:         domain.BootPhaseVaultManifest,
+		VaultEndpoint: "tcp://x:50051",
 	})
-	if be.Kind != domain.BootErrConsoleAuth {
-		t.Fatalf("kind: got %q want %q", be.Kind, domain.BootErrConsoleAuth)
+	if be.Kind != domain.BootErrVaultAuth {
+		t.Fatalf("kind: got %q want %q", be.Kind, domain.BootErrVaultAuth)
 	}
 	if be.Retryable() {
 		t.Error("auth failure should not be retryable (won't fix on retry)")
@@ -95,15 +95,15 @@ func TestClassifyBootError_ConsoleAuth(t *testing.T) {
 	}
 }
 
-func TestClassifyBootError_ConsoleNetworkViaUnavailable(t *testing.T) {
+func TestClassifyBootError_VaultNetworkViaUnavailable(t *testing.T) {
 	netErr := status.Error(codes.Unavailable, "name resolver error: produced zero addresses")
-	mapped := console.MapGRPCError(netErr)
+	mapped := vault.MapGRPCError(netErr)
 	be := ClassifyBootError(mapped, BootErrCtx{
-		Phase:           domain.BootPhaseConsoleManifest,
-		ConsoleEndpoint: "tcp://does-not-resolve:50051",
+		Phase:         domain.BootPhaseVaultManifest,
+		VaultEndpoint: "tcp://does-not-resolve:50051",
 	})
-	if be.Kind != domain.BootErrConsoleNetwork {
-		t.Fatalf("kind: got %q want %q", be.Kind, domain.BootErrConsoleNetwork)
+	if be.Kind != domain.BootErrVaultNetwork {
+		t.Fatalf("kind: got %q want %q", be.Kind, domain.BootErrVaultNetwork)
 	}
 	if !be.Retryable() {
 		t.Error("network failure should be retryable")
@@ -111,23 +111,23 @@ func TestClassifyBootError_ConsoleNetworkViaUnavailable(t *testing.T) {
 }
 
 func TestClassifyBootError_DNSError(t *testing.T) {
-	dnsErr := &net.DNSError{Name: "console.invalid", Err: "no such host"}
+	dnsErr := &net.DNSError{Name: "vault.invalid", Err: "no such host"}
 	be := ClassifyBootError(dnsErr, BootErrCtx{
-		Phase:           domain.BootPhaseConsoleManifest,
-		ConsoleEndpoint: "tcp://console.invalid:50051",
+		Phase:         domain.BootPhaseVaultManifest,
+		VaultEndpoint: "tcp://vault.invalid:50051",
 	})
-	if be.Kind != domain.BootErrConsoleDNS {
-		t.Fatalf("kind: got %q want %q", be.Kind, domain.BootErrConsoleDNS)
+	if be.Kind != domain.BootErrVaultDNS {
+		t.Fatalf("kind: got %q want %q", be.Kind, domain.BootErrVaultDNS)
 	}
 }
 
 func TestClassifyBootError_GRPCDeadlineExceeded(t *testing.T) {
 	be := ClassifyBootError(
 		status.Error(codes.DeadlineExceeded, "deadline exceeded"),
-		BootErrCtx{Phase: domain.BootPhaseConsoleManifest, ConsoleEndpoint: "x"},
+		BootErrCtx{Phase: domain.BootPhaseVaultManifest, VaultEndpoint: "x"},
 	)
-	if be.Kind != domain.BootErrConsoleTimeout {
-		t.Fatalf("kind: got %q want %q", be.Kind, domain.BootErrConsoleTimeout)
+	if be.Kind != domain.BootErrVaultTimeout {
+		t.Fatalf("kind: got %q want %q", be.Kind, domain.BootErrVaultTimeout)
 	}
 }
 
@@ -174,7 +174,7 @@ func TestClassifyDormantReason(t *testing.T) {
 		wantKind domain.BootErrorKind
 	}{
 		{"not_configured", domain.BootErrConfigMissing},
-		{"console_unconfigured", domain.BootErrConsoleNotConfigured},
+		{"vault_unconfigured", domain.BootErrVaultNotConfigured},
 		{"user_deactivated", domain.BootErrUserDeactivated},
 		{"invalid_state", domain.BootErrConfigInvalid},
 		{"", domain.BootErrConfigInvalid},
@@ -195,13 +195,13 @@ func TestClassifyDormantReason(t *testing.T) {
 
 func TestBootError_RetryableTLS(t *testing.T) {
 	// TLS handshake: NOT retryable (won't fix on retry without user action).
-	be := &domain.BootError{Kind: domain.BootErrConsoleTLSHandshake}
+	be := &domain.BootError{Kind: domain.BootErrVaultTLSHandshake}
 	if be.Retryable() {
 		t.Error("TLS handshake should be non-retryable")
 	}
 
 	// Network: IS retryable.
-	be = &domain.BootError{Kind: domain.BootErrConsoleNetwork}
+	be = &domain.BootError{Kind: domain.BootErrVaultNetwork}
 	if !be.Retryable() {
 		t.Error("network should be retryable")
 	}

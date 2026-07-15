@@ -52,12 +52,12 @@ func SaveToPath(cfg *Config, path string) error {
 // is a no-op (no disk write). Mirrors Python's "skip if same" guard.
 //
 // If config.json doesn't exist yet (fresh install), this creates it with
-// just the dormant fields populated. The Console section stays zero so the
+// just the dormant fields populated. The Vault section stays zero so the
 // next /rune:configure run can fill it in normally.
 //
 // Use cases (called by boot loop on terminal failures):
 //   - "not_configured"     — config.json missing, fresh install
-//   - "console_unconfigured" — config exists but Console.Endpoint/Token empty
+//   - "vault_unconfigured" — config exists but Vault.Endpoint/Token empty
 //   - "user_deactivated"   — already-dormant config picked up by boot
 //     (idempotent path, just refreshes timestamp)
 func MarkDormant(reason string) error {

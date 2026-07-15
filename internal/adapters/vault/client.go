@@ -1,14 +1,14 @@
-// Package console is the Rune-console gRPC client.
+// Package vault is the Rune-Vault gRPC client.
 //
-// Under the runespace model the console holds ALL FHE keys and is the sole
+// Under the runespace model the vault holds ALL FHE keys and is the sole
 // runespace client. rune-mcp is a pure-Go client that only talks to this
 // service — it never encrypts/decrypts or touches runespace directly.
 //
 // Responsibility:
 //   - GetAgentManifest: fetch agent config (no keys)
-//   - Insert: send a plaintext embedding + metadata; console encrypts + seals + stores
-//   - Search: send a plaintext query; console searches + decrypts + opens metadata
-package console
+//   - Insert: send a plaintext embedding + metadata; vault encrypts + seals + stores
+//   - Search: send a plaintext query; vault searches + decrypts + opens metadata
+package vault
 
 import (
 	"context"
@@ -19,7 +19,7 @@ import (
 	"log/slog"
 	"time"
 
-	consolepb "github.com/CryptoLabInc/rune-console/runeconsole/pkg/consolepb"
+	vaultpb "github.com/CryptoLabInc/rune-admin/vault/pkg/vaultpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -29,7 +29,7 @@ import (
 )
 
 // MaxMessageLength — 256MB on both send/recv (FHE ciphertexts are large, and
-// the console relays plaintext vectors which are small; keep the generous cap).
+// the vault relays plaintext vectors which are small; keep the generous cap).
 const MaxMessageLength = 256 * 1024 * 1024
 
 // DefaultTimeout — per-RPC deadline.
@@ -41,7 +41,7 @@ const HealthCheckTimeout = 5 * time.Second
 // Bundle is the agent manifest returned by GetAgentManifest. Under the
 // client-side-crypto model it carries the PUBLIC EncKey pair and the caller's
 // derived agent_dek so rune-mcp can encrypt/seal locally; SecKey and
-// team_secret stay in the Console.
+// team_secret stay in the Vault.
 type Bundle struct {
 	AgentID   string
 	KeyID     string
@@ -52,7 +52,7 @@ type Bundle struct {
 	MMEncKey           []byte // MM EncKey raw bytes (base64-decoded)
 	AgentDEK           []byte // metadata seal key (base64-decoded)
 	CentroidSetVersion string // engine's current set; "" = none loaded yet
-	InsertCapability   string // "pre_encrypted" for the target console
+	InsertCapability   string // "pre_encrypted" for the target vault
 }
 
 type manifestJSON struct {
@@ -70,7 +70,7 @@ type manifestJSON struct {
 func ParseManifestJSON(raw string) (*Bundle, error) {
 	var m manifestJSON
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
-		return nil, fmt.Errorf("console: parse manifest_json: %w", err)
+		return nil, fmt.Errorf("vault: parse manifest_json: %w", err)
 	}
 	b := &Bundle{
 		AgentID:            m.AgentID,
@@ -84,14 +84,14 @@ func ParseManifestJSON(raw string) (*Bundle, error) {
 	if m.MMEncKey != "" {
 		mm, err := base64.StdEncoding.DecodeString(m.MMEncKey)
 		if err != nil {
-			return nil, fmt.Errorf("console: decode mm_enc_key: %w", err)
+			return nil, fmt.Errorf("vault: decode mm_enc_key: %w", err)
 		}
 		b.MMEncKey = mm
 	}
 	if m.AgentDEK != "" {
 		dek, err := base64.StdEncoding.DecodeString(m.AgentDEK)
 		if err != nil {
-			return nil, fmt.Errorf("console: decode agent_dek: %w", err)
+			return nil, fmt.Errorf("vault: decode agent_dek: %w", err)
 		}
 		b.AgentDEK = dek
 	}
@@ -99,7 +99,7 @@ func ParseManifestJSON(raw string) (*Bundle, error) {
 }
 
 // Hit is one decrypted, ranked search result. Metadata is plaintext JSON
-// (the console opened the sealed envelope).
+// (the vault opened the sealed envelope).
 type Hit struct {
 	ID       string
 	Score    float64
@@ -107,7 +107,7 @@ type Hit struct {
 }
 
 // InsertItem is a client-encrypted capture item forwarded verbatim to
-// runespace via the Console. ID is client-generated so retries are idempotent.
+// runespace via the Vault. ID is client-generated so retries are idempotent.
 type InsertItem struct {
 	ID                 string
 	RMPItem            []byte // EncryptFlat output
@@ -117,9 +117,9 @@ type InsertItem struct {
 	SealedMetadata     string // client-sealed {"a","c"} envelope
 }
 
-// CentroidSet is the relayed IVF centroid set (runespace -> console -> here).
+// CentroidSet is the relayed IVF centroid set (runespace -> vault -> here).
 // Preset is a version-hash ingredient — relayed through to runed so it can
-// recompute and verify the content hash ("" when the console predates it).
+// recompute and verify the content hash ("" when the vault predates it).
 type CentroidSet struct {
 	Version string
 	Dim     int
@@ -149,7 +149,7 @@ type client struct {
 	endpoint string
 	token    string
 	conn     *grpc.ClientConn
-	stub     consolepb.ConsoleServiceClient
+	stub     vaultpb.VaultServiceClient
 }
 
 var defaultKeepalive = keepalive.ClientParameters{
@@ -161,7 +161,7 @@ var defaultKeepalive = keepalive.ClientParameters{
 func NewClient(endpoint, token string, opts ClientOpts) (Client, error) {
 	normalized, err := NormalizeEndpoint(endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("console: invalid endpoint: %w", err)
+		return nil, fmt.Errorf("vault: invalid endpoint: %w", err)
 	}
 
 	dialOpts := []grpc.DialOption{
@@ -177,12 +177,12 @@ func NewClient(endpoint, token string, opts ClientOpts) (Client, error) {
 
 	switch {
 	case opts.TLSDisable:
-		slog.Warn("console: TLS disabled — gRPC traffic is unencrypted. Only use for local development.")
+		slog.Warn("vault: TLS disabled — gRPC traffic is unencrypted. Only use for local development.")
 		dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	case opts.CACertPath != "":
 		creds, err := credentials.NewClientTLSFromFile(opts.CACertPath, "")
 		if err != nil {
-			return nil, fmt.Errorf("console: failed to load CA cert %s: %w", opts.CACertPath, err)
+			return nil, fmt.Errorf("vault: failed to load CA cert %s: %w", opts.CACertPath, err)
 		}
 		dialOpts = append(dialOpts, grpc.WithTransportCredentials(creds))
 	default:
@@ -191,10 +191,10 @@ func NewClient(endpoint, token string, opts ClientOpts) (Client, error) {
 
 	conn, err := grpc.NewClient(normalized, dialOpts...)
 	if err != nil {
-		return nil, fmt.Errorf("console: grpc dial failed: %w", err)
+		return nil, fmt.Errorf("vault: grpc dial failed: %w", err)
 	}
 
-	slog.Info("console: connected", "endpoint", normalized)
+	slog.Info("vault: connected", "endpoint", normalized)
 	return newWithConn(normalized, token, conn), nil
 }
 
@@ -208,7 +208,7 @@ func newWithConn(endpoint, token string, conn *grpc.ClientConn) *client {
 		endpoint: endpoint,
 		token:    token,
 		conn:     conn,
-		stub:     consolepb.NewConsoleServiceClient(conn),
+		stub:     vaultpb.NewVaultServiceClient(conn),
 	}
 }
 
@@ -227,12 +227,12 @@ func (c *client) GetAgentManifest(ctx context.Context) (*Bundle, error) {
 	ctx, cancel := withTimeout(c.authCtx(ctx), DefaultTimeout)
 	defer cancel()
 
-	resp, err := c.stub.GetAgentManifest(ctx, &consolepb.GetAgentManifestRequest{Token: c.token})
+	resp, err := c.stub.GetAgentManifest(ctx, &vaultpb.GetAgentManifestRequest{Token: c.token})
 	if err != nil {
 		return nil, MapGRPCError(err)
 	}
 	if msg := resp.GetError(); msg != "" {
-		return nil, &Error{Code: ErrConsoleInternal.Code, Message: "GetAgentManifest: " + msg, Retryable: true}
+		return nil, &Error{Code: ErrVaultInternal.Code, Message: "GetAgentManifest: " + msg, Retryable: true}
 	}
 	return ParseManifestJSON(resp.GetManifestJson())
 }
@@ -241,7 +241,7 @@ func (c *client) Insert(ctx context.Context, item InsertItem) (string, error) {
 	ctx, cancel := withTimeout(c.authCtx(ctx), DefaultTimeout)
 	defer cancel()
 
-	resp, err := c.stub.Insert(ctx, &consolepb.InsertRequest{
+	resp, err := c.stub.Insert(ctx, &vaultpb.InsertRequest{
 		Token:              c.token,
 		Id:                 item.ID,
 		RmpItem:            item.RMPItem,
@@ -254,7 +254,7 @@ func (c *client) Insert(ctx context.Context, item InsertItem) (string, error) {
 		return "", MapGRPCError(err)
 	}
 	if msg := resp.GetError(); msg != "" {
-		return "", &Error{Code: ErrConsoleInternal.Code, Message: "Insert: " + msg, Retryable: true}
+		return "", &Error{Code: ErrVaultInternal.Code, Message: "Insert: " + msg, Retryable: true}
 	}
 	return resp.GetId(), nil
 }
@@ -264,7 +264,7 @@ func (c *client) Centroids(ctx context.Context) (*CentroidSet, error) {
 	ctx, cancel := withTimeout(c.authCtx(ctx), DefaultTimeout)
 	defer cancel()
 
-	stream, err := c.stub.GetCentroids(ctx, &consolepb.GetCentroidsRequest{Token: c.token})
+	stream, err := c.stub.GetCentroids(ctx, &vaultpb.GetCentroidsRequest{Token: c.token})
 	if err != nil {
 		return nil, MapGRPCError(err)
 	}
@@ -278,14 +278,14 @@ func (c *client) Centroids(ctx context.Context) (*CentroidSet, error) {
 			return nil, MapGRPCError(err)
 		}
 		switch p := chunk.GetPayload().(type) {
-		case *consolepb.CentroidChunk_Header:
+		case *vaultpb.CentroidChunk_Header:
 			cs.Version = p.Header.GetVersion()
 			cs.Dim = int(p.Header.GetDim())
 			cs.Preset = p.Header.GetPreset()
 			if n := p.Header.GetNlist(); n > 0 {
 				cs.Vectors = make([][]float32, 0, n)
 			}
-		case *consolepb.CentroidChunk_Batch:
+		case *vaultpb.CentroidChunk_Batch:
 			for _, ct := range p.Batch.GetCentroids() {
 				cs.Vectors = append(cs.Vectors, ct.GetVec())
 			}
@@ -298,7 +298,7 @@ func (c *client) Search(ctx context.Context, vector []float32, topK int) ([]Hit,
 	ctx, cancel := withTimeout(c.authCtx(ctx), DefaultTimeout)
 	defer cancel()
 
-	resp, err := c.stub.Search(ctx, &consolepb.SearchRequest{
+	resp, err := c.stub.Search(ctx, &vaultpb.SearchRequest{
 		Token:  c.token,
 		Vector: vector,
 		TopK:   int32(topK),
@@ -307,7 +307,7 @@ func (c *client) Search(ctx context.Context, vector []float32, topK int) ([]Hit,
 		return nil, MapGRPCError(err)
 	}
 	if msg := resp.GetError(); msg != "" {
-		return nil, &Error{Code: ErrConsoleInternal.Code, Message: "Search: " + msg, Retryable: true}
+		return nil, &Error{Code: ErrVaultInternal.Code, Message: "Search: " + msg, Retryable: true}
 	}
 	out := make([]Hit, 0, len(resp.GetHits()))
 	for _, h := range resp.GetHits() {

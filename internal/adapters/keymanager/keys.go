@@ -1,10 +1,10 @@
-// Package keymanager persists FHE key material received from Console to the
+// Package keymanager persists FHE key material received from Vault to the
 // local rune directory so the runespace SDK can load it via OpenKeysFromFile.
 //
 // Format note: EncKey.json carries a libevi key envelope (provider_meta +
 // entries — see third_party/evi/include/km/KeyEnvelope.hpp). runespace-sdk
 // (our runespace adapter) and pyenvector are both libevi wrappers and produce
-// / consume this same on-disk format. The Console server generated the key via
+// / consume this same on-disk format. The Vault server generated the key via
 // runespace-sdk's GenerateKeys (which calls libevi's evi_km_wrap_enc_key)
 // and forwards the file content verbatim through GetAgentManifest's
 // manifest_json. When we load it back, runespace-sdk's OpenKeysFromFile
@@ -21,7 +21,7 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
 )
 
-// SaveEncKey writes the EncKey envelope received from Console verbatim to
+// SaveEncKey writes the EncKey envelope received from Vault verbatim to
 // ~/.rune/keys/<keyID>/EncKey.json (perm 0600). The directory is created
 // with perm 0700 if missing.
 //
@@ -62,7 +62,7 @@ func SaveEncKey(keyID string, encKey []byte) error {
 //	<keyDir>/EncKey.json      RMP EncKey envelope (verbatim, for EncryptFlat)
 //	<keyDir>/mm/EncKey.bin     MM EncKey raw bytes (for EncryptClustered)
 //
-// Both are delivered in the Console manifest (rmpJSON as string "EncKey.json",
+// Both are delivered in the Vault manifest (rmpJSON as string "EncKey.json",
 // mmKey base64-decoded from "mm_enc_key"). Written verbatim — any re-encoding
 // breaks the cgo key loader. Returns the key directory. Empty inputs are an
 // error (a manifest missing either key cannot support client encryption).

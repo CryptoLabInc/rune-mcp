@@ -5,8 +5,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 )
 
 // resyncEmbedder simulates runed's centroid state: EmbedRoute fails with
@@ -37,35 +37,35 @@ func (e *resyncEmbedder) SetCentroids(_ context.Context, version string, _ int, 
 	return nil
 }
 
-// resyncConsole simulates the console relay: Centroids serves engineVersion, and
+// resyncVault simulates the vault relay: Centroids serves engineVersion, and
 // Insert rejects items routed against any other version with the C3 error.
-type resyncConsole struct {
+type resyncVault struct {
 	engineVersion string
 	centroidsErr  error
 	insertCalls   int
 	insertedIDs   []string
 }
 
-func (v *resyncConsole) GetAgentManifest(context.Context) (*console.Bundle, error) { return nil, nil }
-func (v *resyncConsole) Search(context.Context, []float32, int) ([]console.Hit, error) {
+func (v *resyncVault) GetAgentManifest(context.Context) (*vault.Bundle, error) { return nil, nil }
+func (v *resyncVault) Search(context.Context, []float32, int) ([]vault.Hit, error) {
 	return nil, nil
 }
-func (v *resyncConsole) HealthCheck(context.Context) (bool, error) { return true, nil }
-func (v *resyncConsole) Endpoint() string                          { return "fake" }
-func (v *resyncConsole) Close() error                              { return nil }
+func (v *resyncVault) HealthCheck(context.Context) (bool, error) { return true, nil }
+func (v *resyncVault) Endpoint() string                          { return "fake" }
+func (v *resyncVault) Close() error                              { return nil }
 
-func (v *resyncConsole) Centroids(context.Context) (*console.CentroidSet, error) {
+func (v *resyncVault) Centroids(context.Context) (*vault.CentroidSet, error) {
 	if v.centroidsErr != nil {
 		return nil, v.centroidsErr
 	}
-	return &console.CentroidSet{Version: v.engineVersion, Dim: 2, Vectors: [][]float32{{1, 0}, {0, 1}}}, nil
+	return &vault.CentroidSet{Version: v.engineVersion, Dim: 2, Vectors: [][]float32{{1, 0}, {0, 1}}}, nil
 }
 
-func (v *resyncConsole) Insert(_ context.Context, item console.InsertItem) (string, error) {
+func (v *resyncVault) Insert(_ context.Context, item vault.InsertItem) (string, error) {
 	v.insertCalls++
 	v.insertedIDs = append(v.insertedIDs, item.ID)
 	if item.CentroidSetVersion != v.engineVersion {
-		return "", &console.Error{Code: console.ErrConsoleWrongCentroidVersion.Code, Message: "WRONG_CENTROID_VERSION: stale"}
+		return "", &vault.Error{Code: vault.ErrVaultWrongCentroidVersion.Code, Message: "WRONG_CENTROID_VERSION: stale"}
 	}
 	return item.ID, nil
 }
@@ -75,9 +75,9 @@ type noopEncryptor struct{}
 func (noopEncryptor) EncryptFlat([]float32) ([]byte, error)      { return []byte{0xAA}, nil }
 func (noopEncryptor) EncryptClustered([]float32) ([]byte, error) { return []byte{0xBB}, nil }
 
-func newResyncService(e embedder.Client, v *resyncConsole) *CaptureService {
+func newResyncService(e embedder.Client, v *resyncVault) *CaptureService {
 	return &CaptureService{
-		Console:   v,
+		Vault:     v,
 		Embedder:  e,
 		Encryptor: noopEncryptor{},
 		AgentID:   "agent-test",
@@ -85,11 +85,11 @@ func newResyncService(e embedder.Client, v *resyncConsole) *CaptureService {
 	}
 }
 
-// C4 (§9.2): runed has no centroid set → resync once via the console relay,
+// C4 (§9.2): runed has no centroid set → resync once via the vault relay,
 // then the retried route and the insert both succeed.
 func TestEncryptSealInsert_C4_ColdRunedSelfHeals(t *testing.T) {
 	e := &resyncEmbedder{version: ""} // cold
-	v := &resyncConsole{engineVersion: "v1"}
+	v := &resyncVault{engineVersion: "v1"}
 	s := newResyncService(e, v)
 
 	id, err := s.EncryptSealInsert(context.Background(), "text", `{"k":"v"}`)
@@ -110,7 +110,7 @@ func TestEncryptSealInsert_C4_ColdRunedSelfHeals(t *testing.T) {
 // C4 with a failing resync must not loop: one push attempt, error surfaced.
 func TestEncryptSealInsert_C4_ResyncFailureSurfaces(t *testing.T) {
 	e := &resyncEmbedder{version: "", pushErr: context.DeadlineExceeded}
-	v := &resyncConsole{engineVersion: "v1"}
+	v := &resyncVault{engineVersion: "v1"}
 	s := newResyncService(e, v)
 
 	if _, err := s.EncryptSealInsert(context.Background(), "text", `{}`); err == nil {
@@ -125,8 +125,8 @@ func TestEncryptSealInsert_C4_ResyncFailureSurfaces(t *testing.T) {
 // The insert is rejected once, the service resyncs, rebuilds the item under
 // the same id with the new version, and the retry succeeds.
 func TestEncryptSealInsert_C3_VersionSwapSelfHeals(t *testing.T) {
-	e := &resyncEmbedder{version: "v1"}      // runed still on v1
-	v := &resyncConsole{engineVersion: "v2"} // engine swapped to v2
+	e := &resyncEmbedder{version: "v1"}     // runed still on v1
+	v := &resyncVault{engineVersion: "v2"}  // engine swapped to v2
 	s := newResyncService(e, v)
 
 	id, err := s.EncryptSealInsert(context.Background(), "text", `{"k":"v"}`)
@@ -151,7 +151,7 @@ func TestEncryptSealInsert_C3_VersionSwapSelfHeals(t *testing.T) {
 // swapped sets a second time mid-retry), the error surfaces instead of looping.
 func TestEncryptSealInsert_C3_SecondRejectionSurfaces(t *testing.T) {
 	e := &sabotageEmbedder{resyncEmbedder: &resyncEmbedder{version: "v1"}}
-	v := &resyncConsole{engineVersion: "v2"}
+	v := &resyncVault{engineVersion: "v2"}
 	s := newResyncService(e, v)
 
 	if _, err := s.EncryptSealInsert(context.Background(), "text", `{}`); err == nil {

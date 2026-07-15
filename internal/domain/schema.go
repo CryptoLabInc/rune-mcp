@@ -208,7 +208,7 @@ type Payload struct {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // DecisionRecord — §3. Python: decision_record.py:L166-213.
-// Console.Insert metadata의 decrypted payload.
+// Vault.Insert metadata의 decrypted payload.
 type DecisionRecord struct {
 	SchemaVersion string `json:"schema_version"` // fixed "2.1"
 	ID            string `json:"id"`

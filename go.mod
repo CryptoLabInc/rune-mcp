@@ -3,7 +3,7 @@ module github.com/CryptoLabInc/rune-mcp
 go 1.26.4
 
 require (
-	github.com/CryptoLabInc/rune-console/runeconsole v0.0.0-20260506055025-ad52b6bd549d
+	github.com/CryptoLabInc/rune-admin/vault v0.0.0-20260506055025-ad52b6bd549d
 	github.com/CryptoLabInc/runed v0.1.0
 	github.com/CryptoLabInc/runespace-sdk v0.0.0
 	github.com/google/uuid v1.6.0
@@ -12,9 +12,9 @@ require (
 	google.golang.org/grpc v1.81.0
 )
 
-// Local siblings (integration test): runeconsole provides the ConsoleService stubs;
+// Local siblings (integration test): vault provides the VaultService stubs;
 // the runespace SDK provides client-side EncKey encryption (cgo).
-replace github.com/CryptoLabInc/rune-console/runeconsole => ../rune-console/runeconsole
+replace github.com/CryptoLabInc/rune-admin/vault => ../rune-admin/vault
 
 replace github.com/CryptoLabInc/runespace-sdk => ../runespace-sdk
 
