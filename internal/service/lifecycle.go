@@ -16,6 +16,7 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/keyring"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/logio"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
@@ -509,12 +510,26 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 		cfg = &config.Config{} // fall back to fresh config
 	}
 
-	cfg.Console = config.ConsoleConfig{
+	// Prefer the OS keyring for the token so it never lands in a plaintext file.
+	// Fall back to the config file (0600) when the host has no usable keyring
+	// (headless CI, no D-Bus session, locked/denied keychain).
+	consoleCfg := config.ConsoleConfig{
 		Endpoint:   args.Endpoint,
-		Token:      args.Token,
 		CACert:     args.CACertPath,
 		TLSDisable: args.TLSDisable,
 	}
+	if err := keyring.Set(args.Endpoint, args.Token); err != nil {
+		if !keyring.IsUnavailable(err) {
+			return nil, fmt.Errorf("store token in keyring: %w", err)
+		}
+		slog.Warn("keyring unavailable; storing token in config file (0600)", "err", err.Error())
+		consoleCfg.Token = args.Token
+		consoleCfg.TokenStorage = config.TokenStorageConfig
+	} else {
+		consoleCfg.TokenStorage = config.TokenStorageKeyring
+		slog.Info("console token stored in OS keyring", "endpoint", args.Endpoint)
+	}
+	cfg.Console = consoleCfg
 	cfg.State = "active"
 	cfg.DormantReason = ""
 	cfg.DormantSince = ""
@@ -658,7 +673,11 @@ func (s *LifecycleService) Activate(ctx context.Context) (*ActivateResult, error
 			Hint:   "Run /rune:configure to write Console credentials.",
 		}, nil
 	}
-	if cfg.Console.Endpoint == "" || cfg.Console.Token == "" {
+	// Configured = an endpoint plus a token source (in-file token, or keyring
+	// storage whose entry is validated at boot). A blank Token is normal under
+	// keyring storage, so don't treat it as unconfigured.
+	hasToken := cfg.Console.Token != "" || cfg.Console.TokenStorage == config.TokenStorageKeyring
+	if cfg.Console.Endpoint == "" || !hasToken {
 		return &ActivateResult{
 			OK:     true,
 			Status: ActivateStatusConfigureRequired,

@@ -405,18 +405,25 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		return bootDormant
 	}
 
-	if cfg.Console.Endpoint == "" || cfg.Console.Token == "" {
-		// Config exists but Console credentials are missing. Same UX as missing
-		// config — user must run /rune:configure. No retry. Persist to disk
-		// so the next boot picks up the same dormant_reason.
+	// The token may live in the OS keyring (TokenStorage=keyring); resolve it up
+	// front so the credential gate and the dial below share one value.
+	token, tokErr := cfg.ResolveToken()
+	if cfg.Console.Endpoint == "" || tokErr != nil || token == "" {
+		// Config exists but Console credentials are missing or unreadable (e.g.
+		// keyring says keyring-stored but the entry is gone / keyring locked).
+		// Same UX as missing config — user must run /rune:configure. No retry.
 		m.SetState(StateDormant)
-		m.lastError.Store("console endpoint or token missing in config — run /rune:configure")
+		msg := "console endpoint or token missing in config — run /rune:configure"
+		if tokErr != nil {
+			msg = "console token unavailable: " + tokErr.Error()
+		}
+		m.lastError.Store(msg)
 		m.SetBootError(ClassifyDormantReason("console_unconfigured"))
 		if dErr := config.MarkDormant("console_unconfigured"); dErr != nil {
 			slog.Warn("boot: failed to persist dormant state to config.json", "err", dErr)
 		}
-		slog.Warn("boot: console endpoint/token missing — entering dormant",
-			"hint", "run /rune:configure")
+		slog.Warn("boot: console credentials unavailable — entering dormant",
+			"hint", "run /rune:configure", "detail", msg)
 		return bootDormant
 	}
 
@@ -432,7 +439,7 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		})
 	}
 
-	consoleClient, err := console.NewClient(cfg.Console.Endpoint, cfg.Console.Token, console.ClientOpts{
+	consoleClient, err := console.NewClient(cfg.Console.Endpoint, token, console.ClientOpts{
 		CACertPath: cfg.Console.CACert,
 		TLSDisable: cfg.Console.TLSDisable,
 		UnaryInterceptors: []grpc.UnaryClientInterceptor{
