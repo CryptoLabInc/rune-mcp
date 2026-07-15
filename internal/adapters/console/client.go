@@ -19,7 +19,7 @@ import (
 	"log/slog"
 	"time"
 
-	consolepb "github.com/CryptoLabInc/rune-console/runeconsole/pkg/consolepb"
+	consolepb "github.com/CryptoLabInc/rune-console/pkg/consolepb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -52,7 +52,6 @@ type Bundle struct {
 	MMEncKey           []byte // MM EncKey raw bytes (base64-decoded)
 	AgentDEK           []byte // metadata seal key (base64-decoded)
 	CentroidSetVersion string // engine's current set; "" = none loaded yet
-	InsertCapability   string // "pre_encrypted" for the target console
 }
 
 type manifestJSON struct {
@@ -60,11 +59,10 @@ type manifestJSON struct {
 	KeyID              string `json:"key_id"`
 	IndexName          string `json:"index_name"`
 	Dim                int    `json:"dim"`
-	EncKeyJSON         string `json:"EncKey.json"`
+	EncKeyJSON         string `json:"rmp_enc_key"`
 	MMEncKey           string `json:"mm_enc_key"`
 	AgentDEK           string `json:"agent_dek"`
 	CentroidSetVersion string `json:"centroid_set_version"`
-	Insert             string `json:"insert"`
 }
 
 func ParseManifestJSON(raw string) (*Bundle, error) {
@@ -79,7 +77,6 @@ func ParseManifestJSON(raw string) (*Bundle, error) {
 		Dim:                m.Dim,
 		EncKeyJSON:         []byte(m.EncKeyJSON),
 		CentroidSetVersion: m.CentroidSetVersion,
-		InsertCapability:   m.Insert,
 	}
 	if m.MMEncKey != "" {
 		mm, err := base64.StdEncoding.DecodeString(m.MMEncKey)

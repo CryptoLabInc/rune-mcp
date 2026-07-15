@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/CryptoLabInc/rune-console/pkg/regstr"
+
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
@@ -460,6 +462,13 @@ type ConfigureArgs struct {
 	Token      string `json:"token"`
 	CACertPath string `json:"ca_cert_path,omitempty"`
 	TLSDisable bool   `json:"tls_disable,omitempty"`
+
+	// RegistrationString, when set, is the opaque runev1_… string delivered by
+	// invite email. It takes precedence over Endpoint/Token: the 3-stage
+	// bootstrap decodes it, fetches + pins the console CA over an untrusted
+	// channel, and unwraps the one-time handle into the real access token —
+	// populating Endpoint/Token/CACertPath before the normal write + probe.
+	RegistrationString string `json:"registration_string,omitempty"`
 }
 
 type ConfigureResult struct {
@@ -478,6 +487,16 @@ type ConfigureResult struct {
 const ConfigureProbeTimeout = 5 * time.Second
 
 func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*ConfigureResult, error) {
+	// Registration-string path: run the 3-stage bootstrap and let it fill in
+	// Endpoint/Token/CACertPath. Takes precedence over any raw fields supplied.
+	if args.RegistrationString != "" {
+		bootstrapped, err := s.bootstrapFromRegistration(ctx, args.RegistrationString)
+		if err != nil {
+			return nil, err
+		}
+		args = *bootstrapped
+	}
+
 	if args.Endpoint == "" {
 		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "endpoint is required"}
 	}
@@ -541,6 +560,54 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 	}
 
 	return result, nil
+}
+
+// bootstrapFromRegistration runs the 3-stage connection bootstrap from an
+// opaque registration string and returns ConfigureArgs with Endpoint, Token,
+// and (when TLS) CACertPath populated:
+//
+//	stage 1 — decode the string, fetch the console CA over an untrusted channel,
+//	          verify it against the pinned SHA-256, and persist it.
+//	stage 2 — dial with the pinned CA and unwrap the one-time handle → real token.
+//	stage 3 — (the caller) write the resolved credentials + probe the console.
+//
+// A missing CA pin selects the plaintext dev path (tls_disable=true, no CA file).
+func (s *LifecycleService) bootstrapFromRegistration(ctx context.Context, regString string) (*ConfigureArgs, error) {
+	reg, err := regstr.Decode(regString)
+	if err != nil {
+		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "invalid registration string: " + err.Error()}
+	}
+	if reg.Endpoint == "" {
+		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "registration string has no endpoint"}
+	}
+	if reg.Token == "" {
+		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "registration string has no wrapping token"}
+	}
+
+	// Stage 1: fetch + pin the CA (skipped, with an empty pin, for plaintext dev).
+	caPEM, err := console.FetchCACert(ctx, reg.Endpoint, reg.CASHA256)
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap: fetch CA: %w", err)
+	}
+
+	// Stage 2: unwrap the one-time handle into the real access token.
+	token, err := console.Unwrap(ctx, reg.Endpoint, caPEM, reg.Token)
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap: unwrap: %w", err)
+	}
+
+	out := &ConfigureArgs{Endpoint: reg.Endpoint, Token: token}
+	if len(caPEM) > 0 {
+		caPath, werr := config.SaveConsoleCA(caPEM)
+		if werr != nil {
+			return nil, werr
+		}
+		out.CACertPath = caPath
+	} else {
+		out.TLSDisable = true
+	}
+	slog.Info("console: bootstrap complete", "endpoint", reg.Endpoint, "tls", len(caPEM) > 0)
+	return out, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

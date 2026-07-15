@@ -460,16 +460,7 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	// Persist the PUBLIC EncKey pair from the manifest and open the local
 	// encryptor (cgo). Capture encrypts here so plaintext vectors never reach
 	// the console; SecKey stays in the console, so this opens Enc-only.
-	if bundle.InsertCapability != "pre_encrypted" {
-		m.SetState(StateWaitingForConsole)
-		msg := fmt.Sprintf("console manifest lacks pre_encrypted insert capability (got %q) — console too old for client-side crypto", bundle.InsertCapability)
-		m.lastError.Store(msg)
-		m.SetBootError(&domain.BootError{Kind: domain.BootErrConsoleManifest, Detail: msg, Hint: "Update Rune-console to a build that distributes EncKey/agent_dek."})
-		slog.Error("boot: " + msg)
-		_ = consoleClient.Close()
-		return bootRetry
-	}
-
+	//
 	// §9.1 B1: reject a malformed bundle at the point of receipt, before the
 	// bad material overwrites the on-disk key copies or — worse — boots into
 	// active and fails far away (a missing agent_dek only surfaces at the

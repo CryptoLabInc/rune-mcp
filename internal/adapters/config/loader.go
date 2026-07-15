@@ -77,6 +77,32 @@ func DefaultConfigPath() (string, error) {
 	return filepath.Join(dir, "config.json"), nil // ~/.rune/config.json
 }
 
+// ConsoleCAPath is where the bootstrap persists the console's pinned CA.
+func ConsoleCAPath() (string, error) {
+	dir, err := RuneDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "console-ca.pem"), nil // ~/.rune/console-ca.pem
+}
+
+// SaveConsoleCA writes the pinned CA PEM to ~/.rune/console-ca.pem (0600) and
+// returns its path. The path is what /rune:configure stores as console.ca_cert
+// so subsequent connections verify against the pinned anchor.
+func SaveConsoleCA(pem []byte) (string, error) {
+	if err := EnsureDirectories(); err != nil {
+		return "", fmt.Errorf("config: ensure directories: %w", err)
+	}
+	path, err := ConsoleCAPath()
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, pem, FilePerm); err != nil {
+		return "", fmt.Errorf("config: write CA %s: %w", path, err)
+	}
+	return path, nil
+}
+
 func Load() (*Config, error) {
 	configPath, err := DefaultConfigPath()
 	if err != nil {

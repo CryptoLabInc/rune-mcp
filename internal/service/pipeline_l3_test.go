@@ -61,9 +61,6 @@ func TestPipelineL3(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAgentManifest: %v", err)
 	}
-	if bundle.InsertCapability != "pre_encrypted" {
-		t.Fatalf("console capability = %q, want pre_encrypted", bundle.InsertCapability)
-	}
 	keyDir, err := keymanager.SaveEncKeys(bundle.KeyID, bundle.EncKeyJSON, bundle.MMEncKey)
 	if err != nil {
 		t.Fatalf("SaveEncKeys: %v", err)

@@ -26,7 +26,7 @@ import (
 // with perm 0700 if missing.
 //
 // encKey is the byte content of the original libevi EncKey.json file
-// (manifest_json field "EncKey.json" carries this as a string). Do NOT
+// (manifest field "rmp_enc_key" carries this as a string). Do NOT
 // re-encode, base64-wrap, or otherwise transform — the cgo unwrap on the
 // runespace side parses the original envelope shape and any modification
 // breaks it.
@@ -62,7 +62,7 @@ func SaveEncKey(keyID string, encKey []byte) error {
 //	<keyDir>/EncKey.json      RMP EncKey envelope (verbatim, for EncryptFlat)
 //	<keyDir>/mm/EncKey.bin     MM EncKey raw bytes (for EncryptClustered)
 //
-// Both are delivered in the Console manifest (rmpJSON as string "EncKey.json",
+// Both are delivered in the Console manifest (rmpJSON as string "rmp_enc_key",
 // mmKey base64-decoded from "mm_enc_key"). Written verbatim — any re-encoding
 // breaks the cgo key loader. Returns the key directory. Empty inputs are an
 // error (a manifest missing either key cannot support client encryption).

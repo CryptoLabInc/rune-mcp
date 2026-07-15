@@ -29,7 +29,7 @@ func (e *Error) Error() string {
 func (e *Error) Unwrap() error { return e.Cause }
 
 // The first five mirror Python rune-console categories. The next three were
-// added after auditing rune-console/runeconsole/internal/server/grpc.go: the server
+// added after auditing rune-console/internal/server/grpc.go: the server
 // actually returns codes.PermissionDenied, codes.InvalidArgument, and
 // codes.ResourceExhausted as part of role / input / rate-limit handling, and
 // these need distinct sentinels so callers can tell them apart from generic
@@ -58,7 +58,7 @@ var (
 
 // MapGRPCError maps a gRPC status error to the appropriate console sentinel + cause.
 //
-// Mappings cover both server-emitted codes (rune-console/runeconsole/internal/server/
+// Mappings cover both server-emitted codes (rune-console/internal/server/
 // grpc.go) and transport-layer codes (gRPC runtime / client deadline):
 //
 //	Unauthenticated     → ErrConsoleAuthFailed       (token validation)
