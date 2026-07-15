@@ -22,7 +22,6 @@ import (
 	consolepb "github.com/CryptoLabInc/rune-console/pkg/consolepb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
@@ -48,7 +47,7 @@ type Bundle struct {
 	IndexName string
 	Dim       int
 
-	EncKeyJSON         []byte // RMP EncKey envelope (verbatim)
+	RMPEncKey          []byte // RMP EncKey envelope (verbatim)
 	MMEncKey           []byte // MM EncKey raw bytes (base64-decoded)
 	AgentDEK           []byte // metadata seal key (base64-decoded)
 	CentroidSetVersion string // engine's current set; "" = none loaded yet
@@ -59,7 +58,7 @@ type manifestJSON struct {
 	KeyID              string `json:"key_id"`
 	IndexName          string `json:"index_name"`
 	Dim                int    `json:"dim"`
-	EncKeyJSON         string `json:"rmp_enc_key"`
+	RMPEncKey          string `json:"rmp_enc_key"`
 	MMEncKey           string `json:"mm_enc_key"`
 	AgentDEK           string `json:"agent_dek"`
 	CentroidSetVersion string `json:"centroid_set_version"`
@@ -75,7 +74,7 @@ func ParseManifestJSON(raw string) (*Bundle, error) {
 		KeyID:              m.KeyID,
 		IndexName:          m.IndexName,
 		Dim:                m.Dim,
-		EncKeyJSON:         []byte(m.EncKeyJSON),
+		RMPEncKey:          []byte(m.RMPEncKey),
 		CentroidSetVersion: m.CentroidSetVersion,
 	}
 	if m.MMEncKey != "" {
@@ -116,7 +115,7 @@ type InsertItem struct {
 
 // CentroidSet is the relayed IVF centroid set (runespace -> console -> here).
 // Preset is a version-hash ingredient — relayed through to runed so it can
-// recompute and verify the content hash ("" when the console predates it).
+// recompute and verify the content hash.
 type CentroidSet struct {
 	Version string
 	Dim     int
@@ -137,7 +136,6 @@ type Client interface {
 
 type ClientOpts struct {
 	CACertPath        string // path to PEM; empty = system CA bundle
-	TLSDisable        bool
 	UnaryInterceptors []grpc.UnaryClientInterceptor
 }
 
@@ -172,17 +170,13 @@ func NewClient(endpoint, token string, opts ClientOpts) (Client, error) {
 		dialOpts = append(dialOpts, grpc.WithChainUnaryInterceptor(opts.UnaryInterceptors...))
 	}
 
-	switch {
-	case opts.TLSDisable:
-		slog.Warn("console: TLS disabled — gRPC traffic is unencrypted. Only use for local development.")
-		dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	case opts.CACertPath != "":
+	if opts.CACertPath != "" {
 		creds, err := credentials.NewClientTLSFromFile(opts.CACertPath, "")
 		if err != nil {
 			return nil, fmt.Errorf("console: failed to load CA cert %s: %w", opts.CACertPath, err)
 		}
 		dialOpts = append(dialOpts, grpc.WithTransportCredentials(creds))
-	default:
+	} else {
 		dialOpts = append(dialOpts, grpc.WithTransportCredentials(credentials.NewTLS(nil)))
 	}
 

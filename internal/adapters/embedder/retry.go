@@ -76,8 +76,7 @@ func retry[R any](ctx context.Context, call func(context.Context) (R, error)) (R
 }
 
 // isBootstrapping matches runed's model-loading precondition by its ErrorInfo
-// reason (legacy reason-less runed never matches — those fall through to the
-// centroid-case mapping as before).
+// reason.
 func isBootstrapping(err error) bool {
 	return status.Code(err) == codes.FailedPrecondition && grpcErrorReason(err) == reasonBootstrapping
 }

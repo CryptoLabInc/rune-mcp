@@ -46,10 +46,13 @@ var (
 // runed tags its two FAILED_PRECONDITION conditions with an ErrorInfo reason
 // (runed internal/server, domain "runed.v1") so clients can branch without
 // parsing the human message.
-const reasonBootstrapping = "BOOTSTRAPPING"
+const (
+	reasonBootstrapping = "BOOTSTRAPPING"
+	reasonNoCentroidSet = "NO_CENTROID_SET"
+)
 
 // grpcErrorReason returns the ErrorInfo reason attached to a status error,
-// or "" when absent (legacy runed builds predate the tagging).
+// or "" when no ErrorInfo detail is present.
 func grpcErrorReason(err error) string {
 	st, ok := status.FromError(err)
 	if !ok {
@@ -95,24 +98,32 @@ func MapGRPCError(err error) error {
 			Cause:     err,
 		}
 	case codes.FailedPrecondition:
-		// runed uses FailedPrecondition for two opposite conditions, told
-		// apart by the ErrorInfo reason: BOOTSTRAPPING (model loading — wait
-		// and retry) vs NO_CENTROID_SET (push a set). A missing reason means a
-		// legacy runed; fall back to the centroid case, which preserves the
-		// pre-reason behavior.
-		if grpcErrorReason(err) == reasonBootstrapping {
+		// runed uses FailedPrecondition for two opposite conditions, told apart
+		// by the ErrorInfo reason: BOOTSTRAPPING (model loading — wait and
+		// retry) vs NO_CENTROID_SET (push a set). An untagged FailedPrecondition
+		// is unexpected and maps to an internal error.
+		switch grpcErrorReason(err) {
+		case reasonBootstrapping:
 			return &Error{
 				Code:      ErrEmbedderBootstrapping.Code,
 				Message:   st.Message(),
 				Retryable: true,
 				Cause:     err,
 			}
-		}
-		return &Error{
-			Code:      ErrEmbedderNoCentroids.Code,
-			Message:   st.Message(),
-			Retryable: false,
-			Cause:     err,
+		case reasonNoCentroidSet:
+			return &Error{
+				Code:      ErrEmbedderNoCentroids.Code,
+				Message:   st.Message(),
+				Retryable: false,
+				Cause:     err,
+			}
+		default:
+			return &Error{
+				Code:      ErrEmbedderInternal.Code,
+				Message:   st.Message(),
+				Retryable: false,
+				Cause:     err,
+			}
 		}
 	default:
 		return &Error{

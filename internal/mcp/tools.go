@@ -193,7 +193,7 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 		"Collect a 6-section health snapshot (env / state / console / keys / pipelines / embedding).",
 		handleDiagnostics(deps))
 	mustAdd(srv, deps.Inflight, "configure",
-		"Write Console credentials to $HOME/.rune/config.json and mark state=active. Pass registration_string (the runev1_… string from your invite email) to run the 3-stage bootstrap (fetch+pin CA, unwrap the one-time token) automatically; or pass endpoint + token (+ optional ca_cert_path / tls_disable) directly.",
+		"Write Console credentials to $HOME/.rune/config.json and mark state=active. Pass registration_string (the runev1_… string from your invite email) to run the 3-stage bootstrap (fetch+pin CA, unwrap the one-time token) automatically; or pass endpoint + token (+ optional ca_cert_path) directly.",
 		handleConfigure(deps))
 	mustAdd(srv, deps.Inflight, "activate",
 		"Pre-check then reload_pipelines. Returns status=configure_required if $HOME/.rune/config.json is missing/empty, status=install_pending if the runed socket is absent, otherwise mirrors reload_pipelines.",

@@ -10,13 +10,13 @@ import (
 
 func goodBundle() *console.Bundle {
 	return &console.Bundle{
-		AgentID:    "agent-1",
-		KeyID:      "runeconsole-key",
-		IndexName:  "rune",
-		Dim:        1024,
-		EncKeyJSON: []byte(`{"k":"rmp"}`),
-		MMEncKey:   []byte{1, 2, 3},
-		AgentDEK:   bytes.Repeat([]byte{7}, 32),
+		AgentID:   "agent-1",
+		KeyID:     "runeconsole-key",
+		IndexName: "rune",
+		Dim:       1024,
+		RMPEncKey: []byte(`{"k":"rmp"}`),
+		MMEncKey:  []byte{1, 2, 3},
+		AgentDEK:  bytes.Repeat([]byte{7}, 32),
 	}
 }
 
@@ -31,7 +31,7 @@ func TestValidateBundle(t *testing.T) {
 		mutate  func(*console.Bundle)
 		wantSub string
 	}{
-		{"missing EncKey", func(b *console.Bundle) { b.EncKeyJSON = nil }, "EncKey.json is empty"},
+		{"missing RMP EncKey", func(b *console.Bundle) { b.RMPEncKey = nil }, "rmp_enc_key is empty"},
 		{"missing MM key", func(b *console.Bundle) { b.MMEncKey = nil }, "mm_enc_key is empty"},
 		{"missing dek", func(b *console.Bundle) { b.AgentDEK = nil }, "agent_dek is 0 bytes"},
 		{"short dek", func(b *console.Bundle) { b.AgentDEK = []byte{1, 2, 3} }, "agent_dek is 3 bytes"},

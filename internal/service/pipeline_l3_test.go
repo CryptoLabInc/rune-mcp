@@ -42,9 +42,9 @@ func TestPipelineL3(t *testing.T) {
 	// Isolate key storage so we do not touch a real ~/.rune.
 	t.Setenv("RUNE_HOME", t.TempDir())
 
-	// Default to plaintext; when RUNECONSOLE_CA points at a PEM the console is
-	// TLS and we verify + pin against it (the 3-stage bootstrap's persisted CA).
-	opts := console.ClientOpts{TLSDisable: true}
+	// TLS only: verify + pin against RUNECONSOLE_CA (the 3-stage bootstrap's
+	// persisted CA) when set, else the system CA bundle.
+	opts := console.ClientOpts{}
 	if ca := os.Getenv("RUNECONSOLE_CA"); ca != "" {
 		opts = console.ClientOpts{CACertPath: ca}
 	}
@@ -68,7 +68,7 @@ func TestPipelineL3(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAgentManifest: %v", err)
 	}
-	keyDir, err := keymanager.SaveEncKeys(bundle.KeyID, bundle.EncKeyJSON, bundle.MMEncKey)
+	keyDir, err := keymanager.SaveEncKeys(bundle.KeyID, bundle.RMPEncKey, bundle.MMEncKey)
 	if err != nil {
 		t.Fatalf("SaveEncKeys: %v", err)
 	}

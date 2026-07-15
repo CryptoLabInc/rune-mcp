@@ -437,7 +437,6 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 
 	consoleClient, err := console.NewClient(cfg.Console.Endpoint, token, console.ClientOpts{
 		CACertPath: cfg.Console.CACert,
-		TLSDisable: cfg.Console.TLSDisable,
 		UnaryInterceptors: []grpc.UnaryClientInterceptor{
 			recovery.UnaryRecovery("console", m),
 		},
@@ -496,7 +495,7 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		_ = consoleClient.Close()
 		return bootRetry
 	}
-	keyDir, err := keymanager.SaveEncKeys(bundle.KeyID, bundle.EncKeyJSON, bundle.MMEncKey)
+	keyDir, err := keymanager.SaveEncKeys(bundle.KeyID, bundle.RMPEncKey, bundle.MMEncKey)
 	if err != nil {
 		m.lastError.Store(fmt.Sprintf("save enc keys: %v", err))
 		m.SetBootError(&domain.BootError{Kind: domain.BootErrKeySave, Detail: err.Error(), Hint: "Check ~/.rune/keys is writable."})

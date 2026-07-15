@@ -461,7 +461,6 @@ type ConfigureArgs struct {
 	Endpoint   string `json:"endpoint"`
 	Token      string `json:"token"`
 	CACertPath string `json:"ca_cert_path,omitempty"`
-	TLSDisable bool   `json:"tls_disable,omitempty"`
 
 	// RegistrationString, when set, is the opaque runev1_… string delivered by
 	// invite email. It takes precedence over Endpoint/Token: the 3-stage
@@ -513,9 +512,8 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 	// Fall back to the config file (0600) when the host has no usable keyring
 	// (headless CI, no D-Bus session, locked/denied keychain).
 	consoleCfg := config.ConsoleConfig{
-		Endpoint:   args.Endpoint,
-		CACert:     args.CACertPath,
-		TLSDisable: args.TLSDisable,
+		Endpoint: args.Endpoint,
+		CACert:   args.CACertPath,
 	}
 	if err := keyring.Set(args.Endpoint, args.Token); err != nil {
 		if !keyring.IsUnavailable(err) {
@@ -557,7 +555,6 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 
 	vc, probeErr := console.NewClient(args.Endpoint, args.Token, console.ClientOpts{
 		CACertPath: args.CACertPath,
-		TLSDisable: args.TLSDisable,
 	})
 	if probeErr == nil {
 		_, probeErr = vc.HealthCheck(probeCtx)
@@ -578,14 +575,12 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 
 // bootstrapFromRegistration runs the 3-stage connection bootstrap from an
 // opaque registration string and returns ConfigureArgs with Endpoint, Token,
-// and (when TLS) CACertPath populated:
+// and CACertPath populated:
 //
 //	stage 1 — decode the string, fetch the console CA over an untrusted channel,
 //	          verify it against the pinned SHA-256, and persist it.
 //	stage 2 — dial with the pinned CA and unwrap the one-time handle → real token.
 //	stage 3 — (the caller) write the resolved credentials + probe the console.
-//
-// A missing CA pin selects the plaintext dev path (tls_disable=true, no CA file).
 func (s *LifecycleService) bootstrapFromRegistration(ctx context.Context, regString string) (*ConfigureArgs, error) {
 	reg, err := regstr.Decode(regString)
 	if err != nil {
@@ -598,7 +593,7 @@ func (s *LifecycleService) bootstrapFromRegistration(ctx context.Context, regStr
 		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "registration string has no wrapping token"}
 	}
 
-	// Stage 1: fetch + pin the CA (skipped, with an empty pin, for plaintext dev).
+	// Stage 1: fetch + pin the CA.
 	caPEM, err := console.FetchCACert(ctx, reg.Endpoint, reg.CASHA256)
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap: fetch CA: %w", err)
@@ -610,18 +605,12 @@ func (s *LifecycleService) bootstrapFromRegistration(ctx context.Context, regStr
 		return nil, fmt.Errorf("bootstrap: unwrap: %w", err)
 	}
 
-	out := &ConfigureArgs{Endpoint: reg.Endpoint, Token: token}
-	if len(caPEM) > 0 {
-		caPath, werr := config.SaveConsoleCA(caPEM)
-		if werr != nil {
-			return nil, werr
-		}
-		out.CACertPath = caPath
-	} else {
-		out.TLSDisable = true
+	caPath, err := config.SaveConsoleCA(caPEM)
+	if err != nil {
+		return nil, err
 	}
-	slog.Info("console: bootstrap complete", "endpoint", reg.Endpoint, "tls", len(caPEM) > 0)
-	return out, nil
+	slog.Info("console: bootstrap complete", "endpoint", reg.Endpoint)
+	return &ConfigureArgs{Endpoint: reg.Endpoint, Token: token, CACertPath: caPath}, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

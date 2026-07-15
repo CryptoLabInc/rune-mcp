@@ -13,7 +13,6 @@ import (
 	consolepb "github.com/CryptoLabInc/rune-console/pkg/consolepb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 // BootstrapTimeout bounds each bootstrap RPC (CA fetch, unwrap).
@@ -25,24 +24,20 @@ const BootstrapTimeout = 15 * time.Second
 // only after its SHA-256 matches expectedSHA256 (lowercase hex). The pin,
 // carried out-of-band in the registration string, is the sole trust anchor for
 // this step; the transport being unverified is intentional and safe because a
-// tampered CA fails the pin check.
-//
-// expectedSHA256 == "" selects the plaintext dev path: the endpoint is dialed
-// without TLS and the returned PEM (if any) is not pin-checked.
+// tampered CA fails the pin check. A pin is mandatory — an empty expectedSHA256
+// is rejected.
 func FetchCACert(ctx context.Context, endpoint, expectedSHA256 string) ([]byte, error) {
+	if expectedSHA256 == "" {
+		return nil, &Error{Code: "CONSOLE_BOOTSTRAP", Message: "CA pin (sha256) is required"}
+	}
 	target, err := NormalizeEndpoint(endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("console bootstrap: %w", err)
 	}
 
-	var creds credentials.TransportCredentials
-	if expectedSHA256 == "" {
-		creds = insecure.NewCredentials()
-	} else {
-		// #nosec G402 — trust is anchored by the SHA-256 pin verified below,
-		// not by the certificate chain (the client has no CA yet).
-		creds = credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})
-	}
+	// #nosec G402 — trust is anchored by the SHA-256 pin verified below,
+	// not by the certificate chain (the client has no CA yet).
+	creds := credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})
 
 	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(creds))
 	if err != nil {
@@ -63,40 +58,32 @@ func FetchCACert(ctx context.Context, endpoint, expectedSHA256 string) ([]byte, 
 	if len(pem) == 0 {
 		return nil, &Error{Code: "CONSOLE_BOOTSTRAP", Message: "GetCACert returned an empty CA"}
 	}
-	if expectedSHA256 != "" {
-		sum := sha256.Sum256(pem)
-		got := hex.EncodeToString(sum[:])
-		if !strings.EqualFold(got, expectedSHA256) {
-			return nil, &Error{
-				Code:    "CONSOLE_CA_PIN_MISMATCH",
-				Message: fmt.Sprintf("CA pin mismatch: served %s, expected %s", got, expectedSHA256),
-			}
+	sum := sha256.Sum256(pem)
+	got := hex.EncodeToString(sum[:])
+	if !strings.EqualFold(got, expectedSHA256) {
+		return nil, &Error{
+			Code:    "CONSOLE_CA_PIN_MISMATCH",
+			Message: fmt.Sprintf("CA pin mismatch: served %s, expected %s", got, expectedSHA256),
 		}
 	}
 	return pem, nil
 }
 
-// Unwrap is stage 2: it dials endpoint (verifying the console's TLS against
-// caPEM when non-empty, else plaintext) and redeems the one-time wrapping
-// handle for the real access token. The handle is single-use — a second call
-// fails with "already used", which is the tamper signal for the caller to
-// rotate rather than proceed.
+// Unwrap is stage 2: it dials endpoint (verifying the console's TLS against the
+// pinned caPEM) and redeems the one-time wrapping handle for the real access
+// token. The handle is single-use — a second call fails with "already used",
+// which is the tamper signal for the caller to rotate rather than proceed.
 func Unwrap(ctx context.Context, endpoint string, caPEM []byte, handle string) (string, error) {
 	target, err := NormalizeEndpoint(endpoint)
 	if err != nil {
 		return "", fmt.Errorf("console bootstrap: %w", err)
 	}
 
-	var creds credentials.TransportCredentials
-	if len(caPEM) == 0 {
-		creds = insecure.NewCredentials()
-	} else {
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(caPEM) {
-			return "", &Error{Code: "CONSOLE_BOOTSTRAP", Message: "pinned CA is not valid PEM"}
-		}
-		creds = credentials.NewTLS(&tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12})
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return "", &Error{Code: "CONSOLE_BOOTSTRAP", Message: "pinned CA is empty or not valid PEM"}
 	}
+	creds := credentials.NewTLS(&tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12})
 
 	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(creds))
 	if err != nil {

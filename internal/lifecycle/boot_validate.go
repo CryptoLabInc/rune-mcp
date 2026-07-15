@@ -19,8 +19,8 @@ const agentDEKSize = 32
 // seal/open time).
 func validateBundle(b *console.Bundle) string {
 	switch {
-	case len(b.EncKeyJSON) == 0:
-		return "manifest defect: EncKey.json is empty"
+	case len(b.RMPEncKey) == 0:
+		return "manifest defect: rmp_enc_key is empty"
 	case len(b.MMEncKey) == 0:
 		return "manifest defect: mm_enc_key is empty"
 	case len(b.AgentDEK) != agentDEKSize:

@@ -72,8 +72,7 @@ type Client interface {
 	// FAILED_PRECONDITION if runed has no centroid set (push via SetCentroids).
 	EmbedRoute(ctx context.Context, text string) (Routed, error)
 	// SetCentroids pushes an IVF centroid set to runed for routing. preset is
-	// the version-hash ingredient runed needs to verify the content hash
-	// (empty = legacy chain, runed skips verification).
+	// the version-hash ingredient runed needs to verify the content hash.
 	SetCentroids(ctx context.Context, version string, dim int, preset string, vectors [][]float32) error
 	Info(ctx context.Context) (InfoSnapshot, error)
 	Health(ctx context.Context) (HealthSnapshot, error)

@@ -9,7 +9,6 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -21,9 +20,6 @@ import (
 type Config struct {
 	Console ConsoleConfig `json:"console"`
 
-	// Deprecated: for backward compatibility which use previous "vault"
-	LegacyVault *ConsoleConfig `json:"vault,omitempty"`
-
 	State         string         `json:"state"` // "active" | "dormant"
 	DormantReason string         `json:"dormant_reason,omitempty"`
 	DormantSince  string         `json:"dormant_since,omitempty"` // RFC3339 UTC
@@ -32,9 +28,8 @@ type Config struct {
 
 // Token storage modes for ConsoleConfig.TokenStorage.
 const (
-	// TokenStorageConfig keeps the token in this file (Token field). Also the
-	// implied mode for legacy configs written before keyring support (Token set,
-	// TokenStorage empty).
+	// TokenStorageConfig keeps the token in this file (Token field); also the
+	// implied mode when TokenStorage is empty.
 	TokenStorageConfig = "config"
 	// TokenStorageKeyring keeps the token in the OS keyring; the Token field is
 	// blank and the value is read from the keyring keyed by Endpoint.
@@ -46,9 +41,8 @@ type ConsoleConfig struct {
 	Endpoint string `json:"endpoint"` // tcp://host:port | http(s)://... | host[:port]
 	// Token holds the access token when TokenStorage != "keyring". It is blank
 	// when the token lives in the OS keyring.
-	Token      string `json:"token,omitempty"`
-	CACert     string `json:"ca_cert,omitempty"`
-	TLSDisable bool   `json:"tls_disable,omitempty"`
+	Token  string `json:"token,omitempty"`
+	CACert string `json:"ca_cert,omitempty"`
 	// TokenStorage selects where the token is read from: "keyring" (OS secret
 	// store, keyed by Endpoint) or "config"/"" (the Token field above).
 	TokenStorage string `json:"token_storage,omitempty"`
@@ -157,24 +151,11 @@ func LoadFromPath(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: parse %s: %w", path, err)
 	}
 
-	migrateLegacyVault(&cfg, path)
-
 	if stateOverride := os.Getenv("RUNE_STATE"); stateOverride != "" {
 		cfg.State = stateOverride
 	}
 
 	return &cfg, nil
-}
-
-func migrateLegacyVault(cfg *Config, path string) {
-	// In-place update of old "vault" to new "console"
-	if cfg.LegacyVault != nil && cfg.Console == (ConsoleConfig{}) {
-		cfg.Console = *cfg.LegacyVault
-		slog.Warn(`config: the "vault" section is deprecated and migrated to "console"; re-run /rune:configure to rewrite file`,
-			"path", path)
-	}
-
-	cfg.LegacyVault = nil
 }
 
 func EnsureDirectories() error {

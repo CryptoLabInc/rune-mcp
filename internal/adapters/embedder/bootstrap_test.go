@@ -21,8 +21,8 @@ func preconditionWithReason(t *testing.T, reason, msg string) error {
 	return st.Err()
 }
 
-// The mapper must split runed's two FAILED_PRECONDITION conditions by reason,
-// and keep the legacy (reason-less) behavior as the fallback.
+// The mapper must split runed's two FAILED_PRECONDITION conditions by reason;
+// an untagged FailedPrecondition maps to an internal error.
 func TestMapGRPCError_FailedPreconditionByReason(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -32,7 +32,7 @@ func TestMapGRPCError_FailedPreconditionByReason(t *testing.T) {
 	}{
 		{"bootstrapping", preconditionWithReason(t, "BOOTSTRAPPING", "daemon is bootstrapping"), ErrEmbedderBootstrapping.Code, true},
 		{"no centroid set", preconditionWithReason(t, "NO_CENTROID_SET", "no centroid set loaded"), ErrEmbedderNoCentroids.Code, false},
-		{"legacy runed without reason", status.Error(codes.FailedPrecondition, "daemon is bootstrapping; embed not yet available"), ErrEmbedderNoCentroids.Code, false},
+		{"untagged FailedPrecondition", status.Error(codes.FailedPrecondition, "unexpected precondition"), ErrEmbedderInternal.Code, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
