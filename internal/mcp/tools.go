@@ -1,12 +1,7 @@
 // Package mcp wires the 10 MCP tool handlers onto the official Go SDK and
 // owns Deps injection + state-aware response shaping.
 //
-// Spec:
-//
-//	docs/v04/spec/components/rune-mcp.md (MCP server 구현)
-//	docs/v04/spec/flows/{capture,recall,lifecycle}.md
-//
-// SDK: github.com/modelcontextprotocol/go-sdk v1.5.0+ (D2). Stdio transport.
+// SDK: github.com/modelcontextprotocol/go-sdk v1.5.0+. Stdio transport.
 // Input schema is auto-inferred from the Go input struct (jsonschema tags
 // optional but recommended; will be tightened in Phase 5).
 //
@@ -147,8 +142,8 @@ type emptyArgs struct{}
 
 // Register binds all 10 MCP tools onto the provided SDK server.
 //
-// Tool names are bit-identical to Python `mcp/server/server.py`. SDK sorts
-// tools alphabetically in `tools/list` output, so order here is for readability.
+// Tool names are a stable wire contract. SDK sorts tools alphabetically in
+// `tools/list` output, so order here is for readability.
 //
 // Failure modes that Register surfaces as a startup error (via panic +
 // recover):

@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Graceful shutdown — spec/components/rune-mcp.md §프로세스 수명 Exit sequence.
+// Graceful shutdown — Exit sequence.
 //
 // Triggered by stdin EOF or SIGTERM (handled in cmd/rune-mcp/main.go).
 //
@@ -17,7 +17,7 @@ import (
 //  3. zeroize DEK(s) (best-effort — not hard guarantee, GC may already copy)
 //  4. return — caller os.Exit
 
-// ShutdownTimeout — spec L22 "timeout 30s".
+// ShutdownTimeout caps the inflight-drain wait during graceful shutdown.
 const ShutdownTimeout = 30 * time.Second
 
 // InflightTracker counts active tool handler invocations.
@@ -102,7 +102,7 @@ func waitInflight(ctx context.Context, tracker *InflightTracker) error {
 //
 // This is a best-effort defense — a determined attacker with memory access
 // after process death has no guarantees. GC may also have copied the data
-// before this point. Ported per rune-mcp.md L24 pattern.
+// before this point.
 func ZeroizeDEK(dek []byte) {
 	for i := range dek {
 		dek[i] = 0

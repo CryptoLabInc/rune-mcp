@@ -1,8 +1,6 @@
 // Package config loads ~/.rune/config.json (3-section schema, Go v0.4).
-// Spec: docs/v04/spec/components/rune-mcp.md §Config.
-// Python: agents/common/config.py (365 LoC) — Go reduced from 7 sections to 3.
 //
-// Dropped sections (per scope SOT — docs/v04/overview/architecture.md):
+// Dropped sections:
 //
 //	runespace / embedding / llm / scribe / retriever — moved to Console bundle
 //	(memory only) or external embedder process.
@@ -56,7 +54,7 @@ type ConsoleConfig struct {
 	TokenStorage string `json:"token_storage,omitempty"`
 }
 
-// FilePerms — per rune-mcp.md §Config:
+// FilePerms:
 //
 //	~/.rune/               0700
 //	~/.rune/config.json    0600

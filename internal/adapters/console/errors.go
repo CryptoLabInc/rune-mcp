@@ -28,7 +28,7 @@ func (e *Error) Error() string {
 // Unwrap allows errors.Is / errors.As to inspect the cause.
 func (e *Error) Unwrap() error { return e.Cause }
 
-// The first five mirror Python rune-console categories. The next three were
+// The first five mirror rune-console's categories. The next three were
 // added after auditing rune-console/internal/server/grpc.go: the server
 // actually returns codes.PermissionDenied, codes.InvalidArgument, and
 // codes.ResourceExhausted as part of role / input / rate-limit handling, and
@@ -46,10 +46,10 @@ var (
 	ErrConsoleTopKExceeded     = &Error{Code: "CONSOLE_TOPK_EXCEEDED", Retryable: false}
 	ErrConsoleRateLimited      = &Error{Code: "CONSOLE_RATE_LIMITED", Retryable: true}
 	// ErrConsoleWrongCentroidVersion — the runespace engine replaced its centroid
-	// set and the insert was routed against the stale one (§9.2 C3). Not
-	// retryable as-is: resync centroids (console relay → runed), re-route, and
-	// retry once with the same id. Wire contract: FailedPrecondition with the
-	// "WRONG_CENTROID_VERSION" message prefix from the console Insert handler.
+	// set and the insert was routed against the stale one. Not retryable as-is:
+	// resync centroids (console relay → runed), re-route, and retry once with the
+	// same id. Wire contract: FailedPrecondition with the "WRONG_CENTROID_VERSION"
+	// message prefix from the console Insert handler.
 	ErrConsoleWrongCentroidVersion = &Error{Code: "WRONG_CENTROID_VERSION", Retryable: false}
 
 	// ErrNotHTTPScheme — returned by HealthFallback when endpoint is not http(s).

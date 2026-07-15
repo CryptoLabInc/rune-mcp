@@ -4,10 +4,8 @@ package domain
 // diagnostics so agents (and humans) can fast-fail with a specific kind +
 // hint instead of probing the system manually.
 //
-// Spec rationale: rune-mcp's boot loop currently logs errors and stores a
-// free-form string in lifecycle.Manager.LastError(). Callers (diagnostics,
-// SKILL.md flows) need a stable enum to branch on. See
-// docs/v04/decisions/D??-boot-error-surface.md (planned).
+// The boot loop otherwise logs errors and stores a free-form string in
+// lifecycle.Manager.LastError(); callers need a stable enum to branch on.
 //
 // Leaf type: imports stdlib only. Classifier lives in internal/lifecycle.
 
@@ -19,7 +17,7 @@ type BootErrorKind string
 
 const (
 	// Catch-all for unrecognized failures. Detail contains the raw message;
-	// SKILL.md should ask the user to share it with an admin.
+	// the agent should ask the user to share it with an admin.
 	BootErrUnknown BootErrorKind = "unknown"
 
 	// ── Config-side (terminal Dormant) ───────────────────────────────
@@ -72,7 +70,7 @@ const (
 
 // BootError — surfaced via diagnostics.console.last_boot_error.
 //
-// JSON shape (stable contract for SKILL.md / agents):
+// JSON shape (stable contract for agents):
 //
 //	{
 //	  "kind":     "console_tls_handshake",
@@ -100,7 +98,7 @@ type BootError struct {
 // token, fix CA cert, edit config, etc.).
 //
 // The boot loop itself may still retry on bootRetry results regardless of
-// this flag — Retryable is for SKILL.md / UI to decide whether to suggest
+// this flag — Retryable is for the agent / UI to decide whether to suggest
 // "wait + recheck" vs "fix the underlying issue before recheck."
 func (e *BootError) Retryable() bool {
 	if e == nil {

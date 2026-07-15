@@ -17,10 +17,9 @@ import (
 const maxRecallTopK = 50
 
 // State gate — called at every tool handler entry.
-// Returns appropriate RuneError for non-active states (Python _ensure_pipelines).
+// Returns appropriate RuneError for non-active states.
 //
-// Python: server.py:L1503-1518 _ensure_pipelines.
-// Recovery hints differ by internal state (rune-mcp.md §에러 처리):
+// Recovery hints differ by internal state:
 //   - starting            → "Wait 1-2s and retry"
 //   - waiting_for_console   → "Last console error: {err}. Run /rune:console_status"
 //   - dormant(user)       → "Run /rune:activate"
@@ -55,7 +54,7 @@ func withHint(base *domain.RuneError, hint string) *domain.RuneError {
 // Input validation (Phase 2 entries)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ValidateCaptureRequest — Python server.py:L1240-1242 (parse_llm_json check).
+// ValidateCaptureRequest checks a parsed capture payload.
 //   - text empty → ErrInvalidInput
 //   - extracted nil → ErrInvalidInput ("Invalid extracted JSON — could not parse")
 func ValidateCaptureRequest(req *domain.CaptureRequest) error {
@@ -68,8 +67,8 @@ func ValidateCaptureRequest(req *domain.CaptureRequest) error {
 	return nil
 }
 
-// ValidateRecallArgs — Python server.py:L910-932.
-//   - query empty → ErrInvalidInput (D24 early reject)
+// ValidateRecallArgs checks recall tool arguments.
+//   - query empty → ErrInvalidInput (early reject)
 //   - topk > maxRecallTopK → ErrInvalidInput (sanity ceiling; real limit is the console's)
 //   - topk == 0 → default 5
 func ValidateRecallArgs(args *domain.RecallArgs) error {
@@ -88,7 +87,7 @@ func ValidateRecallArgs(args *domain.RecallArgs) error {
 	return nil
 }
 
-// TruncateTitle — D3. 60-rune truncate (UTF-8 aware).
+// TruncateTitle — 60-rune truncate (UTF-8 aware).
 func TruncateTitle(s string) string {
 	runes := []rune(s)
 	if len(runes) > domain.MaxTitleLen {

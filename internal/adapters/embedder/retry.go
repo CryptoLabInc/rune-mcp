@@ -15,16 +15,14 @@ import (
 // heals by itself, so instead of failing the caller's capture/recall, retry
 // blocks on it: poll every BootstrapPollEvery up to BootstrapWaitBudget, then
 // surface the (retryable) error. Vars, not consts, so tests can shrink them.
-// Distinct from the D7 schedule: D7 covers transient transport faults;
-// bootstrap polling never consumes D7 attempts.
+// Distinct from the retry schedule, which covers transient transport faults;
+// bootstrap polling never consumes a retry attempt.
 var (
 	BootstrapWaitBudget = 60 * time.Second
 	BootstrapPollEvery  = 2500 * time.Millisecond
 )
 
-// retry executes call() with the D7 backoff schedule [0, 500ms, 2s].
-//
-// Spec: docs/v04/spec/components/embedder.md §Retry 정책 (D7).
+// retry executes call() with the backoff schedule [0, 500ms, 2s].
 // Total attempts: 3 (one per RetryBackoffs entry).
 //
 // Retryable gRPC codes:
@@ -66,7 +64,7 @@ func retry[R any](ctx context.Context, call func(context.Context) (R, error)) (R
 			case <-ctx.Done():
 				return zero, MapGRPCError(ctx.Err())
 			}
-			continue // waiting out a known-transient state consumes no D7 attempt
+			continue // waiting out a known-transient state consumes no retry attempt
 		}
 		if !retryable(err) {
 			return zero, MapGRPCError(err)

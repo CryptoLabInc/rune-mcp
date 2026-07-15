@@ -1,14 +1,12 @@
 package domain
 
 // Query / recall types + internal search types.
-// Spec: docs/v04/spec/types.md §1.7-1.8, §4.2, §5.1-5.3.
-// Python: agents/retriever/query_processor.py · searcher.py.
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §1.7 QueryIntent (8 values)
+// QueryIntent (8 values)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// QueryIntent — Python: query_processor.py:L23-32.
+// QueryIntent — recall query classification (8 values).
 type QueryIntent string
 
 const (
@@ -23,10 +21,10 @@ const (
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §1.8 TimeScope (5 values)
+// TimeScope (5 values)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// TimeScope — Python: query_processor.py:L35-41.
+// TimeScope — recall time-window filter (5 values).
 type TimeScope string
 
 const (
@@ -38,10 +36,10 @@ const (
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §4.2 RecallArgs / RecallResult
+// RecallArgs / RecallResult
 // ─────────────────────────────────────────────────────────────────────────────
 
-// RecallArgs — §4.2. Python: server.py:L910-1034.
+// RecallArgs — recall tool request body.
 type RecallArgs struct {
 	Query  string  `json:"query"`
 	TopK   int     `json:"topk,omitempty"`   // default 5; client sanity ceiling 50, real cap from console token role
@@ -50,7 +48,8 @@ type RecallArgs struct {
 	Since  *string `json:"since,omitempty"`  // ISO date "YYYY-MM-DD"
 }
 
-// RecallResult — §4.2. Synthesized is always false (D28 agent-delegated).
+// RecallResult — recall tool response body. Synthesized is always false
+// (agent-delegated).
 type RecallResult struct {
 	OK          bool           `json:"ok"`
 	Found       int            `json:"found"`
@@ -61,7 +60,7 @@ type RecallResult struct {
 	Error       string         `json:"error,omitempty"`
 }
 
-// RecallEntry — §4.2.
+// RecallEntry — one matched record in a RecallResult.
 type RecallEntry struct {
 	RecordID        string  `json:"record_id"`
 	Title           string  `json:"title"`
@@ -79,17 +78,17 @@ type RecallEntry struct {
 	PhaseTotal *int    `json:"phase_total,omitempty"`
 }
 
-// RecallSource — §4.2.
+// RecallSource — a record cited as a source in a RecallResult.
 type RecallSource struct {
 	RecordID string `json:"record_id"`
 	Title    string `json:"title"`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §5.1 SearchHit — recall Phase 3-6 internal pipeline
+// SearchHit — recall Phase 3-6 internal pipeline
 // ─────────────────────────────────────────────────────────────────────────────
 
-// SearchHit — §5.1. Python: searcher.py:L44-76 SearchResult.
+// SearchHit — one hit in the internal recall search pipeline.
 type SearchHit struct {
 	RecordID        string
 	Title           string
@@ -108,18 +107,18 @@ type SearchHit struct {
 	PhaseTotal *int
 }
 
-// IsReliable — Python property mirror.
+// IsReliable reports whether the hit's certainty is supported or partially_supported.
 func (h *SearchHit) IsReliable() bool {
 	return h.Certainty == "supported" || h.Certainty == "partially_supported"
 }
 
-// IsPhase — Python property mirror.
+// IsPhase reports whether the hit belongs to a record group (phase_chain / bundle).
 func (h *SearchHit) IsPhase() bool {
 	return h.GroupID != nil
 }
 
-// ExtractPayloadText — §5.1. Strict v2.1 (D32). No v1/v2.0 fallback.
-// Python reference: searcher.py:L487-496 (v0.4 simplified to payload.text only).
+// ExtractPayloadText reads payload.text from a record's metadata. Strict v2.1:
+// only payload.text is read, with no v1/v2.0 fallback paths.
 func ExtractPayloadText(metadata map[string]any) string {
 	payload, ok := metadata["payload"].(map[string]any)
 	if !ok {
@@ -130,11 +129,11 @@ func ExtractPayloadText(metadata map[string]any) string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §5.2 ParsedQuery — recall Phase 2 result
+// ParsedQuery — recall Phase 2 result
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ParsedQuery — §5.2. Python: query_processor.py:L44-54.
-// No Language field (D21 — agent pre-translates).
+// ParsedQuery — recall Phase 2 result.
+// No Language field — the agent pre-translates.
 type ParsedQuery struct {
 	Original        string
 	Cleaned         string
@@ -146,13 +145,12 @@ type ParsedQuery struct {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §5.3 Detection — capture Phase 2 result
+// Detection — capture Phase 2 result
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Detection — §5.3. Built from agent data (not Python's full DetectionResult).
-// Python: server.py:L70-87 _detection_from_agent_data.
+// Detection — capture Phase 2 result, built from agent data.
 type Detection struct {
-	IsSignificant bool    // agent-delegated: always true (server.py:L82)
+	IsSignificant bool    // agent-delegated: always true
 	Confidence    float64 // [0.0, 1.0] agent-provided
 	Domain        string  // agent-delegated; always "general"
 }

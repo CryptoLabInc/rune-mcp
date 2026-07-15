@@ -44,7 +44,7 @@ func TestEmbed_HangIsBounded(t *testing.T) {
 	if !errors.As(err, &e) || !e.Retryable {
 		t.Fatalf("want retryable embedder.Error, got %v", err)
 	}
-	// D7 3시도 × 40ms + 백오프(0/500ms/2s) < 4s — 영원한 블로킹이 아님을 확인
+	// 재시도 3시도 × 40ms + 백오프(0/500ms/2s) < 4s — 영원한 블로킹이 아님을 확인
 	if elapsed := time.Since(start); elapsed > 4*time.Second {
 		t.Fatalf("hang not bounded: %v", elapsed)
 	}

@@ -1,13 +1,13 @@
 package policy_test
 
-// Tests for policy.Parse — port of Python's TestQueryProcessor
-// (agents/tests/test_retriever.py:11-92) plus thoroughness-extending cases for
-// every QueryIntent and TimeScope, regex precedence (rule iteration order),
-// clean/cap invariants exact-match, and stop-word filter.
+// Tests for policy.Parse — port of the original query-processor test suite
+// plus thoroughness-extending cases for every QueryIntent and TimeScope, regex
+// precedence (rule iteration order), clean/cap invariants exact-match, and
+// stop-word filter.
 //
 // Multilingual tests intentionally omitted: Go ParsedQuery has no Language
-// field (D21 — agent pre-translates before invocation), so the regex/LLM
-// split that exists in Python QueryProcessor does not exist here.
+// field (agent pre-translates before invocation), so the regex/LLM
+// split that existed in the original query processor does not exist here.
 //
 // Black-box style — exercises only the public Parse entry point. Internals
 // (cleanQuery, detectIntent, detectTimeScope, extractEntities,
@@ -23,14 +23,12 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/policy"
 )
 
-// Intent classification — covers all 7 explicit intents + GENERAL fallback.
-// Python parity (test_retriever.py:19-53):
+// Intent classification — covers all 7 explicit intents + GENERAL fallback:
+// decision_rationale / feature_history / pattern_lookup / technical_context /
+// general_query.
 //
-//	test_parse_decision_rationale_query / feature_history / pattern_lookup /
-//	technical_context / general_query.
-//
-// Beyond Python: SECURITY_COMPLIANCE / HISTORICAL_CONTEXT / ATTRIBUTION
-// share the regex tables on both sides, so we gate them too.
+// SECURITY_COMPLIANCE / HISTORICAL_CONTEXT / ATTRIBUTION share the regex tables,
+// so we gate them too.
 func TestParse_IntentClassification(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -75,7 +73,7 @@ func TestParse_IntentRulePrecedence(t *testing.T) {
 }
 
 // Time scope detection — all 4 explicit scopes + ALL_TIME default + numeric
-// boundaries. Python parity (test_retriever.py:55-62): test_time_scope_detection.
+// boundaries.
 func TestParse_TimeScope(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -120,7 +118,6 @@ func TestParse_TimeRulePrecedence(t *testing.T) {
 }
 
 // Entity extraction — quoted strings preserved verbatim (incl. case & space).
-// Python parity (test_retriever.py:64-67): test_entity_extraction_quoted.
 func TestParse_EntitiesQuoted(t *testing.T) {
 	parsed := policy.Parse(`Why did we choose "React Native"?`)
 
@@ -130,10 +127,9 @@ func TestParse_EntitiesQuoted(t *testing.T) {
 }
 
 // Entity extraction — capitalized scan + tech regex must each surface their
-// targets. Tightened from the looser Python assertion (which used OR): both
+// targets. Tightened from the looser original assertion (which used OR): both
 // PostgreSQL AND MySQL must appear (case-insensitive after stripping
 // trailing punctuation that strings.Fields keeps attached, e.g. "MySQL?").
-// Python parity (test_retriever.py:69-74): test_entity_extraction_capitalized.
 func TestParse_EntitiesCapitalizedAndTechPatterns(t *testing.T) {
 	parsed := policy.Parse("Why did we use PostgreSQL instead of MySQL?")
 
@@ -152,8 +148,7 @@ func TestParse_EntitiesCapitalizedAndTechPatterns(t *testing.T) {
 }
 
 // Decision-rationale query surfaces the entity in entities OR the lowercased
-// token in cleaned. Mirrors the disjunction Python asserts in
-// test_retriever.py:25 — preserved here as a single test rather than split
+// token in cleaned. Preserved here as a single test rather than split
 // across files.
 func TestParse_EntityOrCleanedSurfacesToken(t *testing.T) {
 	parsed := policy.Parse("Why did we choose PostgreSQL over MySQL?")
@@ -173,9 +168,8 @@ func TestParse_EntityOrCleanedSurfacesToken(t *testing.T) {
 }
 
 // Keyword extraction — content terms retained, stop words and short words
-// filtered, dedup'd post-lowercase. Python parity (test_retriever.py:76-79):
-// test_keyword_extraction. Tightened from Python's OR to AND — both content
-// terms must surface.
+// filtered, dedup'd post-lowercase. Tightened from the original OR to AND —
+// both content terms must surface.
 func TestParse_KeywordsRetainsContentTerms(t *testing.T) {
 	parsed := policy.Parse("Why did we choose PostgreSQL for the database?")
 
@@ -225,7 +219,7 @@ func TestParse_KeywordsDedupAfterLowercase(t *testing.T) {
 }
 
 // Query expansion — the cleaned query, intent variants, and entity-derived
-// strings all appear. Python parity (test_retriever.py:81-86): test_query_expansion.
+// strings all appear.
 // Tightened: also asserts at least one DecisionRationale-prefix variant
 // appears (would catch a regression that deletes the intent switch).
 //
@@ -353,8 +347,7 @@ func TestParse_OriginalPreserved(t *testing.T) {
 }
 
 // Output caps must clamp to exactly the documented bounds when input
-// overflows. Spec: docs/v04/spec/types.md §5.2 ParsedQuery
-// (entities ≤ 10, keywords ≤ 15, expansions ≤ 5).
+// overflows — ParsedQuery (entities ≤ 10, keywords ≤ 15, expansions ≤ 5).
 func TestParse_FieldCaps(t *testing.T) {
 	// Entity-flood input: 12 quoted strings (overflows cap by 2) plus
 	// tech tokens that would also surface, plus enough content words to

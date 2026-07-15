@@ -23,7 +23,7 @@ func TestSaveEncKey_WritesBytesVerbatim(t *testing.T) {
 	home := withTempHome(t)
 
 	// Simulate the exact bytes Console would forward as manifest_json["EncKey.json"]:
-	// a pyenvector KeyEnvelope JSON string. Use a representative payload that
+	// a libevi KeyEnvelope JSON string. Use a representative payload that
 	// includes the structural fields libevi expects (provider_meta + entries),
 	// without committing to specific values for unit-test purposes.
 	encKey := []byte(`{

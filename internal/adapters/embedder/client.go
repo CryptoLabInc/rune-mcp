@@ -1,15 +1,14 @@
-// Package embedder is the gRPC client for the external embedder daemon.
-// Spec: docs/v04/spec/components/embedder.md.
-// Decision: D30 gRPC over Unix socket.
+// Package embedder is the gRPC client for the external embedder daemon,
+// reached over a Unix socket.
 //
 // rune-mcp does NOT spawn or manage the embedder. It connects as client.
-// Socket path priority (spec/components/embedder.md §소켓 경로):
+// Socket path priority:
 //  1. env RUNE_EMBEDDER_SOCKET
 //  2. config.embedder.socket_path
 //  3. embedder project convention default
 //
-// Retry policy (D7): [0, 500ms, 2s] × 3 on Unavailable / DeadlineExceeded /
-// ResourceExhausted. Boot does NOT poll Health (D8) — first embed call drives.
+// Retry policy: [0, 500ms, 2s] × 3 on Unavailable / DeadlineExceeded /
+// ResourceExhausted. Boot does NOT poll Health — first embed call drives.
 package embedder
 
 import (
@@ -24,7 +23,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// RetryBackoffs — D7 (Python server.py timeout equivalent).
+// RetryBackoffs is the per-attempt retry schedule.
 var RetryBackoffs = []time.Duration{
 	0,
 	500 * time.Millisecond,
@@ -97,10 +96,10 @@ type Opts struct {
 
 // New dials the runed daemon over unix socket. The caller resolves sockPath
 // (env RUNE_EMBEDDER_SOCKET > config.embedder.socket_path > default
-// ~/.runed/embedding.sock per embedder.md §소켓 경로).
+// ~/.runed/embedding.sock).
 //
 // grpc-go natively resolves "unix://" targets; no custom dialer is needed.
-// TLS is unnecessary for UDS (kernel-mediated, same machine — embedder.md §Dial).
+// TLS is unnecessary for UDS (kernel-mediated, same machine).
 func New(sockPath string, opts Opts) (Client, error) {
 	dialOpts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -290,12 +289,12 @@ func (c *client) Info(ctx context.Context) (InfoSnapshot, error) {
 
 func (c *client) SocketPath() string { return c.sockPath }
 
-// Health issues a Health RPC. Status maps proto enum (STATUS_OK / STATUS_LOADING /
+// Health issues a Health RPC. Status maps the proto enum (STATUS_OK / STATUS_LOADING /
 // STATUS_IDLE / STATUS_DEGRADED / STATUS_SHUTTING_DOWN / STATUS_UNSPECIFIED) to the
-// "STATUS_"-stripped string the spec documents (OK / LOADING / IDLE / DEGRADED /
-// SHUTTING_DOWN / UNSPECIFIED).
+// "STATUS_"-stripped string (OK / LOADING / IDLE / DEGRADED / SHUTTING_DOWN /
+// UNSPECIFIED).
 //
-// Health is NOT retried — D8 says first embed call drives connectivity; Health
+// Health is NOT retried — the first embed call drives connectivity; Health
 // is a diagnostic tool surface (console_status, diagnostics).
 func (c *client) Health(ctx context.Context) (HealthSnapshot, error) {
 	ctx, cancel := withDefaultTimeout(ctx, ControlCallTimeout)

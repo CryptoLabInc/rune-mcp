@@ -1,6 +1,6 @@
 // Package policy holds pure functions — novelty classification, rerank formula,
 // query parsing, record_builder, payload_text rendering, PII redaction.
-// No I/O, no external deps. Each file has a Python canonical reference.
+// No I/O, no external deps.
 package policy
 
 import (
@@ -9,23 +9,23 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 )
 
-// NoveltyThresholds — runtime defaults per D11 (Python server.py:L102-104).
-// Module constants in embedding.py (0.4/0.7/0.93) are dead defaults — server.py
-// passes these values explicitly at call site.
+// NoveltyThresholds — runtime defaults.
+// The 0.4/0.7/0.93 module constants are dead defaults; the runtime passes these
+// values explicitly at the call site.
 type NoveltyThresholds struct {
 	Novel   float64
 	Related float64
 	NearDup float64
 }
 
-// DefaultNoveltyThresholds — runtime values (D11).
+// DefaultNoveltyThresholds — runtime values.
 var DefaultNoveltyThresholds = NoveltyThresholds{
 	Novel:   0.3,
 	Related: 0.7,
 	NearDup: 0.95,
 }
 
-// ClassifyNovelty — Python: agents/common/schemas/embedding.py:L33-56.
+// ClassifyNovelty classifies a candidate against its max similarity.
 //
 // Returns (class, score) where score = round(1.0 - maxSimilarity, 4)
 // (inverted — higher score means more novel).

@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-// TestBatch_RejectsContentlessItems guards the D14 fix: items with no usable
+// TestBatch_RejectsContentlessItems: items with no usable
 // extraction content are classified as "error" instead of being fabricated into
 // a "[batch_capture]" placeholder record (which poisoned the corpus and caused
-// cascading false near_duplicate). Rejection is enforced by Handle's shared D14
+// cascading false near_duplicate). Rejection is enforced by Handle's shared
 // guard (empty Text + !extraction.HasContent()), which fires before any adapter
 // call, so a zero-value service (nil Embedder/Console) is sufficient.
 func TestBatch_RejectsContentlessItems(t *testing.T) {

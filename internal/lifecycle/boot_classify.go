@@ -78,8 +78,8 @@ func ClassifyBootError(err error, c BootErrCtx) *domain.BootError {
 }
 
 // ClassifyDormantReason maps a Dormant return's reason string to a BootError.
-// These are terminal — the boot loop has stopped retrying. SKILL.md uses
-// this to tell the user what action will move out of dormant.
+// These are terminal — the boot loop has stopped retrying. The Hint tells the
+// user what action will move out of dormant.
 func ClassifyDormantReason(reason string) *domain.BootError {
 	be := &domain.BootError{
 		Detail: "dormant: " + reason,

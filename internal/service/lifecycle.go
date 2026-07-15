@@ -24,7 +24,6 @@ import (
 )
 
 // LifecycleService holds the 6 lifecycle/operational tool implementations.
-// Spec: docs/v04/spec/flows/lifecycle.md.
 type LifecycleService struct {
 	Console   console.Client
 	State     *lifecycle.Manager
@@ -60,10 +59,10 @@ func (s *LifecycleService) SetEmbedder(c embedder.Client) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. console_status — read-only. server.py:L496-528. Spec §1.
+// 1. console_status — read-only.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ConsoleStatusResult — lifecycle.md §1.
+// ConsoleStatusResult — console_status tool response.
 type ConsoleStatusResult struct {
 	OK                    bool    `json:"ok"`
 	ConsoleConfigured     bool    `json:"console_configured"`
@@ -112,7 +111,7 @@ func (s *LifecycleService) ConsoleStatus(ctx context.Context) (*ConsoleStatusRes
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2. rune_diagnostics — read-only. server.py:L540-684. Spec §2.
+// 2. rune_diagnostics — read-only.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // DiagnosticsResult — aggregates 7 sub-sections (env + runtime ×6). Install
@@ -318,7 +317,7 @@ func (s *LifecycleService) collectEmbedding(ctx context.Context, timeout time.Du
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3. rune_capture_history — read-only. server.py:L1092-1111. Spec §4.
+// 3. rune_capture_history — read-only.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // CaptureHistoryArgs — limit default 20, max 100.
@@ -369,7 +368,7 @@ func (s *LifecycleService) CaptureHistory(_ context.Context, args CaptureHistory
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. rune_delete_capture — soft-delete. server.py:L1123-1206. Spec §5.
+// 4. rune_delete_capture — soft-delete.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // DeleteCaptureArgs — single record ID target.
@@ -915,7 +914,7 @@ type WarmupInfo struct {
 	Error     *string  `json:"error,omitempty"`
 }
 
-// WarmupTimeout — Python WARMUP_TIMEOUT (server.py:L1059). 60s.
+// WarmupTimeout — console warmup HealthCheck deadline. 60s.
 const WarmupTimeout = 60 * time.Second
 
 // ReloadPipelines — re-trigger the boot loop from Dormant + warmup the console.
@@ -949,7 +948,7 @@ func (s *LifecycleService) ReloadPipelines(ctx context.Context) (*ReloadPipeline
 		// without needing a separate diagnostics call. May still be nil
 		// (e.g., boot loop is genuinely in-flight and hasn't recorded an
 		// error yet) — in that case the agent should follow up with
-		// diagnostics per the Fast-Fail Rule in SKILL.md.
+		// diagnostics per the Fast-Fail Rule.
 		if be := s.State.LastBootError(); be != nil {
 			result.LastBootError = be
 		}

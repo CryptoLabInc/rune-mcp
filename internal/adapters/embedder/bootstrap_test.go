@@ -55,7 +55,7 @@ func shrinkBootstrapWait(t *testing.T, budget, poll time.Duration) {
 }
 
 // The retry layer must wait out the bootstrap window: keep polling (without
-// consuming D7 attempts) until the daemon answers, then return the result.
+// consuming retry attempts) until the daemon answers, then return the result.
 func TestRetry_WaitsOutBootstrap(t *testing.T) {
 	shrinkBootstrapWait(t, 2*time.Second, 5*time.Millisecond)
 	calls := 0

@@ -3,8 +3,8 @@
 //
 // Format note: EncKey.json carries a libevi key envelope (provider_meta +
 // entries — see third_party/evi/include/km/KeyEnvelope.hpp). runespace-sdk
-// (our runespace adapter) and pyenvector are both libevi wrappers and produce
-// / consume this same on-disk format. The Console server generated the key via
+// (our runespace adapter) is a libevi wrapper that produces / consumes this
+// same on-disk format. The Console server generated the key via
 // runespace-sdk's GenerateKeys (which calls libevi's evi_km_wrap_enc_key)
 // and forwards the file content verbatim through GetAgentManifest's
 // manifest_json. When we load it back, runespace-sdk's OpenKeysFromFile

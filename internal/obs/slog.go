@@ -3,8 +3,7 @@
 //
 // The redacting handler wraps another slog.Handler and rewrites every
 // string-typed attribute value through SensitivePatterns before
-// dispatch. Two patterns are compiled (Python parity —
-// mcp/server/server.py:L25-40 _SensitiveFilter):
+// dispatch. Two patterns are compiled:
 //
 //  1. token-shaped strings starting with sk- / pk- / api_ / runespace_ /
 //     evt_ followed by 10+ identifier chars
@@ -15,8 +14,6 @@
 // Replacement keeps the first 8 characters of the match plus "***" so
 // log readers retain enough prefix to disambiguate without exposing
 // the body. Log lines stay grep-able for the unredacted prefix.
-//
-// Spec: docs/v04/spec/components/rune-mcp.md §Observability.
 package obs
 
 import (
