@@ -6,7 +6,8 @@ import (
 )
 
 // DefaultSocketPath is the runed daemon convention path relative to $HOME:
-// ~/.runed/embedding.sock (Plan A scope, macOS/Linux).
+// ~/.runed/embedding.sock (Plan A scope, macOS/Linux). Spec: embedder.md
+// §소켓 경로.
 const DefaultSocketPath = ".runed/embedding.sock"
 
 // SocketEnvVar is the env var that overrides socket discovery for tests
@@ -14,7 +15,7 @@ const DefaultSocketPath = ".runed/embedding.sock"
 const SocketEnvVar = "RUNE_EMBEDDER_SOCKET"
 
 // ResolveSocketPath returns the unix-socket path to use when dialing the
-// runed daemon. Priority:
+// runed daemon. Priority (per spec/components/embedder.md §소켓 경로):
 //
 //  1. env RUNE_EMBEDDER_SOCKET
 //  2. configPath argument (typically from config.embedder.socket_path; pass

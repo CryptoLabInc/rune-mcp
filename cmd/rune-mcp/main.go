@@ -1,5 +1,5 @@
-// Command rune-mcp is a session-local MCP server
-// (agent-delegated path only).
+// Command rune-mcp is a session-local MCP server ported from Python rune v0.3.x
+// (agent-delegated path only — see docs/v04/overview/architecture.md §Scope).
 //
 // Spawn model: Claude Code launches one instance per session via stdio.
 // Lifecycle: starting → waiting_for_console → active ↔ dormant.
@@ -14,6 +14,8 @@
 // embedder) are populated on the services by the boot loop after
 // Console returns the bundle. Until boot completes, write tools fail with
 // PIPELINE_NOT_READY through CheckState; read-only tools work degraded.
+//
+// Python reference: mcp/server/server.py (2002 LoC)
 package main
 
 import (
@@ -115,7 +117,7 @@ func main() {
 
 	runErr := srv.Run(ctx, &sdkmcp.StdioTransport{})
 
-	// Exit sequence: drain in-flight tool calls,
+	// Exit sequence (spec §프로세스 수명, §9.5 L1): drain in-flight tool calls,
 	// close adapters (the encryptor Close releases the cgo key context), then
 	// zeroize the agent_dek. Runs on both stdin EOF and SIGTERM (either path
 	// unblocks srv.Run), and before the error exit below. Uses a fresh context:

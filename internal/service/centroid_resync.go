@@ -10,7 +10,7 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
 )
 
-// Centroid self-heal paths. The boot-time relay is best-effort,
+// Centroid self-heal paths (README §9.2). The boot-time relay is best-effort,
 // and the engine may replace its centroid set while we run; both cases are
 // recovered here, at the point of failure, with exactly one retry each —
 // never a loop:

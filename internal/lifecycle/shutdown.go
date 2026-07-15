@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Graceful shutdown — Exit sequence.
+// Graceful shutdown — spec/components/rune-mcp.md §프로세스 수명 Exit sequence.
 //
 // Triggered by stdin EOF or SIGTERM (handled in cmd/rune-mcp/main.go).
 //
@@ -102,7 +102,7 @@ func waitInflight(ctx context.Context, tracker *InflightTracker) error {
 //
 // This is a best-effort defense — a determined attacker with memory access
 // after process death has no guarantees. GC may also have copied the data
-// before this point.
+// before this point. Ported per rune-mcp.md L24 pattern.
 func ZeroizeDEK(dek []byte) {
 	for i := range dek {
 		dek[i] = 0

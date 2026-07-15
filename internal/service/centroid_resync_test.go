@@ -85,7 +85,7 @@ func newResyncService(e embedder.Client, v *resyncConsole) *CaptureService {
 	}
 }
 
-// C4: runed has no centroid set → resync once via the console relay,
+// C4 (§9.2): runed has no centroid set → resync once via the console relay,
 // then the retried route and the insert both succeed.
 func TestEncryptSealInsert_C4_ColdRunedSelfHeals(t *testing.T) {
 	e := &resyncEmbedder{version: ""} // cold
@@ -121,7 +121,7 @@ func TestEncryptSealInsert_C4_ResyncFailureSurfaces(t *testing.T) {
 	}
 }
 
-// C3: the engine replaced its set after runed was routed against v1.
+// C3 (§9.2): the engine replaced its set after runed was routed against v1.
 // The insert is rejected once, the service resyncs, rebuilds the item under
 // the same id with the new version, and the retry succeeds.
 func TestEncryptSealInsert_C3_VersionSwapSelfHeals(t *testing.T) {

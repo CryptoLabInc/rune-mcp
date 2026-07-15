@@ -1,11 +1,14 @@
 package domain
 
 // Query / recall types + internal search types.
+// Spec: docs/v04/spec/types.md §1.7-1.8, §4.2, §5.1-5.3.
+// Python: agents/retriever/query_processor.py · searcher.py.
 
 // ─────────────────────────────────────────────────────────────────────────────
-// QueryIntent (8 values)
+// §1.7 QueryIntent (8 values)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// QueryIntent — Python: query_processor.py:L23-32.
 type QueryIntent string
 
 const (
@@ -20,9 +23,10 @@ const (
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TimeScope (5 values)
+// §1.8 TimeScope (5 values)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// TimeScope — Python: query_processor.py:L35-41.
 type TimeScope string
 
 const (
@@ -34,9 +38,10 @@ const (
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RecallArgs / RecallResult
+// §4.2 RecallArgs / RecallResult
 // ─────────────────────────────────────────────────────────────────────────────
 
+// RecallArgs — §4.2. Python: server.py:L910-1034.
 type RecallArgs struct {
 	Query  string  `json:"query"`
 	TopK   int     `json:"topk,omitempty"`   // default 5; client sanity ceiling 50, real cap from console token role
@@ -45,7 +50,7 @@ type RecallArgs struct {
 	Since  *string `json:"since,omitempty"`  // ISO date "YYYY-MM-DD"
 }
 
-// RecallResult — Synthesized is always false (D28 agent-delegated).
+// RecallResult — §4.2. Synthesized is always false (D28 agent-delegated).
 type RecallResult struct {
 	OK          bool           `json:"ok"`
 	Found       int            `json:"found"`
@@ -56,6 +61,7 @@ type RecallResult struct {
 	Error       string         `json:"error,omitempty"`
 }
 
+// RecallEntry — §4.2.
 type RecallEntry struct {
 	RecordID        string  `json:"record_id"`
 	Title           string  `json:"title"`
@@ -73,15 +79,17 @@ type RecallEntry struct {
 	PhaseTotal *int    `json:"phase_total,omitempty"`
 }
 
+// RecallSource — §4.2.
 type RecallSource struct {
 	RecordID string `json:"record_id"`
 	Title    string `json:"title"`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SearchHit — recall Phase 3-6 internal pipeline
+// §5.1 SearchHit — recall Phase 3-6 internal pipeline
 // ─────────────────────────────────────────────────────────────────────────────
 
+// SearchHit — §5.1. Python: searcher.py:L44-76 SearchResult.
 type SearchHit struct {
 	RecordID        string
 	Title           string
@@ -100,15 +108,18 @@ type SearchHit struct {
 	PhaseTotal *int
 }
 
+// IsReliable — Python property mirror.
 func (h *SearchHit) IsReliable() bool {
 	return h.Certainty == "supported" || h.Certainty == "partially_supported"
 }
 
+// IsPhase — Python property mirror.
 func (h *SearchHit) IsPhase() bool {
 	return h.GroupID != nil
 }
 
-// ExtractPayloadText — Strict v2.1 (D32). No v1/v2.0 fallback.
+// ExtractPayloadText — §5.1. Strict v2.1 (D32). No v1/v2.0 fallback.
+// Python reference: searcher.py:L487-496 (v0.4 simplified to payload.text only).
 func ExtractPayloadText(metadata map[string]any) string {
 	payload, ok := metadata["payload"].(map[string]any)
 	if !ok {
@@ -119,9 +130,10 @@ func ExtractPayloadText(metadata map[string]any) string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ParsedQuery — recall Phase 2 result
+// §5.2 ParsedQuery — recall Phase 2 result
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ParsedQuery — §5.2. Python: query_processor.py:L44-54.
 // No Language field (D21 — agent pre-translates).
 type ParsedQuery struct {
 	Original        string
@@ -134,12 +146,13 @@ type ParsedQuery struct {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Detection — capture Phase 2 result
+// §5.3 Detection — capture Phase 2 result
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Detection — built from agent data.
+// Detection — §5.3. Built from agent data (not Python's full DetectionResult).
+// Python: server.py:L70-87 _detection_from_agent_data.
 type Detection struct {
-	IsSignificant bool    // agent-delegated: always true
+	IsSignificant bool    // agent-delegated: always true (server.py:L82)
 	Confidence    float64 // [0.0, 1.0] agent-provided
 	Domain        string  // agent-delegated; always "general"
 }

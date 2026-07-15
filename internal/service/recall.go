@@ -18,6 +18,8 @@ import (
 )
 
 // RecallService orchestrates the 7-phase recall flow.
+// Python: mcp/server/server.py:L910-1034 tool_recall + agents/retriever/searcher.py.
+// Spec: docs/v04/spec/flows/recall.md.
 type RecallService struct {
 	Console   console.Client
 	Embedder  embedder.Client
@@ -40,6 +42,7 @@ const (
 	consoleSearchTimeout = 30 * time.Second
 )
 
+// Handle — Python: server.py:L910-1034 tool_recall + searcher.search().
 func (s *RecallService) Handle(ctx context.Context, args *domain.RecallArgs) (*domain.RecallResult, error) {
 	// Phase 2: parse query
 	parsed := policy.Parse(args.Query)
@@ -109,6 +112,7 @@ func topKLimitErr(err error) *domain.RuneError {
 	return nil
 }
 
+// searchWithExpansions — Python: searcher.py:L153-176 _search_with_expansions.
 func (s *RecallService) searchWithExpansions(
 	ctx context.Context,
 	original string,
@@ -212,6 +216,7 @@ func (s *RecallService) resolveHits(hits []console.Hit) []domain.SearchHit {
 	return out
 }
 
+// toSearchHit — Python: searcher.py:L472-521 _to_search_result.
 func toSearchHit(metadata map[string]any, score float64) domain.SearchHit {
 	h := domain.SearchHit{
 		RecordID:    strFromMap(metadata, "id", "unknown"),
@@ -263,6 +268,7 @@ func strFromMap(m map[string]any, key, def string) string {
 // Phase 6 — group expansion, filters
 // ─────────────────────────────────────────────────────────────────────────────
 
+// expandPhaseChains — Python: searcher.py:L306-365 _expand_phase_chains.
 func (s *RecallService) expandPhaseChains(ctx context.Context, results []domain.SearchHit, origVec []float32) []domain.SearchHit {
 	type groupInfo struct {
 		gid       string
@@ -335,6 +341,7 @@ func (s *RecallService) expandPhaseChains(ctx context.Context, results []domain.
 	return results
 }
 
+// assembleGroups — Python: searcher.py:L178-226 _assemble_groups.
 func (s *RecallService) assembleGroups(results []domain.SearchHit) []domain.SearchHit {
 	type group struct {
 		hits      []domain.SearchHit
@@ -415,6 +422,7 @@ func (s *RecallService) assembleGroups(results []domain.SearchHit) []domain.Sear
 	return assembled
 }
 
+// applyMetadataFilters — Python: searcher.py:L228-252 _apply_metadata_filters.
 func (s *RecallService) applyMetadataFilters(results []domain.SearchHit, f Filters) []domain.SearchHit {
 	var filtered []domain.SearchHit
 	for _, h := range results {
@@ -432,7 +440,7 @@ func (s *RecallService) applyMetadataFilters(results []domain.SearchHit, f Filte
 				}
 			}
 
-			// Keep record without timestamp
+			// Keep record without timestamp (port from Python version)
 			if ts != "" && ts < *f.Since {
 				continue
 			}
@@ -453,6 +461,7 @@ type Filters struct {
 // Phase 7 — response build
 // ─────────────────────────────────────────────────────────────────────────────
 
+// buildResult — Python: server.py:L950-990 agent-delegated path.
 func (s *RecallService) buildResult(results []domain.SearchHit) *domain.RecallResult {
 	confidence := calculateConfidence(results)
 
@@ -499,7 +508,8 @@ func (s *RecallService) buildResult(results []domain.SearchHit) *domain.RecallRe
 	}
 }
 
-// calculateConfidence — Top-5 weighted sum / 2.0 clamp 1.0 round 2 decimals.
+// calculateConfidence — Python: server.py:L393-412.
+// Top-5 weighted sum / 2.0 clamp 1.0 round 2 decimals.
 func calculateConfidence(results []domain.SearchHit) float64 {
 	if len(results) == 0 {
 		return 0

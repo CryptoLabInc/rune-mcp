@@ -7,7 +7,8 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 )
 
-// Query parsing.
+// Query parsing — Python: agents/retriever/query_processor.py (437 LoC).
+// Flow: docs/v04/spec/flows/recall.md Phase 2.
 
 type IntentRule struct {
 	Intent   domain.QueryIntent

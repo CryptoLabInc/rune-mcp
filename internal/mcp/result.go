@@ -9,7 +9,7 @@ import (
 )
 
 // errorResult shapes a tool failure into a CallToolResult per the rune-mcp
-// error contract.
+// error contract (spec/components/rune-mcp.md §에러 처리).
 //
 // The body is JSON-marshalled domain.MakeError output so the agent receives
 // {"ok":false,"error":{"code","message","retryable","recovery_hint"}}. We mark

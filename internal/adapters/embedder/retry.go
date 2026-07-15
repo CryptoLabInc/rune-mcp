@@ -24,6 +24,7 @@ var (
 
 // retry executes call() with the D7 backoff schedule [0, 500ms, 2s].
 //
+// Spec: docs/v04/spec/components/embedder.md §Retry 정책 (D7).
 // Total attempts: 3 (one per RetryBackoffs entry).
 //
 // Retryable gRPC codes:

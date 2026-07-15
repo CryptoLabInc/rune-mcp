@@ -7,15 +7,16 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 )
 
-// Payload text renderer
+// Payload text renderer — Python canonical: agents/common/schemas/templates.py (364 LoC).
 // D15: line-by-line port. Verified via byte-for-byte golden fixture test.
 //
 // Subtle behaviors (easy to miss in porting):
-//  1. phase_line / group_summary post-insertion — inserted AFTER
+//  1. phase_line / group_summary post-insertion (L204-216) — inserted AFTER
 //     template.format(), not in the template string itself
-//  2. Blank line collapse + strip
-//  3. _format_alternatives "chosen" marker bug: chosen=="" makes all
-//     alternatives marked "(chosen)" — keep bit-identical
+//  2. Blank line collapse + strip (L219-222): while "\n\n\n" in text:
+//     text = text.replace("\n\n\n", "\n\n"); then .strip()
+//  3. _format_alternatives "chosen" marker bug (L59): chosen=="" makes all
+//     alternatives marked "(chosen)" — Python current behavior, keep bit-identical
 
 const payloadTemplate = `
 # Decision Record: %s

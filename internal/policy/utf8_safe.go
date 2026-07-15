@@ -1,6 +1,6 @@
 package policy
 
-// truncRunes truncates s to maxRunes codepoints.
+// truncRunes truncates s to maxRunes codepoints (Python s[:N] semantic).
 // Used in place of byte slicing on record fields so multi-byte UTF-8 is
 // not split mid-encoding (proto3 string-field validation rejects orphan
 // continuation bytes).

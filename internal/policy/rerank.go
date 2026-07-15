@@ -8,7 +8,7 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 )
 
-// Rerank constants.
+// Rerank constants — Python: agents/retriever/searcher.py:L31-39.
 // Formula: (SimilarityWeight × raw + RecencyWeight × decay) × statusMul
 // Half-life decay: decay = 0.5 ^ (age_days / HalfLifeDays)
 const (
@@ -17,7 +17,7 @@ const (
 	RecencyWeight    = 0.3
 )
 
-// StatusMultiplier — Unknown status → 1.0.
+// StatusMultiplier — Python: searcher.py:L36-39. Unknown status → 1.0.
 var StatusMultiplier = map[string]float64{
 	"accepted":   1.0,
 	"proposed":   0.9,
@@ -25,6 +25,7 @@ var StatusMultiplier = map[string]float64{
 	"reverted":   0.3,
 }
 
+// TimeRanges — Python: searcher.py:L532-535.
 var TimeRanges = map[domain.TimeScope]time.Duration{
 	domain.TimeScopeLastWeek:    7 * 24 * time.Hour,
 	domain.TimeScopeLastMonth:   30 * 24 * time.Hour,
@@ -32,13 +33,14 @@ var TimeRanges = map[domain.TimeScope]time.Duration{
 	domain.TimeScopeLastYear:    365 * 24 * time.Hour,
 }
 
-// ApplyRecencyWeighting
+// ApplyRecencyWeighting — Python: searcher.py:L273-300 _apply_recency_weighting.
 //
 // For each hit, compute adjusted_score = (0.7 × raw + 0.3 × decay) × status_mul
 // where decay = 0.5 ^ (age_days / 90) and age_days = math.Floor((now - ts).days).
 // Sorts by adjusted_score descending (stable).
 //
-// Go Hours()/24 is float — must math.Floor.
+// BIT-IDENTICAL REQUIREMENT: Python timedelta.days is integer floor.
+// Go Hours()/24 is float — must math.Floor to match.
 func ApplyRecencyWeighting(hits []domain.SearchHit, now time.Time) []domain.SearchHit {
 	for i := range hits {
 		r := &hits[i]
@@ -69,8 +71,8 @@ func ApplyRecencyWeighting(hits []domain.SearchHit, now time.Time) []domain.Sear
 	return hits
 }
 
-// FilterByTime
-// Records with no timestamp are kept.
+// FilterByTime — Python: searcher.py:L523-559 _filter_by_time.
+// Records with no timestamp are kept (Python: if no ts, keep).
 func FilterByTime(hits []domain.SearchHit, scope domain.TimeScope, now time.Time) []domain.SearchHit {
 	timeRange, ok := TimeRanges[scope]
 	if !ok || scope == domain.TimeScopeAllTime {

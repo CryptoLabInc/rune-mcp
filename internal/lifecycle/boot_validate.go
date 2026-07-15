@@ -8,7 +8,7 @@ import (
 
 // agentDEKSize is the seal contract (adapters/seal: AES-256, exactly 32
 // bytes). Checked here at manifest receipt so a bad console surfaces as a boot
-// error instead of a far-away seal failure on the first capture.
+// error instead of a far-away seal failure on the first capture (§9.1 B1).
 const agentDEKSize = 32
 
 // validateBundle reports the first format-level defect in a manifest bundle

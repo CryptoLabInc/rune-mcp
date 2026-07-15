@@ -1,7 +1,9 @@
 // Phase A.5 smoke tests — in-memory MCP server/client to assert that the
 // 8-tool catalog and state-gated handlers survive future refactors.
 //
-// Replacing the cookbook with Go tests turns the verification into a CI gate.
+// These mirror the bash/jq cookbook in docs/v04/progress/phase-a-mcp-boot.md
+// §4.2 (tools/list) and §4.3 (tools/call). Replacing the cookbook with Go
+// tests turns the verification into a CI gate.
 
 package mcp_test
 
@@ -18,7 +20,7 @@ import (
 )
 
 // expectedTools — alphabetical order matches what the SDK advertises in
-// tools/list (bit-identical names).
+// tools/list (Python rune v0.3.x bit-identical names).
 var expectedTools = []string{
 	"activate",
 	"batch_capture",
@@ -172,7 +174,7 @@ func TestRegister_BatchCaptureItemsDescribed(t *testing.T) {
 // out of registration this release — see TestRegister_DeleteCaptureHidden.)
 //
 // reload_pipelines is intentionally NOT gated (it is the dormant→active
-// unblocker / `/rune:activate` handler). Smoke tests for it
+// unblocker / `/rune:activate` handler per rune-mcp.md). Smoke tests for it
 // live in the diagnostic suite once a console mock is in place.
 func TestRegister_WriteToolsGated(t *testing.T) {
 	cs := newSession(t)
@@ -242,7 +244,7 @@ func TestRegister_DeleteCaptureHidden(t *testing.T) {
 
 // TestRegister_ReadOnlyToolsBypassGate — console_status / diagnostics /
 // capture_history must respond successfully (no PIPELINE_NOT_READY) even
-// when State == StateStarting. These tools work
+// when State == StateStarting. Per rune-mcp.md these tools work
 // degraded so the operator can troubleshoot pre-active.
 func TestRegister_ReadOnlyToolsBypassGate(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // TempDir as $HOME
