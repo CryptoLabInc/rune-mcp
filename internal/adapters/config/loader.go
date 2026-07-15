@@ -4,7 +4,7 @@
 //
 // Dropped sections (per scope SOT — docs/v04/overview/architecture.md):
 //
-//	runespace / embedding / llm / scribe / retriever — moved to Vault bundle
+//	envector / embedding / llm / scribe / retriever — moved to Vault bundle
 //	(memory only) or external embedder process.
 package config
 

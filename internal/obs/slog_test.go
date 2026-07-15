@@ -17,7 +17,7 @@ func TestRedact_Tokens(t *testing.T) {
 		{"sk- prefix", "auth=sk-ABCD1234567890XYZ ok", "auth=sk-ABCD1*** ok"},
 		{"pk- prefix", "key pk-1234567890abc", "key pk-12345***"},
 		{"api_ prefix", "use api_FOOBARBAZ12345", "use api_FOOB***"},
-		{"runespace_ prefix", "tok=runespace_secret_12345", "tok=runespac***"},
+		{"envector_ prefix", "tok=envector_secret_12345", "tok=envector***"},
 		{"evt_ prefix", "evt_AABBCCDD11223344", "evt_AABB***"},
 		{"too short to redact prefix kept literal", "sk-AB", "sk-AB"},
 		{"no match", "hello world 123", "hello world 123"},
