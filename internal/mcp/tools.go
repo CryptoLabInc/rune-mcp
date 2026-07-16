@@ -1,14 +1,16 @@
-// Package mcp wires the 10 MCP tool handlers onto the official Go SDK and
-// owns Deps injection + state-aware response shaping.
+// Package mcp wires the MCP tool handlers onto the official Go SDK and owns
+// Deps injection + state-aware response shaping.
 //
 // SDK: github.com/modelcontextprotocol/go-sdk v1.5.0+. Stdio transport.
 // Input schema is auto-inferred from the Go input struct (jsonschema tags
-// optional but recommended; will be tightened in Phase 5).
+// optional but recommended).
 //
-// Phase A (current): handshake + tools/list only. Every handler returns a
-// stubResult ("not yet implemented") so Claude Code can discover the catalog
-// without any adapter being wired. Phase 5 replaces each stub with a
-// service-layer call (CheckState → service.X.Handle → response wrap).
+// Each handler runs CheckState then dispatches to a service-layer call
+// (CheckState → service.X.Handle → response wrap). Write tools fail with
+// PIPELINE_NOT_READY until the boot loop populates adapter clients; read-only
+// tools (console_status, diagnostics, capture_history) bypass the state gate.
+// Nine tools are registered; delete_capture's handler is kept but not wired
+// (see Register).
 package mcp
 
 import (
