@@ -92,7 +92,7 @@ func TestGetAgentManifest_HappyPath(t *testing.T) {
 			return nil, status.Error(codes.Unauthenticated, "wrong token")
 		}
 		return &consolepb.GetAgentManifestResponse{
-			ManifestJson: `{"key_id":"key_test","index_name":"test-index","agent_id":"agent_test","dim":1024}`,
+			ManifestJson: `{"key_id":"key_test","agent_id":"agent_test","dim":1024}`,
 		}, nil
 	}
 
@@ -100,7 +100,7 @@ func TestGetAgentManifest_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAgentManifest: %v", err)
 	}
-	if bundle.KeyID != "key_test" || bundle.IndexName != "test-index" || bundle.AgentID != "agent_test" || bundle.Dim != 1024 {
+	if bundle.KeyID != "key_test" || bundle.AgentID != "agent_test" || bundle.Dim != 1024 {
 		t.Errorf("bundle mismatch: %+v", bundle)
 	}
 }

@@ -19,7 +19,6 @@ func SearchByID(
 	ctx context.Context,
 	embedderClient embedder.Client,
 	consoleClient console.Client,
-	indexName string,
 	recordID string,
 ) (*domain.SearchHit, error) {
 	query := fmt.Sprintf("ID: %s", recordID)

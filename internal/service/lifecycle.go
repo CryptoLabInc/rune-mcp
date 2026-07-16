@@ -27,7 +27,6 @@ import (
 type LifecycleService struct {
 	Console   console.Client
 	State     *lifecycle.Manager
-	IndexName string
 	ConfigDir string // for CaptureHistory reading capture_log.jsonl
 
 	// Key state (for diagnostics). In the runespace model the console is the sole
@@ -70,7 +69,6 @@ type ConsoleStatusResult struct {
 	SecureSearchAvailable bool    `json:"secure_search_available"`
 	Mode                  string  `json:"mode"` // "secure (Console-backed)" | "standard (no Console)"
 	ConsoleHealthy        *bool   `json:"console_healthy,omitempty"`
-	TeamIndexName         *string `json:"team_index_name,omitempty"`
 	Warning               *string `json:"warning,omitempty"`
 }
 
@@ -392,7 +390,7 @@ type DeleteCaptureResult struct {
 //  4. capture_log append with mode="soft-delete", action="deleted"
 func (s *LifecycleService) DeleteCapture(ctx context.Context, args DeleteCaptureArgs, capSvc *CaptureService) (*DeleteCaptureResult, error) {
 	// Search by ID
-	hit, err := SearchByID(ctx, s.Embedder(), s.Console, s.IndexName, args.RecordID)
+	hit, err := SearchByID(ctx, s.Embedder(), s.Console, args.RecordID)
 	if err != nil {
 		return nil, fmt.Errorf("delete: search by ID: %w", err)
 	}

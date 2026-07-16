@@ -116,8 +116,8 @@ func closeAfterInterval(name string, prev, next io.Closer) {
 	}()
 }
 
-// ApplyConsoleBundle propagates per-bundle config (IndexName / KeyID) to the
-// three services. Called by the boot loop after Console.GetAgentManifest.
+// ApplyConsoleBundle propagates per-bundle config (agent identity / KeyID) to
+// the services. Called by the boot loop after Console.GetAgentManifest.
 //
 // Under the runespace model the manifest carries no FHE keys — the console holds
 // them and does all encrypt/decrypt/seal — so this only wires non-secret config.
@@ -126,15 +126,10 @@ func (d *Deps) ApplyConsoleBundle(b *console.Bundle) {
 		return
 	}
 	if d.Capture != nil {
-		d.Capture.IndexName = b.IndexName
 		d.Capture.AgentID = b.AgentID
 		d.Capture.AgentDEK = b.AgentDEK
 	}
-	if d.Recall != nil {
-		d.Recall.IndexName = b.IndexName
-	}
 	if d.Lifecycle != nil {
-		d.Lifecycle.IndexName = b.IndexName
 		d.Lifecycle.KeyID = b.KeyID
 	}
 }

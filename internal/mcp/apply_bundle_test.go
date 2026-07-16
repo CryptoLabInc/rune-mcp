@@ -18,29 +18,17 @@ func newDepsForApply() *mcp.Deps {
 
 func TestApplyConsoleBundle_PropagatesToCapture(t *testing.T) {
 	d := newDepsForApply()
-	d.ApplyConsoleBundle(&console.Bundle{AgentID: "agent_test", IndexName: "team-index", KeyID: "key_xyz"})
+	d.ApplyConsoleBundle(&console.Bundle{AgentID: "agent_test", KeyID: "key_xyz"})
 
-	if d.Capture.IndexName != "team-index" {
-		t.Errorf("Capture.IndexName: got %q", d.Capture.IndexName)
-	}
-}
-
-func TestApplyConsoleBundle_PropagatesToRecall(t *testing.T) {
-	d := newDepsForApply()
-	d.ApplyConsoleBundle(&console.Bundle{IndexName: "ix"})
-
-	if d.Recall.IndexName != "ix" {
-		t.Errorf("Recall.IndexName: got %q, want ix", d.Recall.IndexName)
+	if d.Capture.AgentID != "agent_test" {
+		t.Errorf("Capture.AgentID: got %q", d.Capture.AgentID)
 	}
 }
 
 func TestApplyConsoleBundle_PropagatesToLifecycle(t *testing.T) {
 	d := newDepsForApply()
-	d.ApplyConsoleBundle(&console.Bundle{IndexName: "ix", KeyID: "key_z"})
+	d.ApplyConsoleBundle(&console.Bundle{KeyID: "key_z"})
 
-	if d.Lifecycle.IndexName != "ix" {
-		t.Errorf("Lifecycle.IndexName: got %q", d.Lifecycle.IndexName)
-	}
 	if d.Lifecycle.KeyID != "key_z" {
 		t.Errorf("Lifecycle.KeyID: got %q", d.Lifecycle.KeyID)
 	}
@@ -48,12 +36,12 @@ func TestApplyConsoleBundle_PropagatesToLifecycle(t *testing.T) {
 
 func TestApplyConsoleBundle_NilBundleNoOp(t *testing.T) {
 	d := newDepsForApply()
-	d.Capture.IndexName = "preexisting"
+	d.Capture.AgentID = "preexisting"
 
 	d.ApplyConsoleBundle(nil)
 
-	if d.Capture.IndexName != "preexisting" {
-		t.Errorf("nil bundle should be no-op, but Capture.IndexName changed to %q", d.Capture.IndexName)
+	if d.Capture.AgentID != "preexisting" {
+		t.Errorf("nil bundle should be no-op, but Capture.AgentID changed to %q", d.Capture.AgentID)
 	}
 }
 

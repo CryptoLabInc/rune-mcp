@@ -19,11 +19,10 @@ import (
 
 // RecallService orchestrates the 7-phase recall flow.
 type RecallService struct {
-	Console   console.Client
-	Embedder  embedder.Client
-	State     *lifecycle.Manager
-	IndexName string
-	Now       func() time.Time
+	Console  console.Client
+	Embedder embedder.Client
+	State    *lifecycle.Manager
+	Now      func() time.Time
 }
 
 // NewRecallService constructs with default clock.

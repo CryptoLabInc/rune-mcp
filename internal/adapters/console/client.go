@@ -42,10 +42,9 @@ const HealthCheckTimeout = 5 * time.Second
 // derived agent_dek so rune-mcp can encrypt/seal locally; SecKey and
 // team_secret stay in the Console.
 type Bundle struct {
-	AgentID   string
-	KeyID     string
-	IndexName string
-	Dim       int
+	AgentID string
+	KeyID   string
+	Dim     int
 
 	RMPEncKey          []byte // RMP EncKey envelope (verbatim JSON)
 	MMEncKey           []byte // MM EncKey envelope (verbatim JSON)
@@ -56,7 +55,6 @@ type Bundle struct {
 type manifestJSON struct {
 	AgentID            string `json:"agent_id"`
 	KeyID              string `json:"key_id"`
-	IndexName          string `json:"index_name"`
 	Dim                int    `json:"dim"`
 	RMPEncKey          string `json:"rmp_enc_key"`
 	MMEncKey           string `json:"mm_enc_key"`
@@ -72,7 +70,6 @@ func ParseManifestJSON(raw string) (*Bundle, error) {
 	b := &Bundle{
 		AgentID:            m.AgentID,
 		KeyID:              m.KeyID,
-		IndexName:          m.IndexName,
 		Dim:                m.Dim,
 		RMPEncKey:          []byte(m.RMPEncKey),
 		MMEncKey:           []byte(m.MMEncKey),

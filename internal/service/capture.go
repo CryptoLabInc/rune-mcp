@@ -32,9 +32,8 @@ type CaptureService struct {
 	State      *lifecycle.Manager
 
 	// Injected from Console bundle at boot.
-	IndexName string
-	AgentID   string // for the seal envelope's "a" field
-	AgentDEK  []byte // metadata seal key (agent_dek from manifest)
+	AgentID  string // for the seal envelope's "a" field
+	AgentDEK []byte // metadata seal key (agent_dek from manifest)
 
 	Now func() time.Time // injectable clock (default: time.Now)
 }

@@ -12,7 +12,6 @@ func goodBundle() *console.Bundle {
 	return &console.Bundle{
 		AgentID:   "agent-1",
 		KeyID:     "runeconsole-key",
-		IndexName: "rune",
 		Dim:       1024,
 		RMPEncKey: []byte(`{"k":"rmp"}`),
 		MMEncKey:  []byte{1, 2, 3},
