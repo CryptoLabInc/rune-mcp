@@ -173,7 +173,6 @@ type PipelinesInfo struct {
 // LOADING
 type EmbeddingInfo struct {
 	Model         string `json:"model"`
-	Mode          string `json:"mode"` // "external gRPC"
 	VectorDim     int    `json:"vector_dim,omitempty"`
 	DaemonVersion string `json:"daemon_version,omitempty"`
 	SocketPath    string `json:"socket_path,omitempty"`
@@ -275,7 +274,7 @@ func (s *LifecycleService) collectConsole(ctx context.Context, timeout time.Dura
 }
 
 func (s *LifecycleService) collectEmbedding(ctx context.Context, timeout time.Duration) EmbeddingInfo {
-	info := EmbeddingInfo{Mode: "external gRPC"}
+	info := EmbeddingInfo{}
 	e := s.Embedder()
 	if e == nil {
 		return info
