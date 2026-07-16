@@ -17,7 +17,7 @@ func TestRedact_Tokens(t *testing.T) {
 		{"sk- prefix", "auth=sk-ABCD1234567890XYZ ok", "auth=sk-ABCD1*** ok"},
 		{"pk- prefix", "key pk-1234567890abc", "key pk-12345***"},
 		{"api_ prefix", "use api_FOOBARBAZ12345", "use api_FOOB***"},
-		{"envector_ prefix", "tok=envector_secret_12345", "tok=envector***"},
+		{"runespace_ prefix", "tok=runespace_secret_12345", "tok=runespac***"},
 		{"evt_ prefix", "evt_AABBCCDD11223344", "evt_AABB***"},
 		{"too short to redact prefix kept literal", "sk-AB", "sk-AB"},
 		{"no match", "hello world 123", "hello world 123"},
@@ -100,9 +100,9 @@ func (c *captureHandler) WithGroup(n string) slog.Handler {
 func TestFilteringHandler_RedactsAttrs(t *testing.T) {
 	cap := newCapture()
 	logger := slog.New(NewHandler(cap, slog.LevelInfo))
-	logger.Info("vault dial",
+	logger.Info("console dial",
 		slog.String("token", "evt_AABBCCDDEEFF112233"),
-		slog.String("endpoint", "tcp://vault.example.com:50051"),
+		slog.String("endpoint", "tcp://console.example.com:50051"),
 		slog.Int("attempt", 1),
 	)
 
@@ -113,7 +113,7 @@ func TestFilteringHandler_RedactsAttrs(t *testing.T) {
 	if strings.Contains(out, "evt_AABBCCDDEEFF112233") {
 		t.Errorf("raw token should not appear in output: %q", out)
 	}
-	if !strings.Contains(out, "tcp://vault.example.com:50051") {
+	if !strings.Contains(out, "tcp://console.example.com:50051") {
 		t.Errorf("non-secret string should pass through: %q", out)
 	}
 	if !strings.Contains(out, "attempt=1") {
@@ -160,7 +160,7 @@ func (s secretValuer) LogValue() slog.Value { return slog.StringValue(string(s))
 func TestFilteringHandler_RedactsLogValuer(t *testing.T) {
 	cap := newCapture()
 	logger := slog.New(NewHandler(cap, slog.LevelInfo))
-	logger.Info("vault dial",
+	logger.Info("console dial",
 		slog.Any("token", secretValuer("evt_AABBCCDDEEFF112233")),
 	)
 

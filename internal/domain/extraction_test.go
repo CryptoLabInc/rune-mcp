@@ -7,7 +7,7 @@ import (
 )
 
 // TestExtractionHasContent drives HasContent through ParseExtractionFromAgent —
-// the real path the capture pipeline takes — so it asserts the D14 gate agrees
+// the real path the capture pipeline takes — so it asserts the content gate agrees
 // with what BuildPhases/RenderPayloadText actually embed.
 //
 // Regressions guarded:

@@ -11,11 +11,11 @@ import (
 
 // Save writes cfg to ~/.rune/config.json (atomic-ish via O_TRUNC + 0o600).
 //
-// Mirrors Python's `_set_dormant_with_reason` (server.py): truncate + write
-// in one syscall, perm 0600. Not a true atomic-rename pattern — if the
-// process is killed mid-write the file is left truncated. For dormant-state
-// updates this is acceptable: the next boot will read whatever's left and
-// either succeed (active state) or re-attempt the dormant write.
+// Truncate + write in one syscall, perm 0600. Not a true atomic-rename
+// pattern — if the process is killed mid-write the file is left truncated.
+// For dormant-state updates this is acceptable: the next boot will read
+// whatever's left and either succeed (active state) or re-attempt the
+// dormant write.
 func Save(cfg *Config) error {
 	configPath, err := DefaultConfigPath()
 	if err != nil {
@@ -35,8 +35,7 @@ func SaveToPath(cfg *Config, path string) error {
 		return fmt.Errorf("config: marshal: %w", err)
 	}
 
-	// O_WRONLY | O_CREAT | O_TRUNC matches Python server.py's
-	// _set_dormant_with_reason atomic-truncate pattern.
+	// O_WRONLY | O_CREAT | O_TRUNC atomic-truncate pattern.
 	if err := os.WriteFile(path, data, FilePerm); err != nil {
 		return fmt.Errorf("config: write %s: %w", path, err)
 	}
@@ -44,20 +43,19 @@ func SaveToPath(cfg *Config, path string) error {
 }
 
 // MarkDormant transitions config.json to dormant state with the given reason
-// + RFC3339 UTC timestamp. Mirrors Python server.py
-// `_set_dormant_with_reason` so the daemon's view of "why am I dormant"
+// + RFC3339 UTC timestamp so the daemon's view of "why am I dormant"
 // survives process restarts (next boot reads the same dormant_reason).
 //
 // Idempotent: if config.json is already dormant with the same reason, this
-// is a no-op (no disk write). Mirrors Python's "skip if same" guard.
+// is a no-op (no disk write).
 //
 // If config.json doesn't exist yet (fresh install), this creates it with
-// just the dormant fields populated. The Vault section stays zero so the
+// just the dormant fields populated. The Console section stays zero so the
 // next /rune:configure run can fill it in normally.
 //
 // Use cases (called by boot loop on terminal failures):
 //   - "not_configured"     — config.json missing, fresh install
-//   - "vault_unconfigured" — config exists but Vault.Endpoint/Token empty
+//   - "console_unconfigured" — config exists but Console.Endpoint/Token empty
 //   - "user_deactivated"   — already-dormant config picked up by boot
 //     (idempotent path, just refreshes timestamp)
 func MarkDormant(reason string) error {

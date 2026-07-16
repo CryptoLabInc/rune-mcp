@@ -7,15 +7,11 @@ import (
 )
 
 // Agent extraction types (ExtractionResult hierarchy).
-// Spec: docs/v04/spec/types.md §3a.
-// Python: agents/scribe/llm_extractor.py:L28-70 — types only in agent-delegated mode.
 //
 // Wire format: agent sends flat JSON in CaptureRequest.Extracted.
 // Internal: rune-mcp splits into Detection (see query.go) + ExtractionResult.
-// Mapping table: see types.md §3a.4.
 
-// ExtractedFields — §3a.1. Single-record extraction (no phases).
-// Python: llm_extractor.py:L28-37.
+// ExtractedFields — single-record extraction (no phases).
 type ExtractedFields struct {
 	Title        string   `json:"title,omitempty"` // 60-rune truncate
 	Rationale    string   `json:"rationale,omitempty"`
@@ -26,8 +22,7 @@ type ExtractedFields struct {
 	Tags         []string `json:"tags,omitempty"`
 }
 
-// PhaseExtractedFields — §3a.2. One phase in phase_chain or bundle.
-// Python: llm_extractor.py:L40-49.
+// PhaseExtractedFields — one phase in phase_chain or bundle.
 type PhaseExtractedFields struct {
 	PhaseTitle     string   `json:"phase_title,omitempty"` // 60-rune truncate
 	PhaseDecision  string   `json:"phase_decision,omitempty"`
@@ -38,8 +33,7 @@ type PhaseExtractedFields struct {
 	Tags           []string `json:"tags,omitempty"`
 }
 
-// ExtractionResult — §3a.3. Top-level (single / phase_chain / bundle).
-// Python: llm_extractor.py:L52-70.
+// ExtractionResult — top-level (single / phase_chain / bundle).
 type ExtractionResult struct {
 	GroupTitle   string                 `json:"group_title,omitempty"`
 	GroupType    string                 `json:"group_type,omitempty"`    // "phase_chain" | "bundle" | "" (single)
@@ -51,19 +45,19 @@ type ExtractionResult struct {
 	Phases       []PhaseExtractedFields `json:"phases,omitempty"` // cap 7 (phase) / 5 (bundle)
 }
 
-// IsMultiPhase — Python property: llm_extractor.py:L64-66.
+// IsMultiPhase reports whether the extraction carries more than one phase.
 func (r *ExtractionResult) IsMultiPhase() bool {
 	return len(r.Phases) > 1
 }
 
-// IsBundle — Python property: llm_extractor.py:L68-70.
+// IsBundle reports whether the extraction is a multi-phase bundle.
 func (r *ExtractionResult) IsBundle() bool {
 	return r.GroupType == "bundle" && len(r.Phases) > 1
 }
 
 // HasContent reports whether the extraction carries any substance that
 // BuildPhases/RenderPayloadText would actually render into a record. It is the
-// single source of truth for D14 (no contentless records): the capture pipeline
+// single source of truth for the no-contentless-records rule: the capture pipeline
 // enforces it in Handle, so single capture and batch agree and no separate,
 // drift-prone heuristic over the raw item map is needed. An extraction with
 // neither a group identifier, single-record fields, nor per-phase content is
@@ -94,9 +88,6 @@ func (r *ExtractionResult) HasContent() bool {
 
 // ParseExtractionFromAgent builds Detection + ExtractionResult from the flat
 // CaptureRequest.Extracted dict sent by the agent. Wire → internal conversion.
-//
-// Mapping table: docs/v04/spec/types.md §3a.4.
-// Python reference: mcp/server/server.py:L1244-1324 (_capture_single).
 func ParseExtractionFromAgent(extracted map[string]any) (*Detection, *ExtractionResult, error) {
 	if extracted == nil {
 		return nil, nil, fmt.Errorf("extracted JSON is nil")

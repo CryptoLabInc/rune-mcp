@@ -14,10 +14,10 @@ import (
 
 func sampleBootError(detail string) *domain.BootError {
 	return &domain.BootError{
-		Kind:     domain.BootErrVaultNetwork,
+		Kind:     domain.BootErrConsoleNetwork,
 		Detail:   detail,
 		Hint:     "check the endpoint",
-		Phase:    domain.BootPhaseVaultDial,
+		Phase:    domain.BootPhaseConsoleDial,
 		At:       time.Now(),
 		Attempts: 1,
 	}
@@ -28,7 +28,7 @@ func TestBootLogger_PersistWritesJSONLine(t *testing.T) {
 	bl := NewBootLogger(path, DefaultBootLogMaxBytes)
 	defer bl.Close()
 
-	bl.Persist(sampleBootError("vault unreachable"))
+	bl.Persist(sampleBootError("console unreachable"))
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -38,10 +38,10 @@ func TestBootLogger_PersistWritesJSONLine(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(string(data))), &entry); err != nil {
 		t.Fatalf("unmarshal line: %v (raw=%q)", err, data)
 	}
-	if entry.Kind != domain.BootErrVaultNetwork {
-		t.Errorf("kind: got %q, want %q", entry.Kind, domain.BootErrVaultNetwork)
+	if entry.Kind != domain.BootErrConsoleNetwork {
+		t.Errorf("kind: got %q, want %q", entry.Kind, domain.BootErrConsoleNetwork)
 	}
-	if entry.Detail != "vault unreachable" {
+	if entry.Detail != "console unreachable" {
 		t.Errorf("detail: got %q", entry.Detail)
 	}
 }

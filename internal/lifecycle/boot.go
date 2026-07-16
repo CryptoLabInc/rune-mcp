@@ -1,12 +1,10 @@
 // Package lifecycle manages rune-mcp boot sequence + state machine.
-// Spec: docs/v04/spec/components/rune-mcp.md §부팅 시퀀스 + §상태 머신.
-// Python: mcp/server/server.py main() + _init_pipelines + RunMCPServer.
 //
 // State machine:
 //
-//	(spawn) → starting ──(Vault OK)──→ active ←──┐
+//	(spawn) → starting ──(Console OK)──→ active ←──┐
 //	              ↓                      ↓       │
-//	              └─(Vault fail)→ waiting_for_vault │
+//	              └─(Console fail)→ waiting_for_console │
 //	                                     ↕       │
 //	                                /rune:deactivate
 //	                                     ↕       │
@@ -26,23 +24,35 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/envector"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/keymanager"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/runespacecrypto"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/recovery"
 )
 
 // BootAdapterInjector decouples lifecycle from mcp.Deps to break the
 // adapter ↔ handler import cycle. The boot loop pushes adapter clients +
-// per-token Vault bundle metadata through this interface; the concrete
+// per-token Console bundle metadata through this interface; the concrete
 // implementation (mcp.Deps) propagates them onto the 3 service structs.
 type BootAdapterInjector interface {
-	InjectVault(client vault.Client)
+	InjectConsole(client console.Client)
 	InjectEmbedder(client embedder.Client)
-	InjectEnvector(client envector.Client)
-	ApplyVaultBundle(bundle *vault.Bundle)
+	InjectEncryptor(enc Encryptor)
+	ApplyConsoleBundle(bundle *console.Bundle)
+}
+
+// Encryptor is the client-side FHE encrypt surface the boot loop opens from
+// the manifest's EncKey and injects. A superset of service.Encryptor (the
+// encrypt methods) plus Close, because the boot loop owns the handle's
+// lifecycle: the cgo key context behind it is invisible to the GC and is
+// released only by Close — on replacement (re-boot) and at process exit.
+// Declared here to avoid a lifecycle->service import cycle.
+type Encryptor interface {
+	EncryptFlat(vec []float32) ([]byte, error)
+	EncryptClustered(vec []float32) ([]byte, error)
+	Close() error
 }
 
 // State — atomic-safe enum.
@@ -50,7 +60,7 @@ type State int32
 
 const (
 	StateStarting State = iota
-	StateWaitingForVault
+	StateWaitingForConsole
 	StateActive
 	StateDormant
 )
@@ -59,8 +69,8 @@ func (s State) String() string {
 	switch s {
 	case StateStarting:
 		return "starting"
-	case StateWaitingForVault:
-		return "waiting_for_vault"
+	case StateWaitingForConsole:
+		return "waiting_for_console"
 	case StateActive:
 		return "active"
 	case StateDormant:
@@ -69,7 +79,7 @@ func (s State) String() string {
 	return "unknown"
 }
 
-// Manager — atomic state + Vault boot loop control.
+// Manager — atomic state + Console boot loop control.
 type Manager struct {
 	state       atomic.Int32
 	lastError   atomic.Value // string — free-form, kept for slog parity
@@ -221,7 +231,7 @@ func (m *Manager) Attempts() int {
 	return int(m.attempts.Load())
 }
 
-// BootBackoffs — Python server.py Vault retry schedule.
+// BootBackoffs — Console retry schedule.
 // Total to cap: 1s → 2s → 5s → 15s → 30s → 60s (then loop at 60s).
 var BootBackoffs = []time.Duration{
 	1 * time.Second,
@@ -233,24 +243,24 @@ var BootBackoffs = []time.Duration{
 }
 
 // DefaultKeyDim is the FHE slot dimension matching the Qwen3-Embedding-0.6B
-// production deployment (spec/components/embedder.md §불변 계약). The Vault
-// manifest does not currently carry a dim field; once embedder.Info is
-// available end-to-end, the boot loop should source dim from there instead.
+// production deployment. The Console manifest does not currently carry a dim
+// field; once embedder.Info is available end-to-end, the boot loop should
+// source dim from there instead.
 const DefaultKeyDim = 1024
 
 // bootResult is the outcome of one bootOnce attempt.
 type bootResult int
 
 const (
-	// bootRetry — transient failure (Vault unreachable, network blip, partial
+	// bootRetry — transient failure (Console unreachable, network blip, partial
 	// init error). Caller should backoff and try again.
 	bootRetry bootResult = iota
 
-	// bootActive — full success: Vault dialed, manifest parsed, keys persisted,
+	// bootActive — full success: Console dialed, manifest parsed, keys persisted,
 	// adapters wired, services injected. Caller should set StateActive and exit.
 	bootActive
 
-	// bootDormant — terminal: config missing, config.State="dormant", or vault
+	// bootDormant — terminal: config missing, config.State="dormant", or console
 	// endpoint/token unconfigured. Retrying won't help — only /rune:configure
 	// (or a process restart) will. Caller should set StateDormant and exit;
 	// service.LifecycleService.ReloadPipelines is responsible for re-spawning
@@ -258,8 +268,8 @@ const (
 	bootDormant
 )
 
-// RunBootLoop drives the boot sequence per spec/components/rune-mcp.md §부팅
-// 시퀀스. It runs to completion (Active or Dormant terminal) then returns.
+// RunBootLoop drives the boot sequence. It runs to completion (Active or
+// Dormant terminal) then returns.
 // Re-init after dormant↔active transitions is the responsibility of
 // service.LifecycleService.ReloadPipelines (which spawns a fresh RunBootLoop
 // goroutine).
@@ -267,15 +277,15 @@ const (
 // Failure modes:
 //   - config.json missing             → terminal Dormant (await /rune:configure)
 //   - config.State="dormant"          → terminal Dormant (user explicit)
-//   - vault endpoint/token empty      → terminal Dormant (await /rune:configure)
-//   - vault dial / GetAgentManifest   → state=WaitingForVault, exp backoff retry
-//   - keymanager / embedder / envector init → exp backoff retry (might be
+//   - console endpoint/token empty      → terminal Dormant (await /rune:configure)
+//   - console dial / GetAgentManifest   → state=WaitingForConsole, exp backoff retry
+//   - keymanager / embedder / encryptor init → exp backoff retry (might be
 //     transient — daemon down, etc.)
 //   - other config error (parse fail) → exp backoff retry (user might be editing)
 //   - ctx cancellation                → return immediately
 //
-// Every attempt that fails after a successful Vault dial closes the partial
-// adapter conns it created (vault, embedder, envector) before retrying so
+// Every attempt that fails after a successful Console dial closes the partial
+// adapter conns it created (console, embedder) before retrying so
 // gRPC connections do not leak across retries.
 func RunBootLoop(ctx context.Context, m *Manager, deps BootAdapterInjector) {
 	m.SetState(StateStarting)
@@ -333,8 +343,7 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		if errors.Is(err, fs.ErrNotExist) {
 			// Fresh install — config.json not provisioned. Retrying won't help;
 			// user must run /rune:configure first. Persist the dormant state
-			// to config.json so the next boot picks up the same reason
-			// (Python parity: server.py _set_dormant_with_reason).
+			// to config.json so the next boot picks up the same reason.
 			m.SetState(StateDormant)
 			m.lastError.Store("config.json not found — run /rune:configure to set up")
 			m.SetBootError(ClassifyDormantReason("not_configured"))
@@ -362,8 +371,7 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	//   - ""               — fresh install or hand-edited config without state
 	//   - other / unknown  — corrupted config
 	//
-	// Python parity: server.py:L1544 — `if rune_config.state != "active":
-	// return result`. Strict check covers all non-active values uniformly.
+	// The strict check covers all non-active values uniformly.
 	// /rune:activate transitions config.State back to "active" and re-spawns
 	// RunBootLoop.
 	if cfg.State != "active" {
@@ -393,18 +401,25 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		return bootDormant
 	}
 
-	if cfg.Vault.Endpoint == "" || cfg.Vault.Token == "" {
-		// Config exists but Vault credentials are missing. Same UX as missing
-		// config — user must run /rune:configure. No retry. Persist to disk
-		// so the next boot picks up the same dormant_reason.
+	// The token may live in the OS keyring (TokenStorage=keyring); resolve it up
+	// front so the credential gate and the dial below share one value.
+	token, tokErr := cfg.ResolveToken()
+	if cfg.Console.Endpoint == "" || tokErr != nil || token == "" {
+		// Config exists but Console credentials are missing or unreadable (e.g.
+		// keyring says keyring-stored but the entry is gone / keyring locked).
+		// Same UX as missing config — user must run /rune:configure. No retry.
 		m.SetState(StateDormant)
-		m.lastError.Store("vault endpoint or token missing in config — run /rune:configure")
-		m.SetBootError(ClassifyDormantReason("vault_unconfigured"))
-		if dErr := config.MarkDormant("vault_unconfigured"); dErr != nil {
+		msg := "console endpoint or token missing in config — run /rune:configure"
+		if tokErr != nil {
+			msg = "console token unavailable: " + tokErr.Error()
+		}
+		m.lastError.Store(msg)
+		m.SetBootError(ClassifyDormantReason("console_unconfigured"))
+		if dErr := config.MarkDormant("console_unconfigured"); dErr != nil {
 			slog.Warn("boot: failed to persist dormant state to config.json", "err", dErr)
 		}
-		slog.Warn("boot: vault endpoint/token missing — entering dormant",
-			"hint", "run /rune:configure")
+		slog.Warn("boot: console credentials unavailable — entering dormant",
+			"hint", "run /rune:configure", "detail", msg)
 		return bootDormant
 	}
 
@@ -413,56 +428,97 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	// out so each error site stays a single readable line.
 	classify := func(err error, phase domain.BootPhase) *domain.BootError {
 		return ClassifyBootError(err, BootErrCtx{
-			Phase:         phase,
-			VaultEndpoint: cfg.Vault.Endpoint,
-			VaultCAPath:   cfg.Vault.CACert,
-			Attempts:      attempt,
+			Phase:           phase,
+			ConsoleEndpoint: cfg.Console.Endpoint,
+			ConsoleCAPath:   cfg.Console.CACert,
+			Attempts:        attempt,
 		})
 	}
 
-	vaultClient, err := vault.NewClient(cfg.Vault.Endpoint, cfg.Vault.Token, vault.ClientOpts{
-		CACertPath: cfg.Vault.CACert,
-		TLSDisable: cfg.Vault.TLSDisable,
+	consoleClient, err := console.NewClient(cfg.Console.Endpoint, token, console.ClientOpts{
+		CACertPath: cfg.Console.CACert,
 		UnaryInterceptors: []grpc.UnaryClientInterceptor{
-			recovery.UnaryRecovery("vault", m),
+			recovery.UnaryRecovery("console", m),
 		},
 	})
 	if err != nil {
-		m.SetState(StateWaitingForVault)
-		m.lastError.Store(fmt.Sprintf("vault dial: %v", err))
-		m.SetBootError(classify(err, domain.BootPhaseVaultDial))
-		slog.Error("boot: failed to connect to vault", "err", err)
+		m.SetState(StateWaitingForConsole)
+		m.lastError.Store(fmt.Sprintf("console dial: %v", err))
+		m.SetBootError(classify(err, domain.BootPhaseConsoleDial))
+		slog.Error("boot: failed to connect to console", "err", err)
 		return bootRetry
 	}
 
-	bundle, err := vaultClient.GetAgentManifest(ctx)
+	bundle, err := consoleClient.GetAgentManifest(ctx)
 	if err != nil {
-		m.SetState(StateWaitingForVault)
-		m.lastError.Store(fmt.Sprintf("vault get manifest: %v", err))
-		m.SetBootError(classify(err, domain.BootPhaseVaultManifest))
-		slog.Warn("boot: waiting for vault...", "err", err)
-		_ = vaultClient.Close()
+		m.SetState(StateWaitingForConsole)
+		m.lastError.Store(fmt.Sprintf("console get manifest: %v", err))
+		m.SetBootError(classify(err, domain.BootPhaseConsoleManifest))
+		slog.Warn("boot: waiting for console...", "err", err)
+		_ = consoleClient.Close()
 		return bootRetry
 	}
 
-	if err := keymanager.SaveEncKey(bundle.KeyID, bundle.EncKey); err != nil {
-		m.lastError.Store(fmt.Sprintf("save EncKey: %v", err))
-		m.SetBootError(classify(err, domain.BootPhaseKeySave))
-		slog.Error("boot: failed to save keys to disk", "err", err)
-		_ = vaultClient.Close()
+	// Persist the PUBLIC EncKey pair from the manifest and open the local
+	// encryptor (cgo). Capture encrypts here so plaintext vectors never reach
+	// the console; SecKey stays in the console, so this opens Enc-only.
+	//
+	// Reject a malformed bundle at the point of receipt, before the
+	// bad material overwrites the on-disk key copies or — worse — boots into
+	// active and fails far away (a missing agent_dek only surfaces at the
+	// first capture's seal step otherwise). Format-level checks only; real
+	// cryptographic validity is judged where the material is used
+	// (runespacecrypto.Open for keys, the console's openMeta for the dek).
+	if msg := validateBundle(bundle); msg != "" {
+		m.SetState(StateWaitingForConsole)
+		m.lastError.Store(msg)
+		m.SetBootError(&domain.BootError{Kind: domain.BootErrConsoleManifest, Detail: msg, Hint: "The console answered with an incomplete manifest — check the console's version and key state."})
+		slog.Error("boot: " + msg)
+		_ = consoleClient.Close()
 		return bootRetry
 	}
 
-	keyDir, err := keymanager.KeyDir(bundle.KeyID)
+	// Every insert carries the RMP+MM dual
+	// representation — the engine, the console proto, and the SDK all reject an
+	// MM-less item — so a cluster-less (flat-only) runespace is an unsupported
+	// deployment, not a mode. An empty centroid_set_version means either that,
+	// or the console could not reach the engine while building the manifest;
+	// both block capture, so fail the boot loudly here instead of activating
+	// into a state where every capture would fail. The boot loop retries, so a
+	// transient engine outage recovers by itself.
+	if bundle.CentroidSetVersion == "" {
+		m.SetState(StateWaitingForConsole)
+		msg := "console manifest carries no centroid_set_version — runespace has no cluster tier (flat-only, unsupported) or the console cannot reach the engine"
+		m.lastError.Store(msg)
+		m.SetBootError(&domain.BootError{Kind: domain.BootErrConsoleManifest, Detail: msg, Hint: "Configure the runespace cluster tier (centroid set) and check console→runespace connectivity."})
+		slog.Error("boot: " + msg)
+		_ = consoleClient.Close()
+		return bootRetry
+	}
+	keyDir, err := keymanager.SaveEncKeys(bundle.KeyID, bundle.RMPEncKey, bundle.MMEncKey)
 	if err != nil {
-		m.lastError.Store(fmt.Sprintf("resolve key dir: %v", err))
-		m.SetBootError(classify(err, domain.BootPhaseKeySave))
-		slog.Error("boot: failed to resolve key dir", "err", err)
+		m.lastError.Store(fmt.Sprintf("save enc keys: %v", err))
+		m.SetBootError(&domain.BootError{Kind: domain.BootErrKeySave, Detail: err.Error(), Hint: "Check ~/.rune/keys is writable."})
+		slog.Error("boot: failed to save EncKey", "err", err)
+		_ = consoleClient.Close()
 		return bootRetry
 	}
-
-	deps.InjectVault(vaultClient)
-	deps.ApplyVaultBundle(bundle)
+	enc, err := runespacecrypto.Open(keyDir, bundle.KeyID, bundle.Dim)
+	if err != nil {
+		m.lastError.Store(fmt.Sprintf("open encryptor: %v", err))
+		m.SetBootError(&domain.BootError{Kind: domain.BootErrRunespaceInit, Detail: err.Error(), Hint: "The EncKey may be corrupt; re-run /rune:configure."})
+		slog.Error("boot: failed to open encryptor", "err", err)
+		_ = consoleClient.Close()
+		return bootRetry
+	}
+	// Share the clients only now — after every gate (capability, bundle
+	// validation, centroid guard, key save, encryptor open) has passed. The
+	// failure exits above close a client nothing else references yet, so the
+	// services keep the previous boot's still-live console client during retry
+	// windows and diagnostics stay truthful.
+	deps.InjectConsole(consoleClient)
+	deps.ApplyConsoleBundle(bundle)
+	deps.InjectEncryptor(enc)
 
 	embedderClient, err := embedder.New(embedder.ResolveSocketPath(""), embedder.Opts{
 		UnaryInterceptors: []grpc.UnaryClientInterceptor{
@@ -477,32 +533,46 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	}
 	deps.InjectEmbedder(embedderClient)
 
-	envectorClient, err := envector.NewClient(envector.ClientConfig{
-		Endpoint:  bundle.EnvectorEndpoint,
-		APIKey:    bundle.EnvectorAPIKey,
-		KeyPath:   keyDir,
-		KeyID:     bundle.KeyID,
-		KeyDim:    DefaultKeyDim,
-		IndexName: bundle.IndexName,
-		UnaryInterceptors: []grpc.UnaryClientInterceptor{
-			recovery.UnaryRecovery("envector", m),
-		},
-	})
-	if err != nil {
-		m.lastError.Store(fmt.Sprintf("envector new client: %v", err))
-		m.SetBootError(classify(err, domain.BootPhaseEnvectorInit))
-		slog.Error("boot: failed to connect to envector", "err", err)
-		return bootRetry
+	// The manifest's dim (which also sized the encryptor keys — Open
+	// above enforces key/dim agreement) must match the vectors runed actually
+	// produces, or captures would encrypt wrong-sized vectors. Best-effort:
+	// while runed is still bootstrapping, Info may fail or report 0 — skip
+	// rather than block the boot (the bootstrap wait covers that window).
+	var runedCentroidVer string
+	if info, ierr := embedderClient.Info(ctx); ierr == nil {
+		runedCentroidVer = info.CentroidSetVersion
+		if info.VectorDim > 0 && info.VectorDim != bundle.Dim {
+			msg := fmt.Sprintf("dim mismatch: manifest/keys=%d, runed=%d — console and embedder disagree on the embedding dimension", bundle.Dim, info.VectorDim)
+			m.SetState(StateWaitingForConsole)
+			m.lastError.Store(msg)
+			m.SetBootError(&domain.BootError{Kind: domain.BootErrConfigInvalid, Detail: msg, Hint: "Check that the console's embedding_dim matches the runed model."})
+			slog.Error("boot: " + msg)
+			return bootRetry
+		}
 	}
 
-	if err := envectorClient.OpenIndex(ctx); err != nil {
-		m.lastError.Store(fmt.Sprintf("envector open index: %v", err))
-		m.SetBootError(classify(err, domain.BootPhaseEnvectorIndex))
-		slog.Error("boot: envector index activation failed", "err", err)
-		_ = envectorClient.Close()
-		return bootRetry
+	// Relay the IVF centroid set from the console down to runed so Embed can
+	// route inserts. Best-effort at boot: a failure here does not block
+	// activation — capture self-heals at the point of use (EmbedRoute
+	// FAILED_PRECONDITION → the service resyncs the set and retries once) —
+	// but a healthy path pushes it now so the first capture pays no resync.
+	//
+	// Skip when runed already holds the manifest's exact set: Info just told
+	// us its version, and re-relaying it costs a ~16MB console fetch + a ~16MB
+	// runed push per session boot for nothing. A cold runed (empty version)
+	// or any mismatch still takes the full relay, and the self-heal
+	// keeps covering post-boot centroid replacement.
+	if runedCentroidVer != "" && runedCentroidVer == bundle.CentroidSetVersion {
+		slog.Info("boot: centroid relay skipped — runed already holds the current set", "version", runedCentroidVer)
+	} else if cs, err := consoleClient.Centroids(ctx); err != nil {
+		slog.Warn("boot: centroid relay fetch failed (routing unavailable until retry)", "err", err)
+	} else if cs != nil && cs.Version != "" && len(cs.Vectors) > 0 {
+		if err := embedderClient.SetCentroids(ctx, cs.Version, cs.Dim, cs.Preset, cs.Vectors); err != nil {
+			slog.Warn("boot: centroid push to runed failed", "err", err)
+		} else {
+			slog.Info("boot: centroid set synced to runed", "version", cs.Version, "nlist", len(cs.Vectors))
+		}
 	}
-	deps.InjectEnvector(envectorClient)
 
 	return bootActive
 }

@@ -1,14 +1,10 @@
 // Package logio handles ~/.rune/capture_log.jsonl (0600, append-only).
-// Spec: docs/v04/spec/components/rune-mcp.md §Capture log.
-// Python: mcp/server/server.py:L115-168 (_append_capture_log + _read_capture_log).
-// Format: D20 bit-identical (same file may be written by Python and Go).
 //
 // Concurrency:
 //   - Intra-process: sync.Mutex
-//   - Inter-process: syscall.Flock(LOCK_EX) — Go-specific guard (Python uses
-//     O_APPEND only; kernel atomic up to PIPE_BUF 4KB)
+//   - Inter-process: syscall.Flock(LOCK_EX)
 //
-// Failure policy (D19): append failure → slog error, capture still succeeds.
+// Failure policy: append failure → slog error, capture still succeeds.
 package logio
 
 import (
@@ -84,7 +80,6 @@ func (l *CaptureLog) Append(entry domain.CaptureLogEntry) error {
 }
 
 // Tail — reverse-read last N entries (used by tool_capture_history).
-// Python: server.py:L140-168 _read_capture_log.
 // Filters: domain (equality), since (ISO date lexicographic).
 func Tail(path string, limit int, domainFilter, since *string) ([]domain.CaptureLogEntry, error) {
 	if limit <= 0 {

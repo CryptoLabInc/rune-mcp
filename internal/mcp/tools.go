@@ -1,22 +1,20 @@
-// Package mcp wires the 10 MCP tool handlers onto the official Go SDK and
-// owns Deps injection + state-aware response shaping.
+// Package mcp wires the MCP tool handlers onto the official Go SDK and owns
+// Deps injection + state-aware response shaping.
 //
-// Spec:
-//
-//	docs/v04/spec/components/rune-mcp.md (MCP server 구현)
-//	docs/v04/spec/flows/{capture,recall,lifecycle}.md
-//
-// SDK: github.com/modelcontextprotocol/go-sdk v1.5.0+ (D2). Stdio transport.
+// SDK: github.com/modelcontextprotocol/go-sdk v1.5.0+. Stdio transport.
 // Input schema is auto-inferred from the Go input struct (jsonschema tags
-// optional but recommended; will be tightened in Phase 5).
+// optional but recommended).
 //
-// Phase A (current): handshake + tools/list only. Every handler returns a
-// stubResult ("not yet implemented") so Claude Code can discover the catalog
-// without any adapter being wired. Phase 5 replaces each stub with a
-// service-layer call (CheckState → service.X.Handle → response wrap).
+// Each handler runs CheckState then dispatches to a service-layer call
+// (CheckState → service.X.Handle → response wrap). Write tools fail with
+// PIPELINE_NOT_READY until the boot loop populates adapter clients; read-only
+// tools (console_status, diagnostics, capture_history) bypass the state gate.
+// Nine tools are registered; delete_capture's handler is kept but not wired
+// (see Register).
 package mcp
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -24,47 +22,65 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/envector"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
 	"github.com/CryptoLabInc/rune-mcp/internal/service"
 )
 
-// Deps — injected into all 10 MCP handlers.
+// Deps — injected into every MCP handler.
 //
 // State + 3 services drive request handling. cmd/rune-mcp/main.go constructs
 // Deps after the boot loop has populated adapter clients on the services.
 // Until boot completes, write tools fail with PIPELINE_NOT_READY through
-// CheckState; read-only tools (vault_status, diagnostics, capture_history)
+// CheckState; read-only tools (console_status, diagnostics, capture_history)
 // can run pre-active for diagnostics.
 type Deps struct {
-	Vault    vault.Client
-	Envector envector.Client
-	Embedder embedder.Client
-	State    *lifecycle.Manager
+	Console   console.Client
+	Embedder  embedder.Client
+	Encryptor lifecycle.Encryptor
+	State     *lifecycle.Manager
 
 	Capture   *service.CaptureService
 	Recall    *service.RecallService
 	Lifecycle *service.LifecycleService
+
+	// Inflight counts active tool invocations so the exit sequence can drain
+	// them (GracefulShutdown step 1) instead of cutting a batch_capture mid-
+	// insert. Every registered handler passes through it via mustAdd.
+	Inflight *lifecycle.InflightTracker
 }
 
 // TODO: revert this to 5s once closeAfterInterval is replaced with refcount/sync.WaitGroup
-const staleClientCloseTime = 30 * time.Second
+// (var, not const, so tests can shrink the interval.)
+var staleClientCloseTime = 30 * time.Second
 
-func (d *Deps) InjectVault(client vault.Client) {
-	prev := d.Vault
-	d.Vault = client
+func (d *Deps) InjectConsole(client console.Client) {
+	prev := d.Console
+	d.Console = client
 	if d.Capture != nil {
-		d.Capture.Vault = client
+		d.Capture.Console = client
 	}
 	if d.Recall != nil {
-		d.Recall.Vault = client
+		d.Recall.Console = client
 	}
 	if d.Lifecycle != nil {
-		d.Lifecycle.Vault = client
+		d.Lifecycle.Console = client
 	}
-	closeAfterInterval("vault", prev, client)
+	closeAfterInterval("console", prev, client)
+}
+
+func (d *Deps) InjectEncryptor(enc lifecycle.Encryptor) {
+	prev := d.Encryptor
+	if d.Capture != nil {
+		d.Capture.Encryptor = enc
+	}
+	d.Encryptor = enc
+	// The replaced encryptor wraps a cgo (libevi) key context the GC cannot
+	// reclaim — drain in-flight captures, then Close it, same as the console /
+	// embedder injectors above. Without this every re-boot cycle (console
+	// restart, boot retry, reload_pipelines) leaks one native key context.
+	closeAfterInterval("encryptor", prev, enc)
 }
 
 func (d *Deps) InjectEmbedder(client embedder.Client) {
@@ -80,21 +96,6 @@ func (d *Deps) InjectEmbedder(client embedder.Client) {
 		d.Lifecycle.SetEmbedder(client)
 	}
 	closeAfterInterval("embedder", prev, client)
-}
-
-func (d *Deps) InjectEnvector(client envector.Client) {
-	prev := d.Envector
-	d.Envector = client
-	if d.Capture != nil {
-		d.Capture.Envector = client
-	}
-	if d.Recall != nil {
-		d.Recall.Envector = client
-	}
-	if d.Lifecycle != nil {
-		d.Lifecycle.Envector = client
-	}
-	closeAfterInterval("envector", prev, client)
 }
 
 // Reserve Close() on a replaced client after a period to drain concurrent
@@ -115,41 +116,31 @@ func closeAfterInterval(name string, prev, next io.Closer) {
 	}()
 }
 
-// ApplyVaultBundle propagates per-bundle metadata (AgentID / AgentDEK /
-// IndexName / KeyID) to the three services that need them. Called by the
-// boot loop after Vault.GetAgentManifest succeeds.
+// ApplyConsoleBundle propagates per-bundle config (agent identity / KeyID) to
+// the services. Called by the boot loop after Console.GetAgentManifest.
 //
-// Without this call, capture's AES envelope sealing fails (empty AgentDEK)
-// and recall / lifecycle diagnostics surface zero-value IndexName. Adapter
-// client injection (InjectVault/InjectEmbedder/InjectEnvector) handles the
-// gRPC connections; this method handles the per-token metadata.
-func (d *Deps) ApplyVaultBundle(b *vault.Bundle) {
+// Under the runespace model the manifest carries no FHE keys — the console holds
+// them and does all encrypt/decrypt/seal — so this only wires non-secret config.
+func (d *Deps) ApplyConsoleBundle(b *console.Bundle) {
 	if b == nil {
 		return
 	}
 	if d.Capture != nil {
 		d.Capture.AgentID = b.AgentID
 		d.Capture.AgentDEK = b.AgentDEK
-		d.Capture.IndexName = b.IndexName
-	}
-	if d.Recall != nil {
-		d.Recall.IndexName = b.IndexName
 	}
 	if d.Lifecycle != nil {
-		d.Lifecycle.IndexName = b.IndexName
 		d.Lifecycle.KeyID = b.KeyID
-		d.Lifecycle.AgentDEK = b.AgentDEK
-		d.Lifecycle.EncKeyLoaded = len(b.EncKey) > 0
 	}
 }
 
 // emptyArgs — input type for tools that take no arguments.
 type emptyArgs struct{}
 
-// Register binds all 10 MCP tools onto the provided SDK server.
+// Register binds the nine MCP tools onto the provided SDK server.
 //
-// Tool names are bit-identical to Python `mcp/server/server.py`. SDK sorts
-// tools alphabetically in `tools/list` output, so order here is for readability.
+// Tool names are a stable wire contract. SDK sorts tools alphabetically in
+// `tools/list` output, so order here is for readability.
 //
 // Failure modes that Register surfaces as a startup error (via panic +
 // recover):
@@ -168,64 +159,77 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 	}()
 
 	// Write tools — state-gated.
-	mustAdd(srv, "capture",
+	mustAdd(srv, deps.Inflight, "capture",
 		"Capture a decision record (agent-delegated extraction required).",
 		handleCapture(deps))
-	mustAdd(srv, "batch_capture",
+	mustAdd(srv, deps.Inflight, "batch_capture",
 		"Capture a batch of decision records (e.g. session-end sweep).",
 		handleBatchCapture(deps))
-	mustAdd(srv, "recall",
+	mustAdd(srv, deps.Inflight, "recall",
 		"Query organizational memory by natural-language question.",
 		handleRecall(deps))
 	// delete_capture is HIDDEN for this release. The by-ID lookup (SearchByID)
-	// cannot reliably locate a record — envector exposes no exact-ID retrieval,
-	// only vector similarity, so against a populated index soft-delete returns
+	// cannot reliably locate a record — the vector index exposes no exact-ID
+	// retrieval, only vector similarity, so against a populated index soft-delete returns
 	// "not found". Registration is gated to remove the tool from the MCP surface
 	// (no slash command, not callable by the model). The handler
 	// (handleDeleteCapture / lifecycle.DeleteCapture) is intentionally kept;
 	// re-enable by uncommenting once a reliable by-ID path exists.
-	// mustAdd(srv, "delete_capture",
+	// mustAdd(srv, deps.Inflight, "delete_capture",
 	// 	"Soft-delete a record by ID (sets status=reverted, re-inserts).",
 	// 	handleDeleteCapture(deps))
 
 	// Read / diagnostic tools — bypass state gate.
-	mustAdd(srv, "capture_history",
+	mustAdd(srv, deps.Inflight, "capture_history",
 		"List recent captures from local capture_log.jsonl (read-only).",
 		handleCaptureHistory(deps))
-	mustAdd(srv, "vault_status",
-		"Probe Vault connectivity and report secure-search mode.",
-		handleVaultStatus(deps))
-	mustAdd(srv, "diagnostics",
-		"Collect a 7-section health snapshot (env / state / vault / keys / pipelines / embedding / envector).",
+	mustAdd(srv, deps.Inflight, "console_status",
+		"Probe Console connectivity and report secure-search mode.",
+		handleConsoleStatus(deps))
+	mustAdd(srv, deps.Inflight, "diagnostics",
+		"Collect a 6-section health snapshot (env / state / console / keys / pipelines / embedding).",
 		handleDiagnostics(deps))
-	mustAdd(srv, "configure",
-		"Write Vault credentials (endpoint, token, optional ca_cert_path / tls_disable) to $HOME/.rune/config.json and mark state=active.",
+	mustAdd(srv, deps.Inflight, "configure",
+		"Write Console credentials to $HOME/.rune/config.json and mark state=active. Pass registration_string (the runev1_… string from your invite email) to run the 3-stage bootstrap (fetch+pin CA, unwrap the one-time token) automatically; or pass endpoint + token (+ optional ca_cert_path) directly.",
 		handleConfigure(deps))
-	mustAdd(srv, "activate",
+	mustAdd(srv, deps.Inflight, "activate",
 		"Pre-check then reload_pipelines. Returns status=configure_required if $HOME/.rune/config.json is missing/empty, status=install_pending if the runed socket is absent, otherwise mirrors reload_pipelines.",
 		handleActivate(deps))
-	mustAdd(srv, "reload_pipelines",
-		"Re-initialize Vault + envector pipelines (BOOT replay) with envector warmup.",
+	mustAdd(srv, deps.Inflight, "reload_pipelines",
+		"Re-initialize Console pipelines (BOOT replay) with a console warmup.",
 		handleReloadPipelines(deps))
 
 	return nil
 }
 
-// mustAdd wraps sdkmcp.AddTool with up-front name validation.
+// mustAdd wraps sdkmcp.AddTool with up-front name validation and inflight
+// tracking.
 //
 // The SDK's Server.AddTool only LOGS on invalid tool names
 // (go-sdk/mcp/server.go:238-241) — it does not panic, so Register's
 // defer recover() would miss it and the bad-named tool would silently
 // register. mustAdd panics on invalid names, unifying the failure
 // path so recover() catches everything.
-func mustAdd[In, Out any](srv *sdkmcp.Server, name, description string, h sdkmcp.ToolHandlerFor[In, Out]) {
+//
+// Every handler is wrapped with tracker Begin/End so the exit sequence can
+// drain in-flight calls (GracefulShutdown step 1). A nil tracker skips the
+// wrap (tests that register without one).
+func mustAdd[In, Out any](srv *sdkmcp.Server, tracker *lifecycle.InflightTracker, name, description string, h sdkmcp.ToolHandlerFor[In, Out]) {
 	if !isValidToolName(name) {
 		panic(fmt.Errorf("mustAdd: invalid tool name %q (allowed: [A-Za-z0-9_-], 1..128 chars)", name))
+	}
+	wrapped := h
+	if tracker != nil {
+		wrapped = func(ctx context.Context, req *sdkmcp.CallToolRequest, in In) (*sdkmcp.CallToolResult, Out, error) {
+			tracker.Begin()
+			defer tracker.End()
+			return h(ctx, req, in)
+		}
 	}
 	sdkmcp.AddTool(srv, &sdkmcp.Tool{
 		Name:        name,
 		Description: description,
-	}, h)
+	}, wrapped)
 }
 
 // isValidToolName mirrors the SDK's validateToolName rules

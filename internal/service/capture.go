@@ -1,19 +1,10 @@
 // Package service holds the orchestration layer — multi-phase flows that
 // coordinate adapters + policy. MCP tool handlers (internal/mcp/tools.go)
 // delegate to these services; business logic lives here, not in handlers.
-//
-// Spec:
-//
-//	docs/v04/spec/flows/capture.md (7-phase)
-//	docs/v04/spec/flows/recall.md (7-phase)
-//	docs/v04/spec/flows/lifecycle.md (6 tools)
 package service
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -21,30 +12,38 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/envector"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/logio"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/seal"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
 	"github.com/CryptoLabInc/rune-mcp/internal/policy"
 )
 
 // CaptureService orchestrates the 7-phase capture flow.
-// Python: mcp/server/server.py:L1208-1407 _capture_single + L810-896 tool_batch_capture.
 type CaptureService struct {
-	Vault      vault.Client
-	Envector   envector.Client
+	Console    console.Client
 	Embedder   embedder.Client
+	Encryptor  Encryptor
 	CaptureLog *logio.CaptureLog
 	State      *lifecycle.Manager
 
-	// Injected from Vault bundle at boot.
-	AgentID   string
-	AgentDEK  []byte // 32B validated (vault.ValidateAgentDEK)
-	IndexName string
+	// Injected from Console bundle at boot.
+	AgentID  string // for the seal envelope's "a" field
+	AgentDEK []byte // metadata seal key (agent_dek from manifest)
 
 	Now func() time.Time // injectable clock (default: time.Now)
+}
+
+// Encryptor is the client-side FHE encrypt surface (runespacecrypto). Kept as
+// an interface so capture tests need no cgo. EncryptFlat/EncryptClustered take
+// an l2-normalized vector and return the tier ciphertexts.
+type Encryptor interface {
+	EncryptFlat(vec []float32) ([]byte, error)
+	EncryptClustered(vec []float32) ([]byte, error)
 }
 
 // NewCaptureService constructs with default clock.
@@ -52,20 +51,93 @@ func NewCaptureService() *CaptureService {
 	return &CaptureService{Now: time.Now}
 }
 
-// Handle — single capture. Called by internal/mcp/tools.go ToolCapture.
-// Python: server.py:L1208-1407 _capture_single.
+// EncryptSealInsert embeds+routes text, encrypts the vector (EncKey), seals
+// metadataJSON (agent_dek), and forwards the ciphertext item to the console
+// under a fresh idempotent id. Shared by the capture flow and DeleteCapture's
+// tombstone re-insert so there is one client-side crypto path.
 //
-// Flow (per spec/flows/capture.md):
+// Centroid desync self-heals here: buildInsertItem covers C4 (runed has
+// no set), and a WRONG_CENTROID_VERSION rejection covers C3 — resync, rebuild
+// the item under the new set (fresh cluster_id + version, same id), and retry
+// exactly once.
+func (s *CaptureService) EncryptSealInsert(ctx context.Context, text, metadataJSON string) (string, error) {
+	if s.Encryptor == nil {
+		return "", fmt.Errorf("capture: encryptor not initialized")
+	}
+	id := uuid.NewString()
+	item, err := s.buildInsertItem(ctx, id, text, metadataJSON)
+	if err != nil {
+		return "", err
+	}
+	insertedID, err := insertWithRecovery(ctx, s.State, s.Console, item)
+	if err == nil || !isWrongCentroidVersion(err) {
+		return insertedID, err
+	}
+	// C3: the engine replaced its centroid set after we routed. The console has
+	// already dropped its stale cache, so a resync now yields the new set.
+	slog.Warn("capture: insert rejected for stale centroid version; resyncing and retrying once", "id", id)
+	if rerr := s.resyncCentroids(ctx); rerr != nil {
+		return "", fmt.Errorf("insert rejected (%w) and centroid resync failed: %w", err, rerr)
+	}
+	item, err = s.buildInsertItem(ctx, id, text, metadataJSON)
+	if err != nil {
+		return "", err
+	}
+	return insertWithRecovery(ctx, s.State, s.Console, item)
+}
+
+// buildInsertItem runs the client-side crypto pipeline — embed+route (runed) →
+// encrypt (EncKey) → seal (agent_dek) — and assembles the console item under the
+// given idempotent id. On runed FAILED_PRECONDITION (no centroid set — C4,
+// e.g. the best-effort boot relay failed or runed restarted with a cold cache)
+// it pushes the set once and retries the route.
+func (s *CaptureService) buildInsertItem(ctx context.Context, id, text, metadataJSON string) (console.InsertItem, error) {
+	routed, err := s.Embedder.EmbedRoute(ctx, text)
+	if isNoCentroids(err) {
+		slog.Warn("capture: runed has no centroid set; resyncing and retrying once")
+		if rerr := s.resyncCentroids(ctx); rerr != nil {
+			return console.InsertItem{}, fmt.Errorf("embed route: %w (centroid resync failed: %w)", err, rerr)
+		}
+		routed, err = s.Embedder.EmbedRoute(ctx, text)
+	}
+	if err != nil {
+		return console.InsertItem{}, fmt.Errorf("embed route: %w", err)
+	}
+	rmp, err := s.Encryptor.EncryptFlat(routed.Vector)
+	if err != nil {
+		return console.InsertItem{}, fmt.Errorf("encrypt flat: %w", err)
+	}
+	mm, err := s.Encryptor.EncryptClustered(routed.Vector)
+	if err != nil {
+		return console.InsertItem{}, fmt.Errorf("encrypt clustered: %w", err)
+	}
+	sealed, err := seal.Seal(s.AgentDEK, s.AgentID, []byte(metadataJSON))
+	if err != nil {
+		return console.InsertItem{}, fmt.Errorf("seal metadata: %w", err)
+	}
+	return console.InsertItem{
+		ID:                 id,
+		RMPItem:            rmp,
+		MMItem:             mm,
+		ClusterID:          routed.ClusterID,
+		CentroidSetVersion: routed.CentroidSetVersion,
+		SealedMetadata:     sealed,
+	}, nil
+}
+
+// Handle — single capture. Called by internal/mcp/tools.go ToolCapture.
+//
+// Flow:
 //
 //	Phase 1 (in handler): state gate → PIPELINE_NOT_READY if not active
 //	Phase 2: validate text + parse extracted (Detection + ExtractionResult split)
 //	Phase 3: embedder.EmbedSingle(text_to_embed) — reusable_insight > payload.text
-//	Phase 4: envector.Score → Vault.DecryptScores(top_k=3) → novelty classify
+//	Phase 4: Console.Score → Console.DecryptScores(top_k=3) → novelty classify
 //	         near_duplicate (≥0.95) → return {captured:false, novelty{class, score, related}}
-//	         failures non-fatal (server.py:L1370-1372 logger.warning)
-//	Phase 5: policy.BuildPhases → embedder.EmbedBatch(texts) → envector.Seal × N
-//	Phase 6: envector.Insert (atomic batch, D17)
-//	Phase 7: capture_log append (degrade per D19) → respond
+//	         failures non-fatal
+//	Phase 5: policy.BuildPhases → embedder.EmbedBatch(texts) → seal.Seal × N
+//	Phase 6: Console.Insert (atomic batch)
+//	Phase 7: capture_log append (degrade on failure) → respond
 func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest) (*domain.CaptureResponse, error) {
 	// Phase 2
 	detection, extraction, err := domain.ParseExtractionFromAgent(req.Extracted)
@@ -76,13 +148,13 @@ func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest)
 		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "extraction is nil after parse"}
 	}
 
-	// D14 (lifecycle.md §3): an item with neither raw text nor any embeddable
+	// An item with neither raw text nor any embeddable
 	// extraction content must be rejected, never captured. Single capture always
 	// carries a validated req.Text, so this only fires for agent-supplied
 	// extractions with no usable fields — an empty batch item, or the
 	// {text, extracted} wrapper anti-pattern whose fields nest under "extracted"
 	// where ParseExtractionFromAgent's top-level lookup can't see them. Enforcing
-	// D14 here (the shared path) keeps single capture and batch in agreement and
+	// this in the shared path keeps single capture and batch in agreement and
 	// makes the contentless-record corpus poisoning (identical boilerplate →
 	// ~1.0 self-similarity → cascading false near_duplicate) structurally
 	// impossible: a contentless item never reaches the embedder.
@@ -128,35 +200,24 @@ func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest)
 		noveltyInfo = &domain.NoveltyInfo{Score: 1.0, Class: "novel"}
 	}
 
-	// Phase 5: embed, seal
-	texts := make([]string, len(records))
+	// Phase 5: embed. Metadata is the plaintext record JSON; the console seals it.
+	// Phase 5-6: embed (with IVF routing), encrypt each record locally
+	// (EncKey), seal its metadata (agent_dek), and forward the ciphertext to
+	// the console. Plaintext vectors and metadata never leave this process.
+	if s.Encryptor == nil {
+		return nil, fmt.Errorf("capture: encryptor not initialized")
+	}
+	if s.Encryptor == nil {
+		return nil, fmt.Errorf("capture: encryptor not initialized")
+	}
 	for i := range records {
-		texts[i] = pickEmbedText(&records[i])
-	}
-
-	vectors, err := s.Embedder.EmbedBatch(ctx, texts)
-	if err != nil {
-		return nil, fmt.Errorf("embed batch: %w", err)
-	}
-
-	envelopes, err := s.sealMetadata(records)
-	if err != nil {
-		return nil, fmt.Errorf("seal metadata: %w", err)
-	}
-
-	// Phase 6
-	insertReq := envector.InsertRequest{
-		Vectors:   vectors,
-		Metadata:  envelopes,
-		RequestID: newInsertRequestID(),
-	}
-	insertResult, err := insertWithRecovery(ctx, s.State, s.Envector, insertReq)
-	if err != nil {
-		return nil, fmt.Errorf("envector insert: %w", err)
-	}
-	if insertResult != nil && len(insertResult.ItemIDs) != 0 && len(insertResult.ItemIDs) != len(vectors) {
-		slog.Error("envector insert inconsistency",
-			"expected", len(vectors), "got", len(insertResult.ItemIDs))
+		body, err := json.Marshal(records[i])
+		if err != nil {
+			return nil, fmt.Errorf("marshal record %d: %w", i, err)
+		}
+		if _, err := s.EncryptSealInsert(ctx, pickEmbedText(&records[i]), string(body)); err != nil {
+			return nil, fmt.Errorf("console insert %d: %w", i, err)
+		}
 	}
 
 	// Phase 7
@@ -199,8 +260,8 @@ func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest)
 //
 // Future optimizations:
 //   - Phase 3/5 embed: runed.EmbedBatch (N to 1 call)
-//   - Phase 4 score: envector native multi-vector query
-//   - Phase 6 insert: envector.Insert is already batch-native (N to 1 call)
+//   - Phase 4 score: Console native multi-vector query
+//   - Phase 6 insert: Console.Insert is already batch-native (N to 1 call)
 func (s *CaptureService) Batch(ctx context.Context, args BatchCaptureArgs) (*BatchCaptureResult, error) {
 	var rawItems []map[string]any
 	if err := json.Unmarshal([]byte(args.Items), &rawItems); err != nil {
@@ -216,7 +277,7 @@ func (s *CaptureService) Batch(ctx context.Context, args BatchCaptureArgs) (*Bat
 	for i, item := range rawItems {
 		// A batch item carries no per-item raw text — the embeddable content lives
 		// entirely in the flat extracted object. Hand it straight to Handle, whose
-		// shared D14 guard rejects a contentless item (empty Text + no extraction
+		// shared guard rejects a contentless item (empty Text + no extraction
 		// content) as an error. This keeps batch and single capture on one code
 		// path, so the gate cannot drift from what ParseExtractionFromAgent/
 		// RenderPayloadText actually embed (e.g. {group_title, phases} or a
@@ -265,7 +326,7 @@ func (s *CaptureService) Batch(ctx context.Context, args BatchCaptureArgs) (*Bat
 // runNoveltyCheck — Phase 4 helper. Returns novelty info + nil if proceed,
 // or a pre-built response if near_duplicate (caller short-circuits).
 func (s *CaptureService) runNoveltyCheck(ctx context.Context, embeddingText string) (*domain.NoveltyInfo, *domain.CaptureResponse, error) {
-	if s.Embedder == nil || s.Envector == nil || s.Vault == nil {
+	if s.Embedder == nil || s.Console == nil {
 		return &domain.NoveltyInfo{Score: 1.0, Class: "novel"}, nil, nil
 	}
 
@@ -275,26 +336,16 @@ func (s *CaptureService) runNoveltyCheck(ctx context.Context, embeddingText stri
 		return &domain.NoveltyInfo{Score: 1.0, Class: "novel"}, nil, nil
 	}
 
-	blobs, err := scoreWithRecovery(ctx, s.State, s.Envector, vec)
-	if err != nil || len(blobs) == 0 {
-		slog.Warn("novelty check: score failed (non-fatal)", "err", err)
-		return &domain.NoveltyInfo{Score: 1.0, Class: "novel"}, nil, nil
-	}
-
-	// Vault.DecryptScores's `EncryptedBlobB64` is a proto3 string field —
-	// envector's raw cipher bytes must be base64-encoded before sending.
-	// Mirrors recall.searchSingle.
-	encryptedBlobB64 := base64.StdEncoding.EncodeToString(blobs[0])
-	entries, err := s.Vault.DecryptScores(ctx, encryptedBlobB64, 3)
-	if err != nil || len(entries) == 0 {
-		slog.Warn("novelty check: decrypt failed (non-fatal)", "err", err)
+	hits, err := searchWithRecovery(ctx, s.State, s.Console, vec, 3)
+	if err != nil || len(hits) == 0 {
+		slog.Warn("novelty check: search failed or empty (non-fatal)", "err", err)
 		return &domain.NoveltyInfo{Score: 1.0, Class: "novel"}, nil, nil
 	}
 
 	maxSim := 0.0
-	for _, e := range entries {
-		if e.Score > maxSim {
-			maxSim = e.Score
+	for _, h := range hits {
+		if h.Score > maxSim {
+			maxSim = h.Score
 		}
 	}
 
@@ -302,7 +353,7 @@ func (s *CaptureService) runNoveltyCheck(ctx context.Context, embeddingText stri
 	noveltyInfo := &domain.NoveltyInfo{
 		Score:   score,
 		Class:   class,
-		Related: buildRelatedTop3(entries),
+		Related: buildRelatedTop3(hits),
 	}
 
 	if class == domain.NoveltyClassNearDuplicate {
@@ -317,31 +368,6 @@ func (s *CaptureService) runNoveltyCheck(ctx context.Context, embeddingText stri
 	return noveltyInfo, nil, nil
 }
 
-// sealMetadata — Phase 5 helper. For each record, json.Marshal → envector.Seal.
-// Safety check (Python envector_sdk.py:L250-251): agent_dek present but agent_id missing → skip.
-func (s *CaptureService) sealMetadata(records []domain.DecisionRecord) ([]string, error) {
-	envelopes := make([]string, len(records))
-
-	for i, rec := range records {
-		body, err := json.Marshal(rec)
-		if err != nil {
-			return nil, fmt.Errorf("marshal record %d: %w", i, err)
-		}
-
-		if len(s.AgentDEK) > 0 && s.AgentID != "" {
-			sealed, err := envector.Seal(s.AgentDEK, s.AgentID, body)
-			if err != nil {
-				return nil, fmt.Errorf("seal record %d: %w", i, err)
-			}
-
-			envelopes[i] = sealed
-		} else {
-			envelopes[i] = string(body) // no DEK
-		}
-	}
-	return envelopes, nil
-}
-
 func pickEmbedText(r *domain.DecisionRecord) string {
 	if r.ReusableInsight != "" {
 		return r.ReusableInsight
@@ -349,17 +375,8 @@ func pickEmbedText(r *domain.DecisionRecord) string {
 	return r.Payload.Text // fallback
 }
 
-// Identical format with enVector RequestHeader.Id
-func newInsertRequestID() string {
-	var b [14]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return ""
-	}
-	return hex.EncodeToString(b[:])
-}
-
-func buildRelatedTop3(entries []vault.ScoreEntry) []domain.RelatedRecord {
-	n := len(entries)
+func buildRelatedTop3(hits []console.Hit) []domain.RelatedRecord {
+	n := len(hits)
 	if n > 3 {
 		n = 3
 	}
@@ -367,8 +384,8 @@ func buildRelatedTop3(entries []vault.ScoreEntry) []domain.RelatedRecord {
 	records := make([]domain.RelatedRecord, n)
 	for i := 0; i < n; i++ {
 		records[i] = domain.RelatedRecord{
-			ID:         fmt.Sprintf("shard:%d/row:%d", entries[i].ShardIdx, entries[i].RowIdx),
-			Similarity: math.Round(entries[i].Score*1000) / 1000,
+			ID:         hits[i].ID,
+			Similarity: math.Round(hits[i].Score*1000) / 1000,
 		}
 	}
 
@@ -376,10 +393,10 @@ func buildRelatedTop3(entries []vault.ScoreEntry) []domain.RelatedRecord {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Batch types — lifecycle.md §3
+// Batch types
 // ─────────────────────────────────────────────────────────────────────────────
 
-// BatchCaptureArgs — Python: server.py:L810 tool_batch_capture args.
+// BatchCaptureArgs — args for the batch_capture tool.
 //
 // The jsonschema tags below are surfaced verbatim in the tool's inputSchema
 // (go-sdk reads the `jsonschema` struct tag as the property description). They

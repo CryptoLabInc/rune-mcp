@@ -36,7 +36,7 @@ func TestMustAdd_PanicsOnInvalidName(t *testing.T) {
 	noopHandler := func(_ context.Context, _ *sdkmcp.CallToolRequest, _ emptyArgs) (*sdkmcp.CallToolResult, emptyArgs, error) {
 		return nil, emptyArgs{}, nil
 	}
-	mustAdd[emptyArgs, emptyArgs](srv, "rune capture", "test", noopHandler)
+	mustAdd[emptyArgs, emptyArgs](srv, nil, "rune capture", "test", noopHandler)
 }
 
 func TestRegister_AllHardcodedNamesValid(t *testing.T) {

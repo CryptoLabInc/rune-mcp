@@ -2,34 +2,27 @@ package service
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math"
 	"sort"
-	"strings"
 	"time"
 
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/envector"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
 	"github.com/CryptoLabInc/rune-mcp/internal/policy"
 )
 
 // RecallService orchestrates the 7-phase recall flow.
-// Python: mcp/server/server.py:L910-1034 tool_recall + agents/retriever/searcher.py.
-// Spec: docs/v04/spec/flows/recall.md.
 type RecallService struct {
-	Vault     vault.Client
-	Envector  envector.Client
-	Embedder  embedder.Client
-	State     *lifecycle.Manager
-	IndexName string
-	Now       func() time.Time
+	Console  console.Client
+	Embedder embedder.Client
+	State    *lifecycle.Manager
+	Now      func() time.Time
 }
 
 // NewRecallService constructs with default clock.
@@ -37,33 +30,17 @@ func NewRecallService() *RecallService {
 	return &RecallService{Now: time.Now}
 }
 
-// External-IO call deadlines (per call, not aggregate). Each external op
-// gets a fresh context derived from the caller's; the constants are
-// upper bounds — a healthy stack returns in milliseconds. Picking these
-// values:
-//
-//   - embedder: runed has typically <100ms latency on warm queries;
-//     10s tolerates first-call cold starts when ggml loads weights.
-//   - envector Score: FHE inner-product is the heaviest hop on the
-//     recall path — 30s mirrors Python's WARMUP_TIMEOUT bound.
-//   - envector GetMetadata: shard/row lookup of cipher metadata; 15s.
-//   - vault DecryptScores: FHE decrypt, also heavy; 30s.
-//   - vault DecryptMetadata: AES-only, fast even when batched; 30s
-//     bounds pathological large batches.
-//
-// These exist so a hung dependency surfaces as a typed error in seconds
-// instead of stalling the MCP request indefinitely (gRPC keepalive
-// alone won't fail an active call when the server replies but never
-// finishes).
+// External-IO call deadlines (per call, not aggregate).
+//   - embedder: runed <100ms warm; 10s tolerates ggml cold start.
+//   - console Search: the console runs the blind search + FHE decrypt against
+//     runespace, the heaviest hop; 30s upper bound.
 const (
-	embedderCallTimeout         = 10 * time.Second
-	envectorScoreTimeout        = 30 * time.Second
-	envectorMetadataTimeout     = 15 * time.Second
-	vaultDecryptScoresTimeout   = 30 * time.Second
-	vaultDecryptMetadataTimeout = 30 * time.Second
+	embedderCallTimeout  = 10 * time.Second
+	consoleSearchTimeout = 30 * time.Second
 )
 
-// Handle — Python: server.py:L910-1034 tool_recall + searcher.search().
+// Handle runs the recall flow: parse, embed expansions, search, then
+// group/filter/rerank into the final result.
 func (s *RecallService) Handle(ctx context.Context, args *domain.RecallArgs) (*domain.RecallResult, error) {
 	// Phase 2: parse query
 	parsed := policy.Parse(args.Query)
@@ -115,15 +92,15 @@ func (s *RecallService) Handle(ctx context.Context, args *domain.RecallArgs) (*d
 // Phase 4 — search orchestration
 // ─────────────────────────────────────────────────────────────────────────────
 
-// topKLimitErr returns a domain TOPK_LIMIT error if err wraps a vault top_k
+// topKLimitErr returns a domain TOPK_LIMIT error if err wraps a console top_k
 // limit rejection, else nil. Unlike transient per-expansion failures (which
 // recall swallows best-effort), a top_k over the token's role limit is
 // deterministic — every expansion fails identically — so recall aborts and
 // surfaces a distinct, actionable error instead of silently returning zero
 // results or a generic INVALID_INPUT.
 func topKLimitErr(err error) *domain.RuneError {
-	var ve *vault.Error
-	if errors.As(err, &ve) && ve.Code == vault.ErrVaultTopKExceeded.Code {
+	var ve *console.Error
+	if errors.As(err, &ve) && ve.Code == console.ErrConsoleTopKExceeded.Code {
 		return &domain.RuneError{
 			Code:      domain.CodeTopKLimit,
 			Message:   ve.Message,
@@ -133,7 +110,8 @@ func topKLimitErr(err error) *domain.RuneError {
 	return nil
 }
 
-// searchWithExpansions — Python: searcher.py:L153-176 _search_with_expansions.
+// searchWithExpansions searches each expansion vector, dedups hits by record
+// ID, and falls back to the original query when it is not already an expansion.
 func (s *RecallService) searchWithExpansions(
 	ctx context.Context,
 	original string,
@@ -201,208 +179,43 @@ func (s *RecallService) searchWithExpansions(
 	return allHits, nil
 }
 
-// searchSingle — Python: searcher.py:L371-373 + L375-470 _search_via_vault.
-//
-// Logs each phase (score blob count → decrypt entry count → metadata hit
-// count → resolved hit count) at INFO so a user-facing 0-result recall
-// can be triaged without adding fresh instrumentation. The branches that
-// intentionally abort (silent return on 0 blobs / 0 entries) leave a
-// breadcrumb, since callers used to see only "no results" with no signal
-// as to where the pipeline shed rows.
+// searchSingle runs one console Search and resolves each hit's (already
+// plaintext) metadata into a SearchHit. The console does the whole blind
+// search + FHE decrypt + metadata open internally.
 func (s *RecallService) searchSingle(ctx context.Context, vec []float32, topk int) ([]domain.SearchHit, error) {
-	scoreCtx, cancelScore := context.WithTimeout(ctx, envectorScoreTimeout)
-	blobs, err := scoreWithRecovery(scoreCtx, s.State, s.Envector, vec)
-	cancelScore()
-	if err != nil {
-		slog.Warn("recall: envector score failed", "err", err)
-		return nil, fmt.Errorf("envector score: %w", err)
-	}
-
-	slog.Info("recall: envector score returned",
-		"blobs", len(blobs),
-		"first_blob_bytes", firstBlobLen(blobs),
-		"topk", topk,
-	)
-	if len(blobs) == 0 {
-		return nil, nil
-	}
-
-	// Vault decrypt scores. The Vault RPC field is `EncryptedBlobB64`
-	// (proto3 `string`, valid-UTF-8 only) — envector returns raw cipher
-	// bytes, so we must base64-encode before sending. A direct
-	// `string(blobs[0])` cast pushes random cipher bytes through the
-	// proto3 string-validation path and trips
-	// "grpc: error while marshaling: string field contains invalid UTF-8".
-	encryptedBlobB64 := base64.StdEncoding.EncodeToString(blobs[0])
-	decCtx, cancel := context.WithTimeout(ctx, vaultDecryptScoresTimeout)
-	entries, err := s.Vault.DecryptScores(decCtx, encryptedBlobB64, topk)
+	searchCtx, cancel := context.WithTimeout(ctx, consoleSearchTimeout)
+	hits, err := searchWithRecovery(searchCtx, s.State, s.Console, vec, topk)
 	cancel()
 	if err != nil {
-		slog.Warn("recall: vault decrypt_scores failed", "err", err)
-		return nil, fmt.Errorf("vault decrypt scores: %w", err)
+		slog.Warn("recall: console search failed", "err", err)
+		return nil, fmt.Errorf("console search: %w", err)
 	}
-	slog.Info("recall: vault decrypt_scores returned", "entries", len(entries))
-	if len(entries) == 0 {
+	slog.Info("recall: console search returned", "hits", len(hits), "topk", topk)
+	if len(hits) == 0 {
 		return nil, nil
 	}
-
-	// Get metadata
-	refs := make([]envector.MetadataRef, len(entries))
-	for i, e := range entries {
-		refs[i] = envector.MetadataRef{ShardIdx: uint64(e.ShardIdx), RowIdx: uint64(e.RowIdx)}
-	}
-
-	metaCtx, cancelMeta := context.WithTimeout(ctx, envectorMetadataTimeout)
-	metaEntries, err := s.Envector.GetMetadata(metaCtx, refs, []string{"metadata"})
-	cancelMeta()
-	if err != nil {
-		slog.Warn("recall: envector get_metadata failed", "err", err, "refs", len(refs))
-		return nil, fmt.Errorf("envector get_metadata: %w", err)
-	}
-
-	slog.Info("recall: envector get_metadata returned",
-		"metaEntries", len(metaEntries),
-		"refs", len(refs),
-	)
-
-	// Search hit
-	hits, err := s.resolveMetadata(ctx, metaEntries, entries)
-	if err != nil {
-		slog.Warn("recall: resolve metadata failed", "err", err)
-		return nil, fmt.Errorf("resolve metadata: %w", err)
-	}
-	slog.Info("recall: hits resolved", "hits", len(hits))
-
-	return hits, nil
+	return s.resolveHits(hits), nil
 }
 
-// firstBlobLen surfaces the byte size of blobs[0] in slog without
-// nil-deref'ing the slice when blobs is empty.
-func firstBlobLen(blobs [][]byte) int {
-	if len(blobs) == 0 {
-		return 0
+// resolveHits converts console hits into SearchHits. The console already decrypted
+// the FHE scores and opened the metadata envelope, so Hit.Metadata is plaintext
+// JSON — we just parse it.
+func (s *RecallService) resolveHits(hits []console.Hit) []domain.SearchHit {
+	out := make([]domain.SearchHit, 0, len(hits))
+	for _, h := range hits {
+		if h.Metadata == "" {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(h.Metadata), &m); err != nil {
+			continue
+		}
+		out = append(out, toSearchHit(m, h.Score))
 	}
-	return len(blobs[0])
+	return out
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Phase 5 — metadata classification + Vault-delegated decrypt (D26)
-// ─────────────────────────────────────────────────────────────────────────────
-
-// metadataFormat — 3-way dispatch for encrypted metadata entries.
-type metadataFormat int
-
-const (
-	fmtUnrecognized metadataFormat = iota
-	fmtAESEnvelope                 // {"a": ..., "c": ...}
-	fmtPlainJSON                   // already a JSON dict
-	fmtBase64JSON                  // legacy format
-)
-
-// classifyMetadata — Python: searcher.py:L417-464 inline logic.
-func classifyMetadata(data string) (metadataFormat, map[string]any) {
-	data = strings.TrimSpace(data)
-	if data == "" {
-		return fmtUnrecognized, nil
-	}
-
-	// Try JSON parse
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(data), &parsed); err == nil {
-		// Check for AES envelope: {"a": ..., "c": ...}
-		if _, hasA := parsed["a"]; hasA {
-			if _, hasC := parsed["c"]; hasC {
-				return fmtAESEnvelope, nil
-			}
-		}
-		return fmtPlainJSON, parsed
-	}
-
-	// Try base64
-	decoded, err := base64.StdEncoding.DecodeString(data)
-	if err == nil {
-		var b64Parsed map[string]any
-		if err := json.Unmarshal(decoded, &b64Parsed); err == nil {
-			return fmtBase64JSON, b64Parsed
-		}
-	}
-
-	return fmtUnrecognized, nil
-}
-
-// resolveMetadata — Python: searcher.py:L417-464 + _to_search_result.
-func (s *RecallService) resolveMetadata(ctx context.Context, entries []envector.MetadataEntry, scores []vault.ScoreEntry) ([]domain.SearchHit, error) {
-	type classifiedItem struct {
-		idx    int
-		fmt    metadataFormat
-		parsed map[string]any
-		raw    string
-		score  float64
-	}
-
-	var aesIndices []int
-	var aesList []string
-	items := make([]classifiedItem, len(entries))
-
-	for i, e := range entries {
-		score := 0.0
-		if i < len(scores) {
-			score = scores[i].Score
-		}
-		f, parsed := classifyMetadata(e.Data)
-		items[i] = classifiedItem{idx: i, fmt: f, parsed: parsed, raw: e.Data, score: score}
-
-		if f == fmtAESEnvelope {
-			aesIndices = append(aesIndices, i)
-			aesList = append(aesList, e.Data)
-		}
-	}
-
-	// Batch decrypt AES envelopes
-	if len(aesList) > 0 && s.Vault != nil {
-		batchCtx, batchCancel := context.WithTimeout(ctx, vaultDecryptMetadataTimeout)
-		decrypted, err := s.Vault.DecryptMetadata(batchCtx, aesList)
-		batchCancel()
-		if err != nil {
-			slog.Warn("batch decrypt failed, trying per-entry", "err", err)
-			for j, aesIdx := range aesIndices {
-				singleCtx, singleCancel := context.WithTimeout(ctx, vaultDecryptMetadataTimeout)
-				single, singleErr := s.Vault.DecryptMetadata(singleCtx, []string{aesList[j]})
-				singleCancel()
-				if singleErr == nil && len(single) > 0 {
-					var parsed map[string]any
-					if json.Unmarshal([]byte(single[0]), &parsed) == nil {
-						items[aesIdx].parsed = parsed
-						items[aesIdx].fmt = fmtPlainJSON
-					}
-				}
-			}
-		} else {
-			for j, aesIdx := range aesIndices {
-				if j < len(decrypted) {
-					var parsed map[string]any
-					if json.Unmarshal([]byte(decrypted[j]), &parsed) == nil {
-						items[aesIdx].parsed = parsed
-						items[aesIdx].fmt = fmtPlainJSON
-					}
-				}
-			}
-		}
-	}
-
-	// Convert to SearchHits
-	var hits []domain.SearchHit
-	for _, item := range items {
-		if item.parsed == nil {
-			continue // unrecognized or  failed
-		}
-		hits = append(hits, toSearchHit(item.parsed, item.score))
-	}
-
-	return hits, nil
-}
-
-// toSearchHit — Python: searcher.py:L472-521 _to_search_result.
+// toSearchHit maps a decrypted metadata map + score into a domain.SearchHit.
 func toSearchHit(metadata map[string]any, score float64) domain.SearchHit {
 	h := domain.SearchHit{
 		RecordID:    strFromMap(metadata, "id", "unknown"),
@@ -454,7 +267,8 @@ func strFromMap(m map[string]any, key, def string) string {
 // Phase 6 — group expansion, filters
 // ─────────────────────────────────────────────────────────────────────────────
 
-// expandPhaseChains — Python: searcher.py:L306-365 _expand_phase_chains.
+// expandPhaseChains re-searches for the missing siblings of at most 2 partially
+// present groups, appending any that belong to those groups.
 func (s *RecallService) expandPhaseChains(ctx context.Context, results []domain.SearchHit, origVec []float32) []domain.SearchHit {
 	type groupInfo struct {
 		gid       string
@@ -527,7 +341,8 @@ func (s *RecallService) expandPhaseChains(ctx context.Context, results []domain.
 	return results
 }
 
-// assembleGroups — Python: searcher.py:L178-226 _assemble_groups.
+// assembleGroups orders hits by group (phases contiguous, sorted by phase_seq)
+// interleaved with standalone hits, all ranked by best score.
 func (s *RecallService) assembleGroups(results []domain.SearchHit) []domain.SearchHit {
 	type group struct {
 		hits      []domain.SearchHit
@@ -608,7 +423,7 @@ func (s *RecallService) assembleGroups(results []domain.SearchHit) []domain.Sear
 	return assembled
 }
 
-// applyMetadataFilters — Python: searcher.py:L228-252 _apply_metadata_filters.
+// applyMetadataFilters drops hits that fail the domain/status/since filters.
 func (s *RecallService) applyMetadataFilters(results []domain.SearchHit, f Filters) []domain.SearchHit {
 	var filtered []domain.SearchHit
 	for _, h := range results {
@@ -626,7 +441,7 @@ func (s *RecallService) applyMetadataFilters(results []domain.SearchHit, f Filte
 				}
 			}
 
-			// Keep record without timestamp (port from Python version)
+			// Keep records without a timestamp.
 			if ts != "" && ts < *f.Since {
 				continue
 			}
@@ -647,7 +462,7 @@ type Filters struct {
 // Phase 7 — response build
 // ─────────────────────────────────────────────────────────────────────────────
 
-// buildResult — Python: server.py:L950-990 agent-delegated path.
+// buildResult assembles the final recall response (entries + sources + confidence).
 func (s *RecallService) buildResult(results []domain.SearchHit) *domain.RecallResult {
 	confidence := calculateConfidence(results)
 
@@ -694,8 +509,7 @@ func (s *RecallService) buildResult(results []domain.SearchHit) *domain.RecallRe
 	}
 }
 
-// calculateConfidence — Python: server.py:L393-412.
-// Top-5 weighted sum / 2.0 clamp 1.0 round 2 decimals.
+// calculateConfidence — top-5 weighted sum / 2.0, clamped to 1.0, rounded to 2 decimals.
 func calculateConfidence(results []domain.SearchHit) float64 {
 	if len(results) == 0 {
 		return 0

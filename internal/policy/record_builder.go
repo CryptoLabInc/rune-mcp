@@ -9,15 +9,14 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 )
 
-// Record builder — Python canonical: agents/scribe/record_builder.py (703 LoC).
-// D13 Option A: Go ports all logic (not delegated to agent).
-// D14: pre_extraction required (no LLM fallback).
-// Spec: docs/v04/spec/flows/capture.md Phase 5 + canonical-reference section.
+// Record builder — capture Phase 5.
+// Go ports all logic (not delegated to agent).
+// pre_extraction required (no LLM fallback).
 
-// MAX_INPUT_CHARS — Python L227. Truncate cleanText before extraction.
+// MaxInputChars caps cleanText length before extraction.
 const MaxInputChars = 12_000
 
-// QuotePatterns — 4 regex (Python L72-77): double "", single ”, Japanese 「」,
+// QuotePatterns — 4 regex: double "", single ”, Japanese 「」,
 // French «». Min 10 chars.
 var QuotePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`"([^"]{10,})"`),
@@ -26,7 +25,7 @@ var QuotePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`«([^»]{10,})»`),
 }
 
-// RationalePatterns — 5 regex (Python L80-86): because / reason / rationale /
+// RationalePatterns — 5 regex: because / reason / rationale /
 // since / due to.
 var RationalePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)because\s+(.{10,}?)(?:\.|$)`),
@@ -41,15 +40,16 @@ var acceptancePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(?:final decision|it's decided|we're going with)\b`),
 }
 
-// BuildPhases — Python: record_builder.py build_phases(rawEvent, detection, pre_extraction).
+// BuildPhases assembles decision records from a raw event, detection, and
+// pre-extraction.
 //
-// Agent-delegated mode (D14) requires pre_extraction != nil; otherwise returns
+// Agent-delegated mode requires pre_extraction != nil; otherwise returns
 // ErrExtractionMissing.
 //
-// Order-critical (Python L196-199, L310-311, L395-396):
+// Order-critical:
 //  1. Redact PII from rawEvent.Text → cleanText (ALWAYS, even in agent-delegated)
 //  2. Assemble record(s) with payload.text = ""
-//  3. EnsureEvidenceCertaintyConsistency per record (§7.1)
+//  3. EnsureEvidenceCertaintyConsistency per record
 //  4. Render payload.text = RenderPayloadText(record)
 //  5. Set reusable_insight = pre_extraction.group_summary (if present)
 //

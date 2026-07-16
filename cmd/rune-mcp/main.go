@@ -1,21 +1,18 @@
-// Command rune-mcp is a session-local MCP server ported from Python rune v0.3.x
-// (agent-delegated path only — see docs/v04/overview/architecture.md §Scope).
+// Command rune-mcp is a session-local MCP server (agent-delegated path only).
 //
 // Spawn model: Claude Code launches one instance per session via stdio.
-// Lifecycle: starting → waiting_for_vault → active ↔ dormant.
+// Lifecycle: starting → waiting_for_console → active ↔ dormant.
 // Tools: 9 MCP tools (activate, batch_capture, capture, capture_history,
 //
 //	configure, diagnostics, recall,
-//	reload_pipelines, vault_status).
+//	reload_pipelines, console_status).
 //	(delete_capture is implemented but HIDDEN this release — registration
 //	 gated in internal/mcp/tools.go.)
 //
-// Wiring: Deps holds a State manager + 3 services. Adapter clients (vault /
-// envector / embedder) are populated on the services by the boot loop after
-// Vault returns the bundle. Until boot completes, write tools fail with
+// Wiring: Deps holds a State manager + 3 services. Adapter clients (console /
+// embedder) are populated on the services by the boot loop after
+// Console returns the bundle. Until boot completes, write tools fail with
 // PIPELINE_NOT_READY through CheckState; read-only tools work degraded.
-//
-// Python reference: mcp/server/server.py (2002 LoC)
 package main
 
 import (
@@ -28,6 +25,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -114,9 +112,48 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := srv.Run(ctx, &sdkmcp.StdioTransport{}); err != nil && !isNormalShutdown(err) {
-		slog.Error("rune-mcp serve error", "err", err)
+	runErr := srv.Run(ctx, &sdkmcp.StdioTransport{})
+
+	// Exit sequence: drain in-flight tool calls,
+	// close adapters (the encryptor Close releases the cgo key context), then
+	// zeroize the agent_dek. Runs on both stdin EOF and SIGTERM (either path
+	// unblocks srv.Run), and before the error exit below. Uses a fresh context:
+	// the main ctx is already cancelled on the signal path, which would skip
+	// the drain.
+	gracefulExit(deps)
+
+	if runErr != nil && !isNormalShutdown(runErr) {
+		slog.Error("rune-mcp serve error", "err", runErr)
 		os.Exit(1)
+	}
+}
+
+// gracefulExit wires lifecycle.GracefulShutdown with everything the process
+// holds: the inflight tracker, the adapter closers in dependency order
+// (encryptor before its console/embedder feeds is not required — closes are
+// independent), the boot log, and the DEK to zeroize.
+func gracefulExit(deps *mcp.Deps) {
+	ctx, cancel := context.WithTimeout(context.Background(), lifecycle.ShutdownTimeout+5*time.Second)
+	defer cancel()
+
+	closers := []lifecycle.Closer{}
+	if deps.Encryptor != nil {
+		closers = append(closers, deps.Encryptor)
+	}
+	if deps.Console != nil {
+		closers = append(closers, deps.Console)
+	}
+	if deps.Embedder != nil {
+		closers = append(closers, deps.Embedder)
+	}
+	closers = append(closers, deps.State.BootLog()) // nil-receiver safe
+
+	var deks [][]byte
+	if deps.Capture != nil && deps.Capture.AgentDEK != nil {
+		deks = append(deks, deps.Capture.AgentDEK)
+	}
+	if err := lifecycle.GracefulShutdown(ctx, deps.Inflight, closers, deks...); err != nil {
+		slog.Warn("graceful shutdown incomplete", "err", err)
 	}
 }
 
@@ -143,8 +180,8 @@ func isNormalShutdown(err error) bool {
 }
 
 // buildDeps wires the state manager + 3 services so that handler dispatch can
-// proceed immediately. Adapter clients (vault.Client, embedder.Client,
-// envector.Client) and DEK/key state are populated by RunBootLoop once Vault
+// proceed immediately. Adapter clients (console.Client, embedder.Client) and
+// DEK/key state are populated by RunBootLoop once Console
 // returns the bundle — until then, the services see nil adapters and write
 // tools are state-gated to PIPELINE_NOT_READY.
 //
@@ -184,5 +221,6 @@ func buildDeps() *mcp.Deps {
 		Capture:   cap,
 		Recall:    rec,
 		Lifecycle: life,
+		Inflight:  lifecycle.NewInflightTracker(),
 	}
 }
