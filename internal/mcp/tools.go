@@ -28,7 +28,7 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/service"
 )
 
-// Deps — injected into all 10 MCP handlers.
+// Deps — injected into every MCP handler.
 //
 // State + 3 services drive request handling. cmd/rune-mcp/main.go constructs
 // Deps after the boot loop has populated adapter clients on the services.
@@ -137,7 +137,7 @@ func (d *Deps) ApplyConsoleBundle(b *console.Bundle) {
 // emptyArgs — input type for tools that take no arguments.
 type emptyArgs struct{}
 
-// Register binds all 10 MCP tools onto the provided SDK server.
+// Register binds the nine MCP tools onto the provided SDK server.
 //
 // Tool names are a stable wire contract. SDK sorts tools alphabetically in
 // `tools/list` output, so order here is for readability.
