@@ -67,19 +67,17 @@ type ConsoleStatusResult struct {
 	ConsoleConfigured     bool    `json:"console_configured"`
 	ConsoleEndpoint       *string `json:"console_endpoint,omitempty"`
 	SecureSearchAvailable bool    `json:"secure_search_available"`
-	Mode                  string  `json:"mode"` // "secure (Console-backed)" | "standard (no Console)"
 	ConsoleHealthy        *bool   `json:"console_healthy,omitempty"`
 	Warning               *string `json:"warning,omitempty"`
 }
 
-// ConsoleStatus — branches on console == nil (standard mode) vs configured.
+// ConsoleStatus — branches on console not configured vs configured.
 func (s *LifecycleService) ConsoleStatus(ctx context.Context) (*ConsoleStatusResult, error) {
 	if s.Console == nil {
-		warning := "secret key may be accessible locally. Configure Console for secure mode."
+		warning := "Console not configured — run configure to connect."
 		return &ConsoleStatusResult{
 			OK:                true,
 			ConsoleConfigured: false,
-			Mode:              "standard (no Console)",
 			Warning:           &warning,
 		}, nil
 	}
@@ -94,7 +92,6 @@ func (s *LifecycleService) ConsoleStatus(ctx context.Context) (*ConsoleStatusRes
 			ConsoleConfigured: true,
 			ConsoleEndpoint:   &endpoint,
 			ConsoleHealthy:    &h,
-			Mode:              "secure (Console-backed)",
 		}, nil
 	}
 
@@ -103,7 +100,6 @@ func (s *LifecycleService) ConsoleStatus(ctx context.Context) (*ConsoleStatusRes
 		ConsoleConfigured:     true,
 		ConsoleEndpoint:       &endpoint,
 		SecureSearchAvailable: healthy,
-		Mode:                  "secure (Console-backed)",
 		ConsoleHealthy:        &healthy,
 	}, nil
 }

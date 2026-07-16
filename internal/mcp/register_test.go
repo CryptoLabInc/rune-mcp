@@ -261,10 +261,10 @@ func TestRegister_ReadOnlyToolsBypassGate(t *testing.T) {
 		mustNotContain []string
 	}{
 		{
-			// nil Console → "standard mode"
+			// nil Console → not configured
 			name:        "console_status",
 			args:        nil,
-			mustContain: []string{`"console_configured":false`, "standard"},
+			mustContain: []string{`"console_configured":false`, "not configured"},
 			mustNotContain: []string{
 				"PIPELINE_NOT_READY",
 			},
