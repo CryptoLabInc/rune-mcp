@@ -49,7 +49,7 @@ const (
 	BootErrEmbedderUnreachable BootErrorKind = "embedder_unreachable" // UDS socket missing / runed down
 	BootErrRunespaceInit       BootErrorKind = "runespace_init"       // client-side runespace encryptor (runespacecrypto.Open) failed
 	BootErrRunespaceIndex      BootErrorKind = "runespace_index"      // runespace index unavailable (reached via the console, not mcp)
-	BootErrKeySave             BootErrorKind = "key_save"             // SaveEncKey / KeyDir filesystem failure
+	BootErrKeySave             BootErrorKind = "key_save"             // SaveEncKeys / KeyDir filesystem failure
 	BootErrLocalIO             BootErrorKind = "local_io"             // generic local FS / permissions
 )
 

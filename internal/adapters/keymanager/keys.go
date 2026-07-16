@@ -9,8 +9,8 @@
 // and forwards the file content verbatim through GetAgentManifest's
 // manifest_json. When we load it back, runespace-sdk's OpenKeysFromFile
 // invokes evi_km_unwrap_enc_key — which expects the same envelope shape on
-// disk. We must persist bundle.EncKey byte-identical; any re-encoding or
-// re-wrapping will be rejected by the cgo unwrap.
+// disk. We must persist bundle.RMPEncKey / bundle.MMEncKey byte-identical; any
+// re-encoding or re-wrapping will be rejected by the cgo unwrap.
 package keymanager
 
 import (
@@ -21,79 +21,52 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
 )
 
-// SaveEncKey writes the EncKey envelope received from Console verbatim to
-// ~/.rune/keys/<keyID>/EncKey.json (perm 0600). The directory is created
-// with perm 0700 if missing.
-//
-// encKey is the byte content of the original libevi EncKey.json file
-// (manifest field "rmp_enc_key" carries this as a string). Do NOT
-// re-encode, base64-wrap, or otherwise transform — the cgo unwrap on the
-// runespace side parses the original envelope shape and any modification
-// breaks it.
-//
-// Empty encKey is treated as a no-op (caller responsibility to validate).
-func SaveEncKey(keyID string, encKey []byte) error {
-	if len(encKey) == 0 {
-		return nil
-	}
-
-	keyDir, err := KeyDir(keyID)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(keyDir, config.DirPerm); err != nil {
-		return fmt.Errorf("keymanager: mkdir %s: %w", keyDir, err)
-	}
-	// MkdirAll honors umask — explicitly enforce 0700 in case umask masked it.
-	if err := os.Chmod(keyDir, config.DirPerm); err != nil {
-		return fmt.Errorf("keymanager: chmod %s: %w", keyDir, err)
-	}
-
-	encPath := filepath.Join(keyDir, "EncKey.json")
-	if err := os.WriteFile(encPath, encKey, config.FilePerm); err != nil {
-		return fmt.Errorf("keymanager: write EncKey.json: %w", err)
-	}
-	return nil
-}
-
 // SaveEncKeys writes both PUBLIC encryption keys in the runespace-go-sdk
-// on-disk layout so runespacecrypto.Open (WithKeyPath keyDir) can load them:
+// on-disk layout so runespacecrypto.Open (WithKeyPath keyDir) can load them,
+// one tier per subdirectory:
 //
-//	<keyDir>/EncKey.json      RMP EncKey envelope (verbatim, for EncryptFlat)
-//	<keyDir>/mm/EncKey.bin     MM EncKey raw bytes (for EncryptClustered)
+//	<keyDir>/rmp/EncKey.json   RMP EncKey envelope (verbatim, for EncryptFlat)
+//	<keyDir>/mm/EncKey.json    MM EncKey envelope (verbatim, for EncryptClustered)
 //
-// Both are delivered in the Console manifest (rmpJSON as string "rmp_enc_key",
-// mmKey base64-decoded from "mm_enc_key"). Written verbatim — any re-encoding
-// breaks the cgo key loader. Returns the key directory. Empty inputs are an
-// error (a manifest missing either key cannot support client encryption).
-func SaveEncKeys(keyID string, rmpJSON, mmKey []byte) (string, error) {
-	if len(rmpJSON) == 0 || len(mmKey) == 0 {
-		return "", fmt.Errorf("keymanager: empty EncKey material (rmp=%d mm=%d)", len(rmpJSON), len(mmKey))
+// Both are delivered as verbatim JSON envelopes in the Console manifest
+// (rmpJSON from "rmp_enc_key", mmJSON from "mm_enc_key"). Written verbatim —
+// any re-encoding breaks the cgo key loader. Returns the key directory. Empty
+// inputs are an error (a manifest missing either key cannot support client
+// encryption).
+func SaveEncKeys(keyID string, rmpJSON, mmJSON []byte) (string, error) {
+	if len(rmpJSON) == 0 || len(mmJSON) == 0 {
+		return "", fmt.Errorf("keymanager: empty EncKey material (rmp=%d mm=%d)", len(rmpJSON), len(mmJSON))
 	}
 	keyDir, err := KeyDir(keyID)
 	if err != nil {
 		return "", err
 	}
+	rmpDir := filepath.Join(keyDir, "rmp")
 	mmDir := filepath.Join(keyDir, "mm")
-	if err := os.MkdirAll(mmDir, config.DirPerm); err != nil {
-		return "", fmt.Errorf("keymanager: mkdir %s: %w", mmDir, err)
+	for _, dir := range []string{rmpDir, mmDir} {
+		if err := os.MkdirAll(dir, config.DirPerm); err != nil {
+			return "", fmt.Errorf("keymanager: mkdir %s: %w", dir, err)
+		}
 	}
-	if err := os.Chmod(keyDir, config.DirPerm); err != nil {
-		return "", fmt.Errorf("keymanager: chmod %s: %w", keyDir, err)
+	// MkdirAll honors umask — enforce 0700 on the key root and both tier dirs.
+	for _, dir := range []string{keyDir, rmpDir, mmDir} {
+		if err := os.Chmod(dir, config.DirPerm); err != nil {
+			return "", fmt.Errorf("keymanager: chmod %s: %w", dir, err)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(keyDir, "EncKey.json"), rmpJSON, config.FilePerm); err != nil {
-		return "", fmt.Errorf("keymanager: write EncKey.json: %w", err)
+	if err := os.WriteFile(filepath.Join(rmpDir, "EncKey.json"), rmpJSON, config.FilePerm); err != nil {
+		return "", fmt.Errorf("keymanager: write rmp/EncKey.json: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(mmDir, "EncKey.bin"), mmKey, config.FilePerm); err != nil {
-		return "", fmt.Errorf("keymanager: write mm/EncKey.bin: %w", err)
+	if err := os.WriteFile(filepath.Join(mmDir, "EncKey.json"), mmJSON, config.FilePerm); err != nil {
+		return "", fmt.Errorf("keymanager: write mm/EncKey.json: %w", err)
 	}
 	return keyDir, nil
 }
 
 // KeyDir returns the per-key directory path that the runespace SDK's
-// OpenKeysFromFile expects as WithKeyPath: ~/.rune/keys/<keyID>/. This is
-// the directory containing EncKey.json — the SDK resolves the file
-// directly via filepath.Join(keyDir, "EncKey.json").
+// OpenKeysFromFile expects as WithKeyPath: ~/.rune/keys/<keyID>/. The SDK
+// resolves each tier's EncKey under its subdirectory (rmp/EncKey.json,
+// mm/EncKey.json).
 func KeyDir(keyID string) (string, error) {
 	runedir, err := config.RuneDir()
 	if err != nil {

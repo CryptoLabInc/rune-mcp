@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	consolepb "github.com/CryptoLabInc/rune-console/pkg/consolepb"
+	consolepb "github.com/CryptoLabInc/rune-mcp/internal/adapters/console/consolepb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"

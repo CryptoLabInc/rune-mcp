@@ -19,7 +19,7 @@ import (
 	"log/slog"
 	"time"
 
-	consolepb "github.com/CryptoLabInc/rune-console/pkg/consolepb"
+	consolepb "github.com/CryptoLabInc/rune-mcp/internal/adapters/console/consolepb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health/grpc_health_v1"
@@ -47,8 +47,8 @@ type Bundle struct {
 	IndexName string
 	Dim       int
 
-	RMPEncKey          []byte // RMP EncKey envelope (verbatim)
-	MMEncKey           []byte // MM EncKey raw bytes (base64-decoded)
+	RMPEncKey          []byte // RMP EncKey envelope (verbatim JSON)
+	MMEncKey           []byte // MM EncKey envelope (verbatim JSON)
 	AgentDEK           []byte // metadata seal key (base64-decoded)
 	CentroidSetVersion string // engine's current set; "" = none loaded yet
 }
@@ -75,14 +75,8 @@ func ParseManifestJSON(raw string) (*Bundle, error) {
 		IndexName:          m.IndexName,
 		Dim:                m.Dim,
 		RMPEncKey:          []byte(m.RMPEncKey),
+		MMEncKey:           []byte(m.MMEncKey),
 		CentroidSetVersion: m.CentroidSetVersion,
-	}
-	if m.MMEncKey != "" {
-		mm, err := base64.StdEncoding.DecodeString(m.MMEncKey)
-		if err != nil {
-			return nil, fmt.Errorf("console: decode mm_enc_key: %w", err)
-		}
-		b.MMEncKey = mm
 	}
 	if m.AgentDEK != "" {
 		dek, err := base64.StdEncoding.DecodeString(m.AgentDEK)
