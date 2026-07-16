@@ -21,6 +21,11 @@ const (
 	CodeEmbedderUnreachable = "EMBEDDER_UNREACHABLE" // Go-specific
 	CodeEmptyEmbedText      = "EMPTY_EMBED_TEXT"     // dedicated code for missing embed text
 	CodeExtractionMissing   = "EXTRACTION_MISSING"   // agent must provide pre_extraction
+	// CodeRegistrationConsumed — a registration string's one-time handle was
+	// redeemed but persisting the resolved credentials failed afterward. The
+	// handle is spent, so retrying the same string is futile: a fresh invite is
+	// required. Not retryable.
+	CodeRegistrationConsumed = "REGISTRATION_CONSUMED"
 )
 
 // RuneError — MCP error response body.

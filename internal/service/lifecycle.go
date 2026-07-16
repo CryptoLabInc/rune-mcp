@@ -481,12 +481,14 @@ const ConfigureProbeTimeout = 5 * time.Second
 func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*ConfigureResult, error) {
 	// Registration-string path: run the 3-stage bootstrap and let it fill in
 	// Endpoint/Token/CACertPath. Takes precedence over any raw fields supplied.
+	fromRegistration := false
 	if args.RegistrationString != "" {
 		bootstrapped, err := s.bootstrapFromRegistration(ctx, args.RegistrationString)
 		if err != nil {
 			return nil, err
 		}
 		args = *bootstrapped
+		fromRegistration = true // the one-time handle is spent past this point
 	}
 
 	if args.Endpoint == "" {
@@ -531,6 +533,19 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 	cfg.Metadata["lastUpdated"] = now
 
 	if err := config.Save(cfg); err != nil {
+		if fromRegistration {
+			// The invite was already redeemed during bootstrap, so retrying the
+			// same registration string will fail at unwrap. Signal that the
+			// handle is spent and a fresh invite is required, rather than
+			// returning a generic save error the caller would retry in vain.
+			return nil, &domain.RuneError{
+				Code:      domain.CodeRegistrationConsumed,
+				Message:   fmt.Sprintf("invite redeemed but saving credentials failed: %v", err),
+				Retryable: false,
+				RecoveryHint: "The one-time invite was consumed by this attempt but credentials could not be written to ~/.rune. " +
+					"Resolve the local error (free disk space, fix ~/.rune permissions), then request a NEW invite — the same registration string can no longer be reused.",
+			}
+		}
 		return nil, fmt.Errorf("save config: %w", err)
 	}
 
@@ -586,22 +601,27 @@ func (s *LifecycleService) bootstrapFromRegistration(ctx context.Context, regStr
 		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "registration string has no wrapping token"}
 	}
 
-	// Stage 1: fetch + pin the CA.
+	// Stage 1: fetch + pin the CA, then persist it before unwrapping. The CA
+	// write is fallible; doing it ahead of the irreversible unwrap keeps a
+	// disk/permission failure from spending the single-use handle for nothing
+	// (a stale CA file is harmless and overwritten on the next attempt).
 	caPEM, err := console.FetchCACert(ctx, reg.Endpoint, reg.CASHA256)
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap: fetch CA: %w", err)
 	}
+	caPath, err := config.SaveConsoleCA(caPEM)
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap: save CA: %w", err)
+	}
 
-	// Stage 2: unwrap the one-time handle into the real access token.
+	// Stage 2: unwrap the one-time handle into the real access token. The
+	// handle is spent the moment this returns, so the caller must not fail a
+	// later persistence step without surfacing that a fresh invite is needed.
 	token, err := console.Unwrap(ctx, reg.Endpoint, caPEM, reg.Token)
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap: unwrap: %w", err)
 	}
 
-	caPath, err := config.SaveConsoleCA(caPEM)
-	if err != nil {
-		return nil, err
-	}
 	slog.Info("console: bootstrap complete", "endpoint", reg.Endpoint)
 	return &ConfigureArgs{Endpoint: reg.Endpoint, Token: token, CACertPath: caPath}, nil
 }
