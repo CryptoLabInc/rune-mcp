@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	consolepb "github.com/CryptoLabInc/rune-mcp/internal/adapters/console/consolepb"
+	consolepb "github.com/CryptoLabInc/rune-console/pkg/consolepb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )

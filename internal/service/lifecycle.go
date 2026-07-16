@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console/regstr"
+	"github.com/CryptoLabInc/rune-console/pkg/regstr"
 
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
