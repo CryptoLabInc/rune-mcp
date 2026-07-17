@@ -1,6 +1,5 @@
-// Package policy holds pure functions — novelty classification, rerank formula,
-// query parsing, record_builder, payload_text rendering, PII redaction.
-// No I/O, no external deps.
+// Package policy holds pure functions — novelty classification and the recall
+// rerank formula. No I/O, no external deps.
 package policy
 
 import (

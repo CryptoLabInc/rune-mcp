@@ -46,6 +46,9 @@ type Bundle struct {
 	KeyID   string
 	Dim     int
 
+	AuthorEmail       string // record attribution
+	AuthorDisplayName string
+
 	RMPEncKey          []byte // RMP EncKey envelope (verbatim JSON)
 	MMEncKey           []byte // MM EncKey envelope (verbatim JSON)
 	AgentDEK           []byte // metadata seal key (base64-decoded)
@@ -56,6 +59,8 @@ type manifestJSON struct {
 	AgentID            string `json:"agent_id"`
 	KeyID              string `json:"key_id"`
 	Dim                int    `json:"dim"`
+	AuthorEmail        string `json:"author_email"`
+	AuthorDisplayName  string `json:"author_display_name"`
 	RMPEncKey          string `json:"rmp_enc_key"`
 	MMEncKey           string `json:"mm_enc_key"`
 	AgentDEK           string `json:"agent_dek"`
@@ -71,6 +76,8 @@ func ParseManifestJSON(raw string) (*Bundle, error) {
 		AgentID:            m.AgentID,
 		KeyID:              m.KeyID,
 		Dim:                m.Dim,
+		AuthorEmail:        m.AuthorEmail,
+		AuthorDisplayName:  m.AuthorDisplayName,
 		RMPEncKey:          []byte(m.RMPEncKey),
 		MMEncKey:           []byte(m.MMEncKey),
 		CentroidSetVersion: m.CentroidSetVersion,

@@ -1,14 +1,14 @@
 package domain
 
-// RuneError — 8-code taxonomy.
+// RuneError — the MCP error taxonomy.
 //
-// The two vector-backend codes are RUNESPACE_*; they were ENVECTOR_* in the
+// The vector-backend codes are RUNESPACE_*; they were ENVECTOR_* in the
 // enVector era before mcp's direct link to the vector engine was removed (mcp
 // now reaches it only via the console).
 
 import "errors"
 
-// Code enum — 8 codes.
+// Code enum.
 const (
 	CodeInternal            = "INTERNAL_ERROR"
 	CodeConsoleConnection   = "CONSOLE_CONNECTION_ERROR"
@@ -20,7 +20,6 @@ const (
 	CodeTopKLimit           = "TOPK_LIMIT"           // top_k exceeds the console token's role limit (distinct from generic INVALID_INPUT)
 	CodeEmbedderUnreachable = "EMBEDDER_UNREACHABLE" // Go-specific
 	CodeEmptyEmbedText      = "EMPTY_EMBED_TEXT"     // dedicated code for missing embed text
-	CodeExtractionMissing   = "EXTRACTION_MISSING"   // agent must provide pre_extraction
 	// CodeRegistrationConsumed — a registration string's one-time handle was
 	// redeemed but persisting the resolved credentials failed afterward. The
 	// handle is spent, so retrying the same string is futile: a fresh invite is
@@ -50,7 +49,6 @@ var (
 	ErrTopKLimit           = &RuneError{Code: CodeTopKLimit, Retryable: false}
 	ErrEmbedderUnreachable = &RuneError{Code: CodeEmbedderUnreachable, Retryable: true}
 	ErrEmptyEmbedText      = &RuneError{Code: CodeEmptyEmbedText, Retryable: false}
-	ErrExtractionMissing   = &RuneError{Code: CodeExtractionMissing, Retryable: false}
 )
 
 // MakeError wraps an error as an MCP response.

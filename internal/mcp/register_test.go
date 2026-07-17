@@ -139,7 +139,7 @@ func TestRegister_WriteToolsGated(t *testing.T) {
 		name string
 		args map[string]any
 	}{
-		{"capture", map[string]any{"text": "hi", "source": "test", "extracted": map[string]any{}}},
+		{"capture", map[string]any{"insight": "hi"}},
 		{"recall", map[string]any{"query": "hello"}},
 	}
 
@@ -276,7 +276,7 @@ func TestRegister_ErrorResultPreservesRuneError(t *testing.T) {
 
 	res, err := cs.CallTool(t.Context(), &sdkmcp.CallToolParams{
 		Name:      "capture",
-		Arguments: map[string]any{"text": "hi", "source": "test", "extracted": map[string]any{}},
+		Arguments: map[string]any{"insight": "hi"},
 	})
 	if err != nil {
 		t.Fatalf("CallTool transport: %v", err)

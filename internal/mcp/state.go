@@ -55,13 +55,9 @@ func withHint(base *domain.RuneError, hint string) *domain.RuneError {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ValidateCaptureRequest checks a parsed capture payload.
-//   - text empty → ErrInvalidInput
-//   - extracted nil → ErrInvalidInput ("Invalid extracted JSON — could not parse")
+//   - insight empty → ErrInvalidInput (context is optional)
 func ValidateCaptureRequest(req *domain.CaptureRequest) error {
-	if strings.TrimSpace(req.Text) == "" {
-		return domain.ErrInvalidInput
-	}
-	if req.Extracted == nil {
+	if strings.TrimSpace(req.Insight) == "" {
 		return domain.ErrInvalidInput
 	}
 	return nil
@@ -85,24 +81,4 @@ func ValidateRecallArgs(args *domain.RecallArgs) error {
 		}
 	}
 	return nil
-}
-
-// TruncateTitle — 60-rune truncate (UTF-8 aware).
-func TruncateTitle(s string) string {
-	runes := []rune(s)
-	if len(runes) > domain.MaxTitleLen {
-		runes = runes[:domain.MaxTitleLen]
-	}
-	return string(runes)
-}
-
-// ClampConfidence — [0.0, 1.0].
-func ClampConfidence(c float64) float64 {
-	if c < 0 {
-		return 0
-	}
-	if c > 1 {
-		return 1
-	}
-	return c
 }

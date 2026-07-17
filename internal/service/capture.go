@@ -1,6 +1,6 @@
-// Package service holds the orchestration layer — multi-phase flows that
-// coordinate adapters + policy. MCP tool handlers (internal/mcp/tools.go)
-// delegate to these services; business logic lives here, not in handlers.
+// Package service holds the orchestration layer — flows that coordinate adapters
+// + policy. MCP tool handlers (internal/mcp/tools.go) delegate to these services;
+// business logic lives here, not in handlers.
 package service
 
 import (
@@ -15,24 +15,26 @@ import (
 
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/logio"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/seal"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
 	"github.com/CryptoLabInc/rune-mcp/internal/policy"
 )
 
-// CaptureService orchestrates the 7-phase capture flow.
+// CaptureService orchestrates the capture flow.
 type CaptureService struct {
-	Console    console.Client
-	Embedder   embedder.Client
-	Encryptor  Encryptor
-	CaptureLog *logio.CaptureLog
-	State      *lifecycle.Manager
+	Console   console.Client
+	Embedder  embedder.Client
+	Encryptor Encryptor
+	State     *lifecycle.Manager
 
 	// Injected from Console bundle at boot.
 	AgentID  string // for the seal envelope's "a" field
 	AgentDEK []byte // metadata seal key (agent_dek from manifest)
+
+	// Author is the record attribution ("Display Name <email>"), wired from the
+	// console bundle.
+	Author string
 
 	Now func() time.Time // injectable clock (default: time.Now)
 }
@@ -52,8 +54,7 @@ func NewCaptureService() *CaptureService {
 
 // EncryptSealInsert embeds+routes text, encrypts the vector (EncKey), seals
 // metadataJSON (agent_dek), and forwards the ciphertext item to the console
-// under a fresh idempotent id. Shared by the single- and multi-record capture
-// paths so there is one client-side crypto path.
+// under a fresh idempotent id. Returns the plaintext insert id.
 //
 // Centroid desync self-heals here: buildInsertItem covers C4 (runed has
 // no set), and a WRONG_CENTROID_VERSION rejection covers C3 — resync, rebuild
@@ -124,57 +125,24 @@ func (s *CaptureService) buildInsertItem(ctx context.Context, id, text, metadata
 	}, nil
 }
 
-// Handle — single capture. Called by internal/mcp/tools.go ToolCapture.
+// Handle captures one record. Called by internal/mcp/tools.go handleCapture.
 //
-// Flow:
-//
-//	Phase 1 (in handler): state gate → PIPELINE_NOT_READY if not active
-//	Phase 2: validate text + parse extracted (Detection + ExtractionResult split)
-//	Phase 3: embedder.EmbedSingle(text_to_embed) — reusable_insight > payload.text
-//	Phase 4: Console.Score → Console.DecryptScores(top_k=3) → novelty classify
-//	         near_duplicate (≥0.95) → return {captured:false, novelty{class, score, related}}
-//	         failures non-fatal
-//	Phase 5: policy.BuildPhases → embedder.EmbedBatch(texts) → seal.Seal × N
-//	Phase 6: Console.Insert (atomic batch)
-//	Phase 7: capture_log append (degrade on failure) → respond
+// Flow: build the record → embed the insight → novelty gate on the insight
+// embedding (near-duplicate short-circuits) → seal + insert the record JSON,
+// keyed on the insight embedding → respond.
 func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest) (*domain.CaptureResponse, error) {
-	// Phase 2
-	detection, extraction, err := domain.ParseExtractionFromAgent(req.Extracted)
-	if err != nil {
-		return nil, err
-	}
-	if extraction == nil {
-		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "extraction is nil after parse"}
+	if s.Encryptor == nil {
+		return nil, fmt.Errorf("capture: encryptor not initialized")
 	}
 
-	// Phase 5: build policy
-	rawEvent := &domain.RawEvent{
-		Text:    req.Text,
-		Source:  req.Source,
-		User:    req.User,
-		Channel: req.Channel,
-	}
-	if rawEvent.User == "" {
-		rawEvent.User = "unknown"
-	}
-	if rawEvent.Channel == "" {
-		rawEvent.Channel = "claude_session"
+	record := domain.Record{
+		Timestamp: s.Now().UTC(),
+		Author:    s.Author,
+		Insight:   req.Insight,
+		Context:   req.Context,
 	}
 
-	records, err := policy.BuildPhases(rawEvent, detection, extraction, s.Now())
-	if err != nil {
-		return nil, fmt.Errorf("build phases: %w", err)
-	}
-	if len(records) == 0 {
-		return nil, fmt.Errorf("build phases returned 0 records")
-	}
-
-	// Phase 3, 4
-	// TODO: reconsider per-record handling vs records[0] representative
-	embeddingText := pickEmbedText(&records[0])
-	var noveltyInfo *domain.NoveltyInfo
-
-	noveltyInfo, earlyResp, _ := s.runNoveltyCheck(ctx, embeddingText)
+	noveltyInfo, earlyResp, _ := s.runNoveltyCheck(ctx, record.Insight)
 	if earlyResp != nil {
 		return earlyResp, nil // near_duplicate
 	}
@@ -182,68 +150,32 @@ func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest)
 		noveltyInfo = &domain.NoveltyInfo{Score: 1.0, Class: "novel"}
 	}
 
-	// Phase 5: embed. Metadata is the plaintext record JSON; the console seals it.
-	// Phase 5-6: embed (with IVF routing), encrypt each record locally
-	// (EncKey), seal its metadata (agent_dek), and forward the ciphertext to
-	// the console. Plaintext vectors and metadata never leave this process.
-	if s.Encryptor == nil {
-		return nil, fmt.Errorf("capture: encryptor not initialized")
+	body, err := json.Marshal(record)
+	if err != nil {
+		return nil, fmt.Errorf("marshal record: %w", err)
 	}
-	if s.Encryptor == nil {
-		return nil, fmt.Errorf("capture: encryptor not initialized")
-	}
-	for i := range records {
-		body, err := json.Marshal(records[i])
-		if err != nil {
-			return nil, fmt.Errorf("marshal record %d: %w", i, err)
-		}
-		if _, err := s.EncryptSealInsert(ctx, pickEmbedText(&records[i]), string(body)); err != nil {
-			return nil, fmt.Errorf("console insert %d: %w", i, err)
-		}
+	recordID, err := s.EncryptSealInsert(ctx, record.Insight, string(body))
+	if err != nil {
+		return nil, fmt.Errorf("console insert: %w", err)
 	}
 
-	// Phase 7
-	first := records[0]
-	if s.CaptureLog != nil {
-		var noveltyScore *float64
-		var noveltyClass string
-		if noveltyInfo != nil {
-			nsc := noveltyInfo.Score
-			noveltyScore = &nsc
-			noveltyClass = string(noveltyInfo.Class)
-		}
-		_ = s.CaptureLog.Append(domain.CaptureLogEntry{
-			TS:           s.Now().UTC().Format(time.RFC3339),
-			Action:       "captured",
-			ID:           first.ID,
-			Title:        first.Title,
-			Domain:       string(first.Domain),
-			Mode:         "agent-delegated",
-			NoveltyClass: noveltyClass,
-			NoveltyScore: noveltyScore,
-		})
-	}
-
-	resp := &domain.CaptureResponse{
+	return &domain.CaptureResponse{
 		OK:       true,
 		Captured: true,
-		RecordID: first.ID,
-		Title:    first.Title,
-		Domain:   first.Domain,
+		RecordID: recordID,
 		Novelty:  noveltyInfo,
-	}
-
-	return resp, nil
+	}, nil
 }
 
-// runNoveltyCheck — Phase 4 helper. Returns novelty info + nil if proceed,
-// or a pre-built response if near_duplicate (caller short-circuits).
-func (s *CaptureService) runNoveltyCheck(ctx context.Context, embeddingText string) (*domain.NoveltyInfo, *domain.CaptureResponse, error) {
+// runNoveltyCheck embeds the insight, searches for near neighbors, and classifies
+// novelty. Returns novelty info + nil if capture should proceed, or a pre-built
+// response if near_duplicate (caller short-circuits). All failures are non-fatal.
+func (s *CaptureService) runNoveltyCheck(ctx context.Context, insight string) (*domain.NoveltyInfo, *domain.CaptureResponse, error) {
 	if s.Embedder == nil || s.Console == nil {
 		return &domain.NoveltyInfo{Score: 1.0, Class: "novel"}, nil, nil
 	}
 
-	vec, err := s.Embedder.EmbedSingle(ctx, embeddingText)
+	vec, err := s.Embedder.EmbedSingle(ctx, insight)
 	if err != nil {
 		slog.Warn("novelty check: embed failed (non-fatal)", "err", err)
 		return &domain.NoveltyInfo{Score: 1.0, Class: "novel"}, nil, nil
@@ -279,13 +211,6 @@ func (s *CaptureService) runNoveltyCheck(ctx context.Context, embeddingText stri
 	}
 
 	return noveltyInfo, nil, nil
-}
-
-func pickEmbedText(r *domain.DecisionRecord) string {
-	if r.ReusableInsight != "" {
-		return r.ReusableInsight
-	}
-	return r.Payload.Text // fallback
 }
 
 func buildRelatedTop3(hits []console.Hit) []domain.RelatedRecord {

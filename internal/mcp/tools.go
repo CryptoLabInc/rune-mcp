@@ -126,10 +126,20 @@ func (d *Deps) ApplyConsoleBundle(b *console.Bundle) {
 	if d.Capture != nil {
 		d.Capture.AgentID = b.AgentID
 		d.Capture.AgentDEK = b.AgentDEK
+		d.Capture.Author = formatAuthor(b.AuthorDisplayName, b.AuthorEmail)
 	}
 	if d.Lifecycle != nil {
 		d.Lifecycle.KeyID = b.KeyID
 	}
+}
+
+// formatAuthor renders record attribution: "Display Name <email>" when a
+// display name is present, else the bare email, else "".
+func formatAuthor(displayName, email string) string {
+	if displayName != "" {
+		return fmt.Sprintf("%s <%s>", displayName, email)
+	}
+	return email
 }
 
 // emptyArgs — input type for tools that take no arguments.
@@ -157,10 +167,10 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 
 	// Write tools — state-gated.
 	mustAdd(srv, deps.Inflight, "capture",
-		"Capture a decision record (agent-delegated extraction required).",
+		"Use to remember an insight worth recalling later. Provide `insight` (the concise, self-contained knowledge that gets embedded and searched) and optionally `context` (fuller surrounding detail, stored and returned but not searched).",
 		handleCapture(deps))
 	mustAdd(srv, deps.Inflight, "recall",
-		"Query organizational memory by natural-language question.",
+		"Use to retrieve previously captured insights relevant to a natural-language `query`. Returns the most similar records, recency-weighted.",
 		handleRecall(deps))
 	// Read / diagnostic tools — bypass state gate.
 	mustAdd(srv, deps.Inflight, "diagnostics",

@@ -25,7 +25,6 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/logio"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
 	"github.com/CryptoLabInc/rune-mcp/internal/mcp"
 	"github.com/CryptoLabInc/rune-mcp/internal/obs"
@@ -193,16 +192,12 @@ func buildDeps() *mcp.Deps {
 		home, _ := os.UserHomeDir()
 		runeDir = filepath.Join(home, ".rune")
 	}
-	captureLog := logio.New(filepath.Join(runeDir, logio.DefaultFilename))
-
-	// Boot-failure log under the same root as the rest of rune-mcp state
-	// (captureLog above uses the same runeDir, so they stay co-located).
+	// Boot-failure log under the same root as the rest of rune-mcp state.
 	bootLogPath := filepath.Join(runeDir, "logs", "boot.log")
 	mgr.SetBootLog(lifecycle.NewBootLogger(bootLogPath, lifecycle.DefaultBootLogMaxBytes))
 
 	cap := service.NewCaptureService()
 	cap.State = mgr
-	cap.CaptureLog = captureLog
 
 	rec := service.NewRecallService()
 	rec.State = mgr
