@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -17,17 +16,15 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/keyring"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/logio"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
 	"github.com/CryptoLabInc/rune-mcp/internal/spawn"
 )
 
-// LifecycleService holds the 6 lifecycle/operational tool implementations.
+// LifecycleService holds the lifecycle/operational tool implementations.
 type LifecycleService struct {
-	Console   console.Client
-	State     *lifecycle.Manager
-	ConfigDir string // for CaptureHistory reading capture_log.jsonl
+	Console console.Client
+	State   *lifecycle.Manager
 
 	// Key state (for diagnostics). In the runespace model the console is the sole
 	// key custodian; mcp holds no key material, only the KeyID from the manifest.
@@ -310,144 +307,7 @@ func (s *LifecycleService) collectEmbedding(ctx context.Context, timeout time.Du
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3. rune_capture_history — read-only.
-// ─────────────────────────────────────────────────────────────────────────────
-
-// CaptureHistoryArgs — limit default 20, max 100.
-type CaptureHistoryArgs struct {
-	Limit  int     `json:"limit,omitempty"`
-	Domain *string `json:"domain,omitempty"`
-	Since  *string `json:"since,omitempty"` // ISO date lex compare
-}
-
-// CaptureHistoryResult — entries preserved as map for format flexibility.
-type CaptureHistoryResult struct {
-	OK      bool             `json:"ok"`
-	Count   int              `json:"count"`
-	Entries []map[string]any `json:"entries"`
-}
-
-// CaptureHistory — reverse-read capture_log.jsonl, filter, cap at limit.
-func (s *LifecycleService) CaptureHistory(_ context.Context, args CaptureHistoryArgs) (*CaptureHistoryResult, error) {
-	limit := args.Limit
-	if limit <= 0 {
-		limit = 20
-	}
-	if limit > 100 {
-		limit = 100
-	}
-
-	logPath := filepath.Join(s.ConfigDir, logio.DefaultFilename)
-	entries, err := logio.Tail(logPath, limit, args.Domain, args.Since)
-	if err != nil {
-		slog.Warn("capture history read failed (degraded)", "err", err)
-		return &CaptureHistoryResult{OK: true, Entries: []map[string]any{}}, nil
-	}
-
-	// Convert to map[string]any for format flexibility
-	mapEntries := make([]map[string]any, len(entries))
-	for i, e := range entries {
-		data, _ := json.Marshal(e)
-		var m map[string]any
-		_ = json.Unmarshal(data, &m)
-		mapEntries[i] = m
-	}
-
-	return &CaptureHistoryResult{
-		OK:      true,
-		Count:   len(mapEntries),
-		Entries: mapEntries,
-	}, nil
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 4. rune_delete_capture — soft-delete.
-// ─────────────────────────────────────────────────────────────────────────────
-
-// DeleteCaptureArgs — single record ID target.
-type DeleteCaptureArgs struct {
-	RecordID string `json:"record_id"`
-}
-
-// DeleteCaptureResult.
-type DeleteCaptureResult struct {
-	OK       bool   `json:"ok"`
-	Deleted  bool   `json:"deleted"`
-	RecordID string `json:"record_id"`
-	Title    string `json:"title"`
-	Method   string `json:"method"` // "soft-delete (status=reverted)"
-}
-
-// DeleteCapture — soft-delete workflow:
-//  1. SearchByID(id): find record
-//  2. set metadata["status"] = "reverted"
-//  3. re-embed + re-insert
-//  4. capture_log append with mode="soft-delete", action="deleted"
-func (s *LifecycleService) DeleteCapture(ctx context.Context, args DeleteCaptureArgs, capSvc *CaptureService) (*DeleteCaptureResult, error) {
-	// Search by ID
-	hit, err := SearchByID(ctx, s.Embedder(), s.Console, args.RecordID)
-	if err != nil {
-		return nil, fmt.Errorf("delete: search by ID: %w", err)
-	}
-	if hit == nil {
-		return nil, &domain.RuneError{
-			Code:    domain.CodeInvalidInput,
-			Message: fmt.Sprintf("record %s not found", args.RecordID),
-		}
-	}
-
-	// Mutate metadata
-	metadata := hit.Metadata
-	if metadata == nil {
-		metadata = make(map[string]any)
-	}
-	metadata["status"] = "reverted"
-	title := hit.Title
-
-	// Re-embed + re-insert
-	embedText := hit.ReusableInsight
-	if embedText == "" {
-		embedText = hit.PayloadText
-	}
-
-	body, err := json.Marshal(metadata)
-	if err != nil {
-		return nil, fmt.Errorf("delete: marshal: %w", err)
-	}
-
-	// Re-insert the tombstone via the capture service's client-side crypto
-	// path (encrypt + seal + forward). Requires the capture service (which
-	// owns the encryptor/agent_dek) — delete_capture is only wired when it is.
-	if capSvc == nil {
-		return nil, fmt.Errorf("delete: capture service required for re-insert")
-	}
-	if _, err := capSvc.EncryptSealInsert(ctx, embedText, string(body)); err != nil {
-		return nil, fmt.Errorf("delete: re-insert: %w", err)
-	}
-
-	// Capture log
-	if capSvc != nil && capSvc.CaptureLog != nil {
-		_ = capSvc.CaptureLog.Append(domain.CaptureLogEntry{
-			TS:     time.Now().UTC().Format(time.RFC3339),
-			Action: "deleted",
-			ID:     args.RecordID,
-			Title:  title,
-			Domain: hit.Domain,
-			Mode:   "soft-delete",
-		})
-	}
-
-	return &DeleteCaptureResult{
-		OK:       true,
-		Deleted:  true,
-		RecordID: args.RecordID,
-		Title:    title,
-		Method:   "soft-delete (status=reverted)",
-	}, nil
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 5. rune_configure — write Console credentials to $HOME/.rune/config.json.
+// 3. rune_configure — write Console credentials to $HOME/.rune/config.json.
 // ─────────────────────────────────────────────────────────────────────────────
 
 type ConfigureArgs struct {
@@ -627,7 +487,7 @@ func (s *LifecycleService) bootstrapFromRegistration(ctx context.Context, regStr
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 6. rune_activate - pre-check + reload
+// 4. rune_activate - pre-check + reload
 //
 //  ActivateStatus:
 //	  configure_required  - config.json missing or console block empty
@@ -890,7 +750,7 @@ func (s *LifecycleService) runBootstrapWatcher() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 7. rune_reload_pipelines
+// 5. rune_reload_pipelines
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ReloadPipelinesResult.

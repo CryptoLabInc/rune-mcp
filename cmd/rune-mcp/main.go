@@ -2,12 +2,9 @@
 //
 // Spawn model: Claude Code launches one instance per session via stdio.
 // Lifecycle: starting → waiting_for_console → active ↔ dormant.
-// Tools: 8 MCP tools (activate, capture, capture_history,
+// Tools: 7 MCP tools (activate, capture, configure, console_status,
 //
-//	configure, diagnostics, recall,
-//	reload_pipelines, console_status).
-//	(delete_capture is implemented but HIDDEN this release — registration
-//	 gated in internal/mcp/tools.go.)
+//	diagnostics, recall, reload_pipelines).
 //
 // Wiring: Deps holds a State manager + 3 services. Adapter clients (console /
 // embedder) are populated on the services by the boot loop after
@@ -214,7 +211,6 @@ func buildDeps() *mcp.Deps {
 
 	life := service.NewLifecycleService()
 	life.State = mgr
-	life.ConfigDir = runeDir
 
 	return &mcp.Deps{
 		State:     mgr,

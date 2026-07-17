@@ -52,8 +52,8 @@ func NewCaptureService() *CaptureService {
 
 // EncryptSealInsert embeds+routes text, encrypts the vector (EncKey), seals
 // metadataJSON (agent_dek), and forwards the ciphertext item to the console
-// under a fresh idempotent id. Shared by the capture flow and DeleteCapture's
-// tombstone re-insert so there is one client-side crypto path.
+// under a fresh idempotent id. Shared by the single- and multi-record capture
+// paths so there is one client-side crypto path.
 //
 // Centroid desync self-heals here: buildInsertItem covers C4 (runed has
 // no set), and a WRONG_CENTROID_VERSION rejection covers C3 — resync, rebuild

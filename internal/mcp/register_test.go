@@ -1,5 +1,5 @@
 // Phase A.5 smoke tests — in-memory MCP server/client to assert that the
-// 8-tool catalog and state-gated handlers survive future refactors.
+// 7-tool catalog and state-gated handlers survive future refactors.
 //
 // These exercise tools/list and tools/call, replacing the old bash/jq cookbook
 // with Go tests that turn the verification into a CI gate.
@@ -23,7 +23,6 @@ import (
 var expectedTools = []string{
 	"activate",
 	"capture",
-	"capture_history",
 	"configure",
 	"console_status",
 	"diagnostics",
@@ -32,14 +31,13 @@ var expectedTools = []string{
 }
 
 // newSession spins up an in-memory MCP server with all registered tools
-// (delete_capture is intentionally gated out this release — see Register)
 // and returns a connected client session ready for tools/list and tools/call.
 //
 // Deps mirrors a "boot has not progressed past starting" state: the Manager
 // is freshly constructed (StateStarting) and services are zero-valued. With
 // State == StateStarting, write tools return PIPELINE_NOT_READY through the
-// CheckState gate. Read-only tools (console_status / diagnostics /
-// capture_history) bypass the gate but their service nil-checks must hold.
+// CheckState gate. Read-only tools (console_status / diagnostics) bypass the
+// gate but their service nil-checks must hold.
 func newSession(t *testing.T) *sdkmcp.ClientSession {
 	t.Helper()
 	ctx := t.Context()
@@ -131,8 +129,7 @@ func TestRegister_SchemasInferred(t *testing.T) {
 
 // TestRegister_WriteToolsGated — write tools (capture, recall)
 // must surface PIPELINE_NOT_READY when Deps.State is in StateStarting. Confirms
-// the CheckState gate fires before service dispatch. (delete_capture is gated
-// out of registration this release — see TestRegister_DeleteCaptureHidden.)
+// the CheckState gate fires before service dispatch.
 //
 // reload_pipelines is intentionally NOT gated (it is the dormant→active
 // unblocker / `/rune:activate` handler). Smoke tests for it
@@ -174,36 +171,8 @@ func TestRegister_WriteToolsGated(t *testing.T) {
 	}
 }
 
-// TestRegister_DeleteCaptureHidden — delete_capture is intentionally gated out
-// of registration for this release (see Register in tools.go: the by-ID lookup
-// is unreliable, so the tool is hidden rather than shipped broken). It must not
-// appear in tools/list and must be uncallable. Re-enabling the registration
-// should flip this test — restore delete_capture to expectedTools and the
-// WriteToolsGated suite at the same time.
-func TestRegister_DeleteCaptureHidden(t *testing.T) {
-	cs := newSession(t)
-
-	res, err := cs.ListTools(t.Context(), &sdkmcp.ListToolsParams{})
-	if err != nil {
-		t.Fatalf("ListTools: %v", err)
-	}
-	for _, tool := range res.Tools {
-		if tool.Name == "delete_capture" {
-			t.Fatalf("delete_capture is registered but must be hidden this release")
-		}
-	}
-
-	// Unregistered tool → transport-level "unknown tool" error.
-	if _, err := cs.CallTool(t.Context(), &sdkmcp.CallToolParams{
-		Name:      "delete_capture",
-		Arguments: map[string]any{"record_id": "test-id"},
-	}); err == nil {
-		t.Fatal("CallTool delete_capture: got nil error, want unknown-tool error")
-	}
-}
-
-// TestRegister_ReadOnlyToolsBypassGate — console_status / diagnostics /
-// capture_history must respond successfully (no PIPELINE_NOT_READY) even
+// TestRegister_ReadOnlyToolsBypassGate — console_status / diagnostics
+// must respond successfully (no PIPELINE_NOT_READY) even
 // when State == StateStarting. These tools work
 // degraded so the operator can troubleshoot pre-active.
 func TestRegister_ReadOnlyToolsBypassGate(t *testing.T) {
@@ -239,16 +208,6 @@ func TestRegister_ReadOnlyToolsBypassGate(t *testing.T) {
 			name:        "diagnostics",
 			args:        nil,
 			mustContain: []string{`"environment"`, `"console"`, `"keys"`, `"embedding"`},
-			mustNotContain: []string{
-				"PIPELINE_NOT_READY",
-			},
-		},
-		{
-			// CaptureHistory reads ~/.rune/capture_log.jsonl (likely missing in test env);
-			// the handler should still respond without error (entries: empty, ok: true).
-			name:        "capture_history",
-			args:        map[string]any{"limit": 5.0},
-			mustContain: []string{`"ok":true`},
 			mustNotContain: []string{
 				"PIPELINE_NOT_READY",
 			},

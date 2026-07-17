@@ -8,7 +8,6 @@
 package logio
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -77,59 +76,4 @@ func (l *CaptureLog) Append(entry domain.CaptureLogEntry) error {
 	}
 
 	return nil
-}
-
-// Tail — reverse-read last N entries (used by tool_capture_history).
-// Filters: domain (equality), since (ISO date lexicographic).
-func Tail(path string, limit int, domainFilter, since *string) ([]domain.CaptureLogEntry, error) {
-	if limit <= 0 {
-		limit = 20
-	}
-	if limit > 100 {
-		limit = 100
-	}
-
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("capture log open: %w", err)
-	}
-	defer f.Close()
-
-	// Read all lines
-	var lines []string
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024) // allow up to 256KB per line
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line != "" {
-			lines = append(lines, line)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("capture log scan: %w", err)
-	}
-
-	// Reverse iterate
-	var entries []domain.CaptureLogEntry
-	for i := len(lines) - 1; i >= 0 && len(entries) < limit; i-- {
-		var entry domain.CaptureLogEntry
-		if err := json.Unmarshal([]byte(lines[i]), &entry); err != nil {
-			continue // skip malformed lines
-		}
-
-		if domainFilter != nil && entry.Domain != *domainFilter {
-			continue
-		}
-
-		if since != nil && entry.TS < *since {
-			continue
-		}
-
-		entries = append(entries, entry)
-	}
-
-	return entries, nil
 }

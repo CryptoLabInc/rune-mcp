@@ -8,9 +8,8 @@
 // Each handler runs CheckState then dispatches to a service-layer call
 // (CheckState → service.X.Handle → response wrap). Write tools fail with
 // PIPELINE_NOT_READY until the boot loop populates adapter clients; read-only
-// tools (console_status, diagnostics, capture_history) bypass the state gate.
-// Eight tools are registered; delete_capture's handler is kept but not wired
-// (see Register).
+// tools (console_status, diagnostics) bypass the state gate.
+// Seven tools are registered (see Register).
 package mcp
 
 import (
@@ -33,7 +32,7 @@ import (
 // State + 3 services drive request handling. cmd/rune-mcp/main.go constructs
 // Deps after the boot loop has populated adapter clients on the services.
 // Until boot completes, write tools fail with PIPELINE_NOT_READY through
-// CheckState; read-only tools (console_status, diagnostics, capture_history)
+// CheckState; read-only tools (console_status, diagnostics)
 // can run pre-active for diagnostics.
 type Deps struct {
 	Console   console.Client
@@ -165,21 +164,7 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 	mustAdd(srv, deps.Inflight, "recall",
 		"Query organizational memory by natural-language question.",
 		handleRecall(deps))
-	// delete_capture is HIDDEN for this release. The by-ID lookup (SearchByID)
-	// cannot reliably locate a record — the vector index exposes no exact-ID
-	// retrieval, only vector similarity, so against a populated index soft-delete returns
-	// "not found". Registration is gated to remove the tool from the MCP surface
-	// (no slash command, not callable by the model). The handler
-	// (handleDeleteCapture / lifecycle.DeleteCapture) is intentionally kept;
-	// re-enable by uncommenting once a reliable by-ID path exists.
-	// mustAdd(srv, deps.Inflight, "delete_capture",
-	// 	"Soft-delete a record by ID (sets status=reverted, re-inserts).",
-	// 	handleDeleteCapture(deps))
-
 	// Read / diagnostic tools — bypass state gate.
-	mustAdd(srv, deps.Inflight, "capture_history",
-		"List recent captures from local capture_log.jsonl (read-only).",
-		handleCaptureHistory(deps))
 	mustAdd(srv, deps.Inflight, "console_status",
 		"Probe Console connectivity and report secure-search mode.",
 		handleConsoleStatus(deps))

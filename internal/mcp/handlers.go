@@ -47,35 +47,10 @@ func handleRecall(deps *Deps) sdkmcp.ToolHandlerFor[domain.RecallArgs, domain.Re
 	}
 }
 
-func handleDeleteCapture(deps *Deps) sdkmcp.ToolHandlerFor[service.DeleteCaptureArgs, service.DeleteCaptureResult] {
-	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, in service.DeleteCaptureArgs) (*sdkmcp.CallToolResult, service.DeleteCaptureResult, error) {
-		var zero service.DeleteCaptureResult
-		if err := CheckState(deps.State); err != nil {
-			return errorResult(err), zero, nil
-		}
-		out, err := deps.Lifecycle.DeleteCapture(ctx, in, deps.Capture)
-		if err != nil {
-			return errorResult(err), zero, nil
-		}
-		return okResult(out), *out, nil
-	}
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Read / diagnostic tools — bypass CheckState. Surface partial state to the
 // agent (console_status, diagnostics) so users can troubleshoot pre-active.
 // ─────────────────────────────────────────────────────────────────────────────
-
-func handleCaptureHistory(deps *Deps) sdkmcp.ToolHandlerFor[service.CaptureHistoryArgs, service.CaptureHistoryResult] {
-	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, in service.CaptureHistoryArgs) (*sdkmcp.CallToolResult, service.CaptureHistoryResult, error) {
-		var zero service.CaptureHistoryResult
-		out, err := deps.Lifecycle.CaptureHistory(ctx, in)
-		if err != nil {
-			return errorResult(err), zero, nil
-		}
-		return okResult(out), *out, nil
-	}
-}
 
 func handleConsoleStatus(deps *Deps) sdkmcp.ToolHandlerFor[emptyArgs, service.ConsoleStatusResult] {
 	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, _ emptyArgs) (*sdkmcp.CallToolResult, service.ConsoleStatusResult, error) {
