@@ -311,16 +311,15 @@ func (s *LifecycleService) collectEmbedding(ctx context.Context, timeout time.Du
 // ─────────────────────────────────────────────────────────────────────────────
 
 type ConfigureArgs struct {
-	Endpoint   string `json:"endpoint"`
-	Token      string `json:"token"`
-	CACertPath string `json:"ca_cert_path,omitempty"`
+	Endpoint   string `json:"endpoint" jsonschema:"Console gRPC endpoint (tcp://host:50051). Omit when registration_string is set."`
+	Token      string `json:"token" jsonschema:"Console access token (evt_…). Omit when registration_string is set."`
+	CACertPath string `json:"ca_cert_path,omitempty" jsonschema:"Path to a self-signed CA PEM. Omit for a public/system-CA endpoint, or when registration_string is set."`
 
-	// RegistrationString, when set, is the opaque runev1_… string delivered by
-	// invite email. It takes precedence over Endpoint/Token: the 3-stage
+	// RegistrationString takes precedence over Endpoint/Token: the 3-stage
 	// bootstrap decodes it, fetches + pins the console CA over an untrusted
 	// channel, and unwraps the one-time handle into the real access token —
-	// populating Endpoint/Token/CACertPath before the normal write + probe.
-	RegistrationString string `json:"registration_string,omitempty"`
+	// populating the fields above before the normal write + probe.
+	RegistrationString string `json:"registration_string,omitempty" jsonschema:"One-time runev1_… string from the invite email (preferred path). The server bootstraps endpoint, token, and pinned CA from it; takes precedence over endpoint/token."`
 }
 
 type ConfigureResult struct {
