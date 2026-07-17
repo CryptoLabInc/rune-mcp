@@ -363,6 +363,15 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 		cfg = &config.Config{} // fall back to fresh config
 	}
 
+	// Reconfigure starts from a clean slate: drop the previous endpoint's
+	// keyring token so re-running configure (e.g. with a fresh invite) never
+	// orphans a stale secret under an old endpoint key. Best-effort — Delete is
+	// a no-op when nothing is stored and non-fatal when the keyring is
+	// unavailable.
+	if cfg.Console.Endpoint != "" {
+		_ = keyring.Delete(cfg.Console.Endpoint)
+	}
+
 	// Prefer the OS keyring for the token so it never lands in a plaintext file.
 	// Fall back to the config file (0600) when the host has no usable keyring
 	// (headless CI, no D-Bus session, locked/denied keychain).
