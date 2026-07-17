@@ -92,10 +92,10 @@ func handleActivate(deps *Deps) sdkmcp.ToolHandlerFor[emptyArgs, service.Activat
 	}
 }
 
-func handleReloadPipelines(deps *Deps) sdkmcp.ToolHandlerFor[emptyArgs, service.ReloadPipelinesResult] {
-	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, _ emptyArgs) (*sdkmcp.CallToolResult, service.ReloadPipelinesResult, error) {
-		var zero service.ReloadPipelinesResult
-		out, err := deps.Lifecycle.ReloadPipelines(ctx)
+func handleDeactivate(deps *Deps) sdkmcp.ToolHandlerFor[emptyArgs, service.DeactivateResult] {
+	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, _ emptyArgs) (*sdkmcp.CallToolResult, service.DeactivateResult, error) {
+		var zero service.DeactivateResult
+		out, err := deps.Lifecycle.Deactivate(ctx)
 		if err != nil {
 			return errorResult(err), zero, nil
 		}

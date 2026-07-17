@@ -175,11 +175,11 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 		"Write Console credentials to $HOME/.rune/config.json and mark state=active. Pass registration_string (the runev1_… string from your invite email) to run the 3-stage bootstrap (fetch+pin CA, unwrap the one-time token) automatically; or pass endpoint + token (+ optional ca_cert_path) directly.",
 		handleConfigure(deps))
 	mustAdd(srv, deps.Inflight, "activate",
-		"Pre-check then reload_pipelines. Returns status=configure_required if $HOME/.rune/config.json is missing/empty, status=install_pending if the runed socket is absent, otherwise mirrors reload_pipelines.",
+		"Bring Rune online from existing config (dormant→active): pre-check config + runed, then (re)initialize Console pipelines. Returns status=configure_required (config missing/empty), install_pending (runed socket absent), waiting_for_bootstrap (runed still downloading its model), or active.",
 		handleActivate(deps))
-	mustAdd(srv, deps.Inflight, "reload_pipelines",
-		"Re-initialize Console pipelines (BOOT replay) with a console warmup.",
-		handleReloadPipelines(deps))
+	mustAdd(srv, deps.Inflight, "deactivate",
+		"Flip Rune active→dormant, pausing capture/recall without clearing credentials. Inverse of activate; resume with activate.",
+		handleDeactivate(deps))
 
 	return nil
 }

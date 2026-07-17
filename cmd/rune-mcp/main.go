@@ -4,7 +4,7 @@
 // Lifecycle: starting → waiting_for_console → active ↔ dormant.
 // Tools: 7 MCP tools (activate, capture, configure, console_status,
 //
-//	diagnostics, recall, reload_pipelines).
+//	deactivate, diagnostics, recall).
 //
 // Wiring: Deps holds a State manager + 3 services. Adapter clients (console /
 // embedder) are populated on the services by the boot loop after

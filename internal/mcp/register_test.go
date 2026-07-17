@@ -25,9 +25,9 @@ var expectedTools = []string{
 	"capture",
 	"configure",
 	"console_status",
+	"deactivate",
 	"diagnostics",
 	"recall",
-	"reload_pipelines",
 }
 
 // newSession spins up an in-memory MCP server with all registered tools
@@ -131,9 +131,8 @@ func TestRegister_SchemasInferred(t *testing.T) {
 // must surface PIPELINE_NOT_READY when Deps.State is in StateStarting. Confirms
 // the CheckState gate fires before service dispatch.
 //
-// reload_pipelines is intentionally NOT gated (it is the dormant→active
-// unblocker / `/rune:activate` handler). Smoke tests for it
-// live in the diagnostic suite once a console mock is in place.
+// activate / deactivate are intentionally NOT gated — they are the state
+// toggles themselves and must run from any state.
 func TestRegister_WriteToolsGated(t *testing.T) {
 	cs := newSession(t)
 

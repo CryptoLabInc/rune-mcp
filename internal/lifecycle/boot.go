@@ -313,7 +313,7 @@ func RunBootLoop(ctx context.Context, m *Manager, deps BootAdapterInjector) {
 		case bootDormant:
 			// State + lastError + lastBootErr already set inside bootOnce.
 			m.attempts.Store(int32(attempt))
-			slog.Info("boot: dormant — awaiting /rune:configure or /rune:reload_pipelines",
+			slog.Info("boot: dormant — awaiting /rune:configure or /rune:activate",
 				"reason", m.LastError())
 			return
 

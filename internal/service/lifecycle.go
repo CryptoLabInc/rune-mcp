@@ -758,7 +758,7 @@ func (s *LifecycleService) runBootstrapWatcher() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5. rune_reload_pipelines
+// 5. rune_reload_pipelines (internal — invoked by activate/deactivate, not a tool)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ReloadPipelinesResult.
@@ -792,8 +792,9 @@ const WarmupTimeout = 60 * time.Second
 // On a terminal Dormant state (boot loop's goroutine has exited), call
 // Manager.Retrigger to spawn a fresh RunBootLoop bound to the same ctx +
 // Deps; main.go wires the spawn callback at startup. Manager.Retrigger
-// is a silent no-op when state is Starting / WaitingForConsole / Active —
-// safe to call unconditionally if the trigger surface ever widens.
+// is a silent no-op only while a boot loop is already running (Starting /
+// WaitingForConsole); from Active or Dormant it claims the transition via CAS
+// and respawns the loop.
 //
 // /rune:activate from a freshly-spawned MCP server (no ~/.rune/config.json
 // at boot, then user ran /rune:configure) reaches Active via this path.
@@ -881,4 +882,29 @@ func (s *LifecycleService) warmupConsole(ctx context.Context, timeout time.Durat
 	}
 
 	return &WarmupInfo{OK: true, LatencyMs: &elapsed}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. rune_deactivate — flip active -> dormant, preserving credentials.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// DeactivateResult.
+type DeactivateResult struct {
+	OK    bool   `json:"ok"`
+	State string `json:"state"`
+}
+
+// Deactivate is the inverse of Activate: it flips the running pipelines to
+// dormant without touching Console credentials, so /rune:activate can resume
+// from the same config. MarkDormant persists state=dormant (reason
+// user_deactivated); Retrigger then re-runs the boot loop, which reads the
+// dormant config and settles the Manager into StateDormant -- at which point
+// the state gate rejects capture/recall with PIPELINE_NOT_READY.
+func (s *LifecycleService) Deactivate(ctx context.Context) (*DeactivateResult, error) {
+	if err := config.MarkDormant("user_deactivated"); err != nil {
+		return nil, fmt.Errorf("deactivate: mark dormant: %w", err)
+	}
+	s.State.Retrigger()
+	s.waitForBootProgress(ctx, 5*time.Second)
+	return &DeactivateResult{OK: true, State: s.State.Current().String()}, nil
 }
