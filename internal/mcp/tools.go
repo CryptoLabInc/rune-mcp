@@ -9,7 +9,7 @@
 // (CheckState → service.X.Handle → response wrap). Write tools fail with
 // PIPELINE_NOT_READY until the boot loop populates adapter clients; read-only
 // tools (console_status, diagnostics, capture_history) bypass the state gate.
-// Nine tools are registered; delete_capture's handler is kept but not wired
+// Eight tools are registered; delete_capture's handler is kept but not wired
 // (see Register).
 package mcp
 
@@ -46,8 +46,8 @@ type Deps struct {
 	Lifecycle *service.LifecycleService
 
 	// Inflight counts active tool invocations so the exit sequence can drain
-	// them (GracefulShutdown step 1) instead of cutting a batch_capture mid-
-	// insert. Every registered handler passes through it via mustAdd.
+	// them (GracefulShutdown step 1) instead of cutting a capture mid-insert.
+	// Every registered handler passes through it via mustAdd.
 	Inflight *lifecycle.InflightTracker
 }
 
@@ -137,7 +137,7 @@ func (d *Deps) ApplyConsoleBundle(b *console.Bundle) {
 // emptyArgs — input type for tools that take no arguments.
 type emptyArgs struct{}
 
-// Register binds the nine MCP tools onto the provided SDK server.
+// Register binds the eight MCP tools onto the provided SDK server.
 //
 // Tool names are a stable wire contract. SDK sorts tools alphabetically in
 // `tools/list` output, so order here is for readability.
@@ -162,9 +162,6 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 	mustAdd(srv, deps.Inflight, "capture",
 		"Capture a decision record (agent-delegated extraction required).",
 		handleCapture(deps))
-	mustAdd(srv, deps.Inflight, "batch_capture",
-		"Capture a batch of decision records (e.g. session-end sweep).",
-		handleBatchCapture(deps))
 	mustAdd(srv, deps.Inflight, "recall",
 		"Query organizational memory by natural-language question.",
 		handleRecall(deps))

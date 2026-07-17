@@ -22,7 +22,6 @@ import (
 // tools/list.
 var expectedTools = []string{
 	"activate",
-	"batch_capture",
 	"capture",
 	"capture_history",
 	"configure",
@@ -130,44 +129,7 @@ func TestRegister_SchemasInferred(t *testing.T) {
 	}
 }
 
-// TestRegister_BatchCaptureItemsDescribed — the `items` param is string-typed,
-// so the inferred schema cannot express the per-element shape. The jsonschema
-// struct tag on BatchCaptureArgs.Items is the only place that steers the model
-// away from the wrong-by-analogy [{text, extracted}, ...] wrapper. Lock the
-// description into the surfaced inputSchema so a dropped tag is caught here, not
-// by a user's first failed call.
-func TestRegister_BatchCaptureItemsDescribed(t *testing.T) {
-	cs := newSession(t)
-
-	res, err := cs.ListTools(t.Context(), &sdkmcp.ListToolsParams{})
-	if err != nil {
-		t.Fatalf("ListTools: %v", err)
-	}
-
-	var found bool
-	for _, tool := range res.Tools {
-		if tool.Name != "batch_capture" {
-			continue
-		}
-		found = true
-		raw, err := json.Marshal(tool.InputSchema)
-		if err != nil {
-			t.Fatalf("marshal InputSchema: %v", err)
-		}
-		// The tag value is surfaced verbatim as the property description; assert
-		// the load-bearing phrases survive into the schema the model reads.
-		for _, want := range []string{"FLAT", "wrapper"} {
-			if !strings.Contains(string(raw), want) {
-				t.Errorf("batch_capture items description missing %q; schema=%s", want, raw)
-			}
-		}
-	}
-	if !found {
-		t.Fatal("batch_capture not present in tools/list")
-	}
-}
-
-// TestRegister_WriteToolsGated — write tools (capture, batch_capture, recall)
+// TestRegister_WriteToolsGated — write tools (capture, recall)
 // must surface PIPELINE_NOT_READY when Deps.State is in StateStarting. Confirms
 // the CheckState gate fires before service dispatch. (delete_capture is gated
 // out of registration this release — see TestRegister_DeleteCaptureHidden.)
@@ -182,7 +144,6 @@ func TestRegister_WriteToolsGated(t *testing.T) {
 		name string
 		args map[string]any
 	}{
-		{"batch_capture", map[string]any{"items": "[]"}},
 		{"capture", map[string]any{"text": "hi", "source": "test", "extracted": map[string]any{}}},
 		{"recall", map[string]any{"query": "hello"}},
 	}

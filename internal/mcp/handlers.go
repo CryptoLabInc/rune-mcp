@@ -30,20 +30,6 @@ func handleCapture(deps *Deps) sdkmcp.ToolHandlerFor[domain.CaptureRequest, doma
 	}
 }
 
-func handleBatchCapture(deps *Deps) sdkmcp.ToolHandlerFor[service.BatchCaptureArgs, service.BatchCaptureResult] {
-	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, in service.BatchCaptureArgs) (*sdkmcp.CallToolResult, service.BatchCaptureResult, error) {
-		var zero service.BatchCaptureResult
-		if err := CheckState(deps.State); err != nil {
-			return errorResult(err), zero, nil
-		}
-		out, err := deps.Capture.Batch(ctx, in)
-		if err != nil {
-			return errorResult(err), zero, nil
-		}
-		return okResult(out), *out, nil
-	}
-}
-
 func handleRecall(deps *Deps) sdkmcp.ToolHandlerFor[domain.RecallArgs, domain.RecallResult] {
 	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, in domain.RecallArgs) (*sdkmcp.CallToolResult, domain.RecallResult, error) {
 		var zero domain.RecallResult

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -148,23 +147,6 @@ func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest)
 		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "extraction is nil after parse"}
 	}
 
-	// An item with neither raw text nor any embeddable
-	// extraction content must be rejected, never captured. Single capture always
-	// carries a validated req.Text, so this only fires for agent-supplied
-	// extractions with no usable fields — an empty batch item, or the
-	// {text, extracted} wrapper anti-pattern whose fields nest under "extracted"
-	// where ParseExtractionFromAgent's top-level lookup can't see them. Enforcing
-	// this in the shared path keeps single capture and batch in agreement and
-	// makes the contentless-record corpus poisoning (identical boilerplate →
-	// ~1.0 self-similarity → cascading false near_duplicate) structurally
-	// impossible: a contentless item never reaches the embedder.
-	if strings.TrimSpace(req.Text) == "" && !extraction.HasContent() {
-		return nil, &domain.RuneError{
-			Code:    domain.CodeInvalidInput,
-			Message: "item has no usable extraction content: provide a top-level decision field (\"reusable_insight\", \"title\", \"rationale\", or \"problem\"), or the {group_title, phases} multi-phase shape. A bare \"group_title\" without \"phases\" is not enough — it is only read in the multi-phase shape. Each batch item is a flat extracted object, not a {text, extracted} wrapper.",
-		}
-	}
-
 	// Phase 5: build policy
 	rawEvent := &domain.RawEvent{
 		Text:    req.Text,
@@ -254,75 +236,6 @@ func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest)
 	return resp, nil
 }
 
-// Batch — call Handle sequentially N times
-// Per-item independent processing; one item's failure does not abort others.
-// Each item classified: captured / skipped / near_duplicate / error.
-//
-// Future optimizations:
-//   - Phase 3/5 embed: runed.EmbedBatch (N to 1 call)
-//   - Phase 4 score: Console native multi-vector query
-//   - Phase 6 insert: Console.Insert is already batch-native (N to 1 call)
-func (s *CaptureService) Batch(ctx context.Context, args BatchCaptureArgs) (*BatchCaptureResult, error) {
-	var rawItems []map[string]any
-	if err := json.Unmarshal([]byte(args.Items), &rawItems); err != nil {
-		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "invalid items JSON array"}
-	}
-
-	result := &BatchCaptureResult{
-		OK:      true,
-		Total:   len(rawItems),
-		Results: make([]BatchItemResult, 0, len(rawItems)),
-	}
-
-	for i, item := range rawItems {
-		// A batch item carries no per-item raw text — the embeddable content lives
-		// entirely in the flat extracted object. Hand it straight to Handle, whose
-		// shared guard rejects a contentless item (empty Text + no extraction
-		// content) as an error. This keeps batch and single capture on one code
-		// path, so the gate cannot drift from what ParseExtractionFromAgent/
-		// RenderPayloadText actually embed (e.g. {group_title, phases} or a
-		// phase-only item with no top-level title is accepted, exactly as in
-		// single capture; the {text, extracted} wrapper is rejected).
-		req := &domain.CaptureRequest{
-			Text:      "",
-			Source:    args.Source,
-			Extracted: item,
-		}
-		if args.User != nil {
-			req.User = *args.User
-		}
-		if args.Channel != nil {
-			req.Channel = *args.Channel
-		}
-
-		resp, err := s.Handle(ctx, req)
-		bir := BatchItemResult{Index: i}
-
-		if err != nil {
-			errMsg := err.Error()
-			bir.Status = "error"
-			bir.Error = &errMsg
-			result.Errors++
-		} else if resp.Captured {
-			bir.Status = "captured"
-			bir.Title = resp.Title
-			if resp.Novelty != nil {
-				bir.Novelty = string(resp.Novelty.Class)
-			}
-			result.Captured++
-		} else {
-			bir.Status = "skipped"
-			if resp.Novelty != nil && resp.Novelty.Class == domain.NoveltyClassNearDuplicate {
-				bir.Status = "near_duplicate"
-			}
-			result.Skipped++
-		}
-		result.Results = append(result.Results, bir)
-	}
-
-	return result, nil
-}
-
 // runNoveltyCheck — Phase 4 helper. Returns novelty info + nil if proceed,
 // or a pre-built response if near_duplicate (caller short-circuits).
 func (s *CaptureService) runNoveltyCheck(ctx context.Context, embeddingText string) (*domain.NoveltyInfo, *domain.CaptureResponse, error) {
@@ -390,43 +303,4 @@ func buildRelatedTop3(hits []console.Hit) []domain.RelatedRecord {
 	}
 
 	return records
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Batch types
-// ─────────────────────────────────────────────────────────────────────────────
-
-// BatchCaptureArgs — args for the batch_capture tool.
-//
-// The jsonschema tags below are surfaced verbatim in the tool's inputSchema
-// (go-sdk reads the `jsonschema` struct tag as the property description). They
-// exist to steer the model on first call: `items` is a string-typed param, so
-// the schema cannot otherwise express the per-element shape, and the single
-// `capture` tool's {text, source, extracted} layout invites a wrong-by-analogy
-// guess (a [{text, extracted}, ...] wrapper). Keep them in sync with the
-// runtime validation error in Batch (capture.go).
-type BatchCaptureArgs struct {
-	Items   string  `json:"items" jsonschema:"JSON array string. Each element is a FLAT extracted object, NOT a {text, extracted} wrapper. Shape per item: {title, decision, problem, rationale, domain?, status?, tags?[]} or the multi-phase shape {group_title, phases[]}. An item must carry at least one of title/decision/problem/rationale (a bare group_title is read only inside the multi-phase shape)."`
-	Source  string  `json:"source,omitempty" jsonschema:"Batch-level source identifier; applied to every item. Per-item source is not read."`
-	User    *string `json:"user,omitempty" jsonschema:"Batch-level user; applied to every item."`
-	Channel *string `json:"channel,omitempty" jsonschema:"Batch-level channel; applied to every item."`
-}
-
-// BatchCaptureResult — aggregated response.
-type BatchCaptureResult struct {
-	OK       bool              `json:"ok"`
-	Total    int               `json:"total"`
-	Results  []BatchItemResult `json:"results"`
-	Captured int               `json:"captured"`
-	Skipped  int               `json:"skipped"`
-	Errors   int               `json:"errors"`
-}
-
-// BatchItemResult — per-item outcome.
-type BatchItemResult struct {
-	Index   int     `json:"index"`
-	Title   string  `json:"title"`
-	Status  string  `json:"status"` // "captured" | "skipped" | "near_duplicate" | "error"
-	Novelty string  `json:"novelty,omitempty"`
-	Error   *string `json:"error,omitempty"`
 }
