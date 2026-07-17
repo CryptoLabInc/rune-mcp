@@ -54,13 +54,41 @@ func SaveEncKeys(keyID string, rmpJSON, mmJSON []byte) (string, error) {
 			return "", fmt.Errorf("keymanager: chmod %s: %w", dir, err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(rmpDir, "EncKey.json"), rmpJSON, config.FilePerm); err != nil {
+	if err := writeFileAtomic(filepath.Join(rmpDir, "EncKey.json"), rmpJSON, config.FilePerm); err != nil {
 		return "", fmt.Errorf("keymanager: write rmp/EncKey.json: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(mmDir, "EncKey.json"), mmJSON, config.FilePerm); err != nil {
+	if err := writeFileAtomic(filepath.Join(mmDir, "EncKey.json"), mmJSON, config.FilePerm); err != nil {
 		return "", fmt.Errorf("keymanager: write mm/EncKey.json: %w", err)
 	}
 	return keyDir, nil
+}
+
+// writeFileAtomic writes data to path via a same-directory temp file plus
+// rename, so a concurrent reader sees either the old or the new envelope,
+// never a truncated one. Readers are no longer boot-only: the lazy encryptor
+// re-reads EncKey.json on every on-demand load, and parallel agent sessions
+// each run their own boot — plain WriteFile raced them (observed as
+// evi_km_unwrap_enc_key "unterminated 'key_data'" failures under 20 parallel
+// boots).
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".enckey-tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op after a successful rename
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 // KeyDir returns the per-key directory path that the runespace SDK's
