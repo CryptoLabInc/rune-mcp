@@ -2,9 +2,7 @@
 //
 // Spawn model: Claude Code launches one instance per session via stdio.
 // Lifecycle: starting → waiting_for_console → active ↔ dormant.
-// Tools: 7 MCP tools (activate, capture, configure, console_status,
-//
-//	deactivate, diagnostics, recall).
+// Tools: registered in internal/mcp (see Register).
 //
 // Wiring: Deps holds a State manager + 3 services. Adapter clients (console /
 // embedder) are populated on the services by the boot loop after

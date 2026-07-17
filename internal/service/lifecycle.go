@@ -55,7 +55,7 @@ func (s *LifecycleService) SetEmbedder(c embedder.Client) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. console_status — read-only.
+// console_status — read-only.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ConsoleStatusResult — console_status tool response.
@@ -102,7 +102,7 @@ func (s *LifecycleService) ConsoleStatus(ctx context.Context) (*ConsoleStatusRes
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2. rune_diagnostics — read-only.
+// rune_diagnostics — read-only.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // DiagnosticsResult — aggregates 7 sub-sections (env + runtime ×6). Install
@@ -307,7 +307,7 @@ func (s *LifecycleService) collectEmbedding(ctx context.Context, timeout time.Du
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3. rune_configure — write Console credentials to $HOME/.rune/config.json.
+// rune_configure — write Console credentials to $HOME/.rune/config.json.
 // ─────────────────────────────────────────────────────────────────────────────
 
 type ConfigureArgs struct {
@@ -495,7 +495,7 @@ func (s *LifecycleService) bootstrapFromRegistration(ctx context.Context, regStr
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. rune_activate - pre-check + reload
+// rune_activate — pre-check + reload
 //
 //  ActivateStatus:
 //	  configure_required  - config.json missing or console block empty
@@ -758,7 +758,7 @@ func (s *LifecycleService) runBootstrapWatcher() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5. rune_reload_pipelines (internal — invoked by activate/deactivate, not a tool)
+// rune_reload_pipelines (internal — invoked by activate/deactivate, not a tool)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ReloadPipelinesResult.
@@ -885,7 +885,7 @@ func (s *LifecycleService) warmupConsole(ctx context.Context, timeout time.Durat
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 6. rune_deactivate — flip active -> dormant, preserving credentials.
+// rune_deactivate — flip active -> dormant, preserving credentials.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // DeactivateResult.

@@ -9,7 +9,7 @@
 // (CheckState → service.X.Handle → response wrap). Write tools fail with
 // PIPELINE_NOT_READY until the boot loop populates adapter clients; read-only
 // tools (console_status, diagnostics) bypass the state gate.
-// Seven tools are registered (see Register).
+// The registered set lives in Register.
 package mcp
 
 import (
@@ -32,8 +32,7 @@ import (
 // State + 3 services drive request handling. cmd/rune-mcp/main.go constructs
 // Deps after the boot loop has populated adapter clients on the services.
 // Until boot completes, write tools fail with PIPELINE_NOT_READY through
-// CheckState; read-only tools (console_status, diagnostics)
-// can run pre-active for diagnostics.
+// CheckState; read-only tools (console_status, diagnostics) can run pre-active.
 type Deps struct {
 	Console   console.Client
 	Embedder  embedder.Client
@@ -136,15 +135,14 @@ func (d *Deps) ApplyConsoleBundle(b *console.Bundle) {
 // emptyArgs — input type for tools that take no arguments.
 type emptyArgs struct{}
 
-// Register binds the eight MCP tools onto the provided SDK server.
+// Register binds the MCP tools onto the provided SDK server.
 //
 // Tool names are a stable wire contract. SDK sorts tools alphabetically in
 // `tools/list` output, so order here is for readability.
 //
 // Failure modes that Register surfaces as a startup error (via panic +
 // recover):
-//  1. mustAdd name validation (SDK's validateToolName has a log-only branch —
-//     server.go:238-241 — that we bypass by panicking up-front).
+//  1. mustAdd name validation (the SDK only logs on a bad name; we panic).
 //  2. SDK schema-inference panic (toolForErr).
 //  3. SDK schema-shape panic (Server.AddTool).
 //
@@ -172,13 +170,13 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 		"Collect a 6-section health snapshot (env / state / console / keys / pipelines / embedding).",
 		handleDiagnostics(deps))
 	mustAdd(srv, deps.Inflight, "configure",
-		"Write Console credentials to $HOME/.rune/config.json and mark state=active. Pass registration_string (the runev1_… string from your invite email) to run the 3-stage bootstrap (fetch+pin CA, unwrap the one-time token) automatically; or pass endpoint + token (+ optional ca_cert_path) directly.",
+		"Use to connect Rune to its Console: first-time setup, or reconnecting with a new invite. Prefer the registration_string arg (the runev1_… string from the invite email); endpoint+token is the raw alternative.",
 		handleConfigure(deps))
 	mustAdd(srv, deps.Inflight, "activate",
-		"Bring Rune online from existing config (dormant→active): pre-check config + runed, then (re)initialize Console pipelines. Returns status=configure_required (config missing/empty), install_pending (runed socket absent), waiting_for_bootstrap (runed still downloading its model), or active.",
+		"Use to bring Rune online: resume after deactivate, or finish boot after configure. Returns a status (configure_required / install_pending / waiting_for_bootstrap / active / dormant), each with a hint for the next step.",
 		handleActivate(deps))
 	mustAdd(srv, deps.Inflight, "deactivate",
-		"Flip Rune active→dormant, pausing capture/recall without clearing credentials. Inverse of activate; resume with activate.",
+		"Use when the user wants to pause Rune — stop capture/recall for now without losing their setup. Flips active→dormant; resume with activate.",
 		handleDeactivate(deps))
 
 	return nil
@@ -187,11 +185,10 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 // mustAdd wraps sdkmcp.AddTool with up-front name validation and inflight
 // tracking.
 //
-// The SDK's Server.AddTool only LOGS on invalid tool names
-// (go-sdk/mcp/server.go:238-241) — it does not panic, so Register's
-// defer recover() would miss it and the bad-named tool would silently
-// register. mustAdd panics on invalid names, unifying the failure
-// path so recover() catches everything.
+// The SDK's Server.AddTool only LOGS on invalid tool names — it does not
+// panic, so Register's defer recover() would miss it and the bad-named tool
+// would silently register. mustAdd panics on invalid names, unifying the
+// failure path so recover() catches everything.
 //
 // Every handler is wrapped with tracker Begin/End so the exit sequence can
 // drain in-flight calls (GracefulShutdown step 1). A nil tracker skips the
@@ -214,9 +211,9 @@ func mustAdd[In, Out any](srv *sdkmcp.Server, tracker *lifecycle.InflightTracker
 	}, wrapped)
 }
 
-// isValidToolName mirrors the SDK's validateToolName rules
-// (go-sdk/mcp/tool.go:109): non-empty, ≤128 chars, only [A-Za-z0-9_-].
-// Update this when bumping the SDK if its validation tightens.
+// isValidToolName mirrors the SDK's validateToolName rules: non-empty,
+// ≤128 chars, only [A-Za-z0-9_-]. Update this when bumping the SDK if its
+// validation tightens.
 func isValidToolName(name string) bool {
 	if name == "" || len(name) > 128 {
 		return false
