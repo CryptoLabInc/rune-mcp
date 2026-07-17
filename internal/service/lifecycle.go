@@ -263,16 +263,18 @@ func (s *LifecycleService) collectEmbedding(ctx context.Context, timeout time.Du
 // rune_configure — write Console credentials to $HOME/.rune/config.json.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ConfigureArgs — the configure tool takes only the registration string; the
+// server derives endpoint, token, and CA from it (see bootstrapFromRegistration).
 type ConfigureArgs struct {
-	Endpoint   string `json:"endpoint" jsonschema:"Console gRPC endpoint (tcp://host:50051). Omit when registration_string is set."`
-	Token      string `json:"token" jsonschema:"Console access token (evt_…). Omit when registration_string is set."`
-	CACertPath string `json:"ca_cert_path,omitempty" jsonschema:"Path to a self-signed CA PEM. Omit for a public/system-CA endpoint, or when registration_string is set."`
+	RegistrationString string `json:"registration_string" jsonschema:"The one-time runev1_… string from your Rune invite email. This is the only input — the server bootstraps the endpoint, access token, and pinned CA from it."`
+}
 
-	// RegistrationString takes precedence over Endpoint/Token: the 3-stage
-	// bootstrap decodes it, fetches + pins the console CA over an untrusted
-	// channel, and unwraps the one-time handle into the real access token —
-	// populating the fields above before the normal write + probe.
-	RegistrationString string `json:"registration_string,omitempty" jsonschema:"One-time runev1_… string from the invite email (preferred path). The server bootstraps endpoint, token, and pinned CA from it; takes precedence over endpoint/token."`
+// resolvedCreds holds the Console credentials the bootstrap derives from a
+// registration string.
+type resolvedCreds struct {
+	Endpoint   string
+	Token      string
+	CACertPath string
 }
 
 type ConfigureResult struct {
@@ -291,23 +293,14 @@ type ConfigureResult struct {
 const ConfigureProbeTimeout = 5 * time.Second
 
 func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*ConfigureResult, error) {
-	// Registration-string path: run the 3-stage bootstrap and let it fill in
-	// Endpoint/Token/CACertPath. Takes precedence over any raw fields supplied.
-	fromRegistration := false
-	if args.RegistrationString != "" {
-		bootstrapped, err := s.bootstrapFromRegistration(ctx, args.RegistrationString)
-		if err != nil {
-			return nil, err
-		}
-		args = *bootstrapped
-		fromRegistration = true // the one-time handle is spent past this point
+	if args.RegistrationString == "" {
+		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "registration_string is required"}
 	}
-
-	if args.Endpoint == "" {
-		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "endpoint is required"}
-	}
-	if args.Token == "" {
-		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "token is required"}
+	// The server runs the 3-stage bootstrap from the registration string: decode
+	// → fetch + pin the CA → unwrap the one-time handle into the real token.
+	creds, err := s.bootstrapFromRegistration(ctx, args.RegistrationString)
+	if err != nil {
+		return nil, err
 	}
 
 	cfg, err := config.Load()
@@ -328,19 +321,19 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 	// Fall back to the config file (0600) when the host has no usable keyring
 	// (headless CI, no D-Bus session, locked/denied keychain).
 	consoleCfg := config.ConsoleConfig{
-		Endpoint: args.Endpoint,
-		CACert:   args.CACertPath,
+		Endpoint: creds.Endpoint,
+		CACert:   creds.CACertPath,
 	}
-	if err := keyring.Set(args.Endpoint, args.Token); err != nil {
+	if err := keyring.Set(creds.Endpoint, creds.Token); err != nil {
 		if !keyring.IsUnavailable(err) {
 			return nil, fmt.Errorf("store token in keyring: %w", err)
 		}
 		slog.Warn("keyring unavailable; storing token in config file (0600)", "err", err.Error())
-		consoleCfg.Token = args.Token
+		consoleCfg.Token = creds.Token
 		consoleCfg.TokenStorage = config.TokenStorageConfig
 	} else {
 		consoleCfg.TokenStorage = config.TokenStorageKeyring
-		slog.Info("console token stored in OS keyring", "endpoint", args.Endpoint)
+		slog.Info("console token stored in OS keyring", "endpoint", creds.Endpoint)
 	}
 	cfg.Console = consoleCfg
 	cfg.State = "active"
@@ -354,20 +347,16 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 	cfg.Metadata["lastUpdated"] = now
 
 	if err := config.Save(cfg); err != nil {
-		if fromRegistration {
-			// The invite was already redeemed during bootstrap, so retrying the
-			// same registration string will fail at unwrap. Signal that the
-			// handle is spent and a fresh invite is required, rather than
-			// returning a generic save error the caller would retry in vain.
-			return nil, &domain.RuneError{
-				Code:      domain.CodeRegistrationConsumed,
-				Message:   fmt.Sprintf("invite redeemed but saving credentials failed: %v", err),
-				Retryable: false,
-				RecoveryHint: "The one-time invite was consumed by this attempt but credentials could not be written to ~/.rune. " +
-					"Resolve the local error (free disk space, fix ~/.rune permissions), then request a NEW invite — the same registration string can no longer be reused.",
-			}
+		// The invite was already redeemed during bootstrap, so the handle is
+		// spent — surface that a fresh invite is needed rather than a generic
+		// save error the caller would retry in vain.
+		return nil, &domain.RuneError{
+			Code:      domain.CodeRegistrationConsumed,
+			Message:   fmt.Sprintf("invite redeemed but saving credentials failed: %v", err),
+			Retryable: false,
+			RecoveryHint: "The one-time invite was consumed by this attempt but credentials could not be written to ~/.rune. " +
+				"Resolve the local error (free disk space, fix ~/.rune permissions), then request a NEW invite — the same registration string can no longer be reused.",
 		}
-		return nil, fmt.Errorf("save config: %w", err)
 	}
 
 	path, _ := config.DefaultConfigPath()
@@ -382,8 +371,8 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 	probeCtx, cancel := context.WithTimeout(ctx, ConfigureProbeTimeout)
 	defer cancel()
 
-	vc, probeErr := console.NewClient(args.Endpoint, args.Token, console.ClientOpts{
-		CACertPath: args.CACertPath,
+	vc, probeErr := console.NewClient(creds.Endpoint, creds.Token, console.ClientOpts{
+		CACertPath: creds.CACertPath,
 	})
 	if probeErr == nil {
 		_, probeErr = vc.HealthCheck(probeCtx)
@@ -403,14 +392,13 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 }
 
 // bootstrapFromRegistration runs the 3-stage connection bootstrap from an
-// opaque registration string and returns ConfigureArgs with Endpoint, Token,
-// and CACertPath populated:
+// opaque registration string and returns the resolved Console credentials:
 //
 //	stage 1 — decode the string, fetch the console CA over an untrusted channel,
 //	          verify it against the pinned SHA-256, and persist it.
 //	stage 2 — dial with the pinned CA and unwrap the one-time handle → real token.
 //	stage 3 — (the caller) write the resolved credentials + probe the console.
-func (s *LifecycleService) bootstrapFromRegistration(ctx context.Context, regString string) (*ConfigureArgs, error) {
+func (s *LifecycleService) bootstrapFromRegistration(ctx context.Context, regString string) (*resolvedCreds, error) {
 	reg, err := regstr.Decode(regString)
 	if err != nil {
 		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "invalid registration string: " + err.Error()}
@@ -444,7 +432,7 @@ func (s *LifecycleService) bootstrapFromRegistration(ctx context.Context, regStr
 	}
 
 	slog.Info("console: bootstrap complete", "endpoint", reg.Endpoint)
-	return &ConfigureArgs{Endpoint: reg.Endpoint, Token: token, CACertPath: caPath}, nil
+	return &resolvedCreds{Endpoint: reg.Endpoint, Token: token, CACertPath: caPath}, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

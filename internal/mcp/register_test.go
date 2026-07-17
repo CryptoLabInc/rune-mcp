@@ -202,27 +202,11 @@ func TestRegister_ReadOnlyToolsBypassGate(t *testing.T) {
 			},
 		},
 		{
-			name: "configure",
-			args: map[string]any{
-				"endpoint": "tcp://test.example:50051",
-				"token":    "test-token",
-			},
-			mustContain: []string{
-				`"ok":true`,
-				`"state":"active"`,
-				`"configured_at"`,
-				`"next_step"`,
-				`"console_reachable":false`,
-				`"probe_error"`,
-			},
-			mustNotContain: []string{
-				"PIPELINE_NOT_READY",
-			},
-		},
-		{
+			// No config in the test env → activate short-circuits to
+			// configure_required before the runed/install checks.
 			name:        "activate",
 			args:        nil,
-			mustContain: []string{`"ok":true`, `"status":"install_pending"`, `"hint"`, "rune CLI not found"},
+			mustContain: []string{`"ok":true`, `"status":"configure_required"`, `"hint"`},
 			mustNotContain: []string{
 				"PIPELINE_NOT_READY",
 			},

@@ -177,7 +177,7 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 		"Collect a 6-section health snapshot (env / state / console / keys / pipelines / embedding).",
 		handleDiagnostics(deps))
 	mustAdd(srv, deps.Inflight, "configure",
-		"Use to connect Rune to its Console: first-time setup, or reconnecting with a new invite. Prefer the registration_string arg (the runev1_… string from the invite email); endpoint+token is the raw alternative.",
+		"Use to connect Rune to its Console: first-time setup, or reconnecting with a new invite. Pass the registration_string (the runev1_… string from the invite email) — the server bootstraps the endpoint, token, and pinned CA from it.",
 		handleConfigure(deps))
 	mustAdd(srv, deps.Inflight, "activate",
 		"Use to bring Rune online: resume after deactivate, or finish boot after configure. Returns a status (configure_required / install_pending / waiting_for_bootstrap / active / dormant), each with a hint for the next step.",
