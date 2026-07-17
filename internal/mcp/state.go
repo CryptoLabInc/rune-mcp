@@ -21,7 +21,7 @@ const maxRecallTopK = 50
 //
 // Recovery hints differ by internal state:
 //   - starting            → "Wait 1-2s and retry"
-//   - waiting_for_console   → "Last console error: {err}. Run /rune:console_status"
+//   - waiting_for_console   → "Last console error: {err}. Run /rune:status"
 //   - dormant(user)       → "Run /rune:activate"
 //   - dormant(console)      → "Check config.console.endpoint"
 func CheckState(m *lifecycle.Manager) error {
@@ -34,7 +34,7 @@ func CheckState(m *lifecycle.Manager) error {
 	case lifecycle.StateStarting:
 		return withHint(domain.ErrPipelineNotReady, "Rune is starting up. Wait 1-2 seconds and retry.")
 	case lifecycle.StateWaitingForConsole:
-		return withHint(domain.ErrPipelineNotReady, "Waiting for Console connection. Run /rune:console_status for diagnostics.")
+		return withHint(domain.ErrPipelineNotReady, "Waiting for Console connection. Run /rune:status for diagnostics.")
 	case lifecycle.StateDormant:
 		return withHint(domain.ErrPipelineNotReady, "Rune is deactivated. Run /rune:activate to re-enable.")
 	}

@@ -8,7 +8,7 @@
 // Each handler runs CheckState then dispatches to a service-layer call
 // (CheckState → service.X.Handle → response wrap). Write tools fail with
 // PIPELINE_NOT_READY until the boot loop populates adapter clients; read-only
-// tools (console_status, diagnostics) bypass the state gate.
+// tools (diagnostics) bypass the state gate.
 // The registered set lives in Register.
 package mcp
 
@@ -32,7 +32,7 @@ import (
 // State + 3 services drive request handling. cmd/rune-mcp/main.go constructs
 // Deps after the boot loop has populated adapter clients on the services.
 // Until boot completes, write tools fail with PIPELINE_NOT_READY through
-// CheckState; read-only tools (console_status, diagnostics) can run pre-active.
+// CheckState; read-only tools (diagnostics) can run pre-active.
 type Deps struct {
 	Console   console.Client
 	Embedder  embedder.Client
@@ -163,9 +163,6 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 		"Query organizational memory by natural-language question.",
 		handleRecall(deps))
 	// Read / diagnostic tools — bypass state gate.
-	mustAdd(srv, deps.Inflight, "console_status",
-		"Probe Console connectivity and report secure-search mode.",
-		handleConsoleStatus(deps))
 	mustAdd(srv, deps.Inflight, "diagnostics",
 		"Collect a 6-section health snapshot (env / state / console / keys / pipelines / embedding).",
 		handleDiagnostics(deps))

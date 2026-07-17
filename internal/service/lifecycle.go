@@ -55,53 +55,6 @@ func (s *LifecycleService) SetEmbedder(c embedder.Client) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// console_status — read-only.
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ConsoleStatusResult — console_status tool response.
-type ConsoleStatusResult struct {
-	OK                    bool    `json:"ok"`
-	ConsoleConfigured     bool    `json:"console_configured"`
-	ConsoleEndpoint       *string `json:"console_endpoint,omitempty"`
-	SecureSearchAvailable bool    `json:"secure_search_available"`
-	ConsoleHealthy        *bool   `json:"console_healthy,omitempty"`
-	Warning               *string `json:"warning,omitempty"`
-}
-
-// ConsoleStatus — branches on console not configured vs configured.
-func (s *LifecycleService) ConsoleStatus(ctx context.Context) (*ConsoleStatusResult, error) {
-	if s.Console == nil {
-		warning := "Console not configured — run configure to connect."
-		return &ConsoleStatusResult{
-			OK:                true,
-			ConsoleConfigured: false,
-			Warning:           &warning,
-		}, nil
-	}
-
-	endpoint := s.Console.Endpoint()
-	healthy, err := s.Console.HealthCheck(ctx)
-	if err != nil {
-		slog.Warn("console health check failed", "err", err)
-		h := false
-		return &ConsoleStatusResult{
-			OK:                true,
-			ConsoleConfigured: true,
-			ConsoleEndpoint:   &endpoint,
-			ConsoleHealthy:    &h,
-		}, nil
-	}
-
-	return &ConsoleStatusResult{
-		OK:                    true,
-		ConsoleConfigured:     true,
-		ConsoleEndpoint:       &endpoint,
-		SecureSearchAvailable: healthy,
-		ConsoleHealthy:        &healthy,
-	}, nil
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // rune_diagnostics — read-only.
 // ─────────────────────────────────────────────────────────────────────────────
 

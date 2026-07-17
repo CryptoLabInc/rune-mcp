@@ -49,19 +49,8 @@ func handleRecall(deps *Deps) sdkmcp.ToolHandlerFor[domain.RecallArgs, domain.Re
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Read / diagnostic tools — bypass CheckState. Surface partial state to the
-// agent (console_status, diagnostics) so users can troubleshoot pre-active.
+// agent (diagnostics) so users can troubleshoot pre-active.
 // ─────────────────────────────────────────────────────────────────────────────
-
-func handleConsoleStatus(deps *Deps) sdkmcp.ToolHandlerFor[emptyArgs, service.ConsoleStatusResult] {
-	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, _ emptyArgs) (*sdkmcp.CallToolResult, service.ConsoleStatusResult, error) {
-		var zero service.ConsoleStatusResult
-		out, err := deps.Lifecycle.ConsoleStatus(ctx)
-		if err != nil {
-			return errorResult(err), zero, nil
-		}
-		return okResult(out), *out, nil
-	}
-}
 
 func handleDiagnostics(deps *Deps) sdkmcp.ToolHandlerFor[emptyArgs, service.DiagnosticsResult] {
 	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, _ emptyArgs) (*sdkmcp.CallToolResult, service.DiagnosticsResult, error) {

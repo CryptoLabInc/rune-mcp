@@ -294,7 +294,7 @@ func (c *client) SocketPath() string { return c.sockPath }
 // UNSPECIFIED).
 //
 // Health is NOT retried — the first embed call drives connectivity; Health
-// is a diagnostic tool surface (console_status, diagnostics).
+// is a diagnostic tool surface (diagnostics).
 func (c *client) Health(ctx context.Context) (HealthSnapshot, error) {
 	ctx, cancel := withDefaultTimeout(ctx, ControlCallTimeout)
 	defer cancel()

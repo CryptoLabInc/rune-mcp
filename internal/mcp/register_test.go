@@ -24,7 +24,6 @@ var expectedTools = []string{
 	"activate",
 	"capture",
 	"configure",
-	"console_status",
 	"deactivate",
 	"diagnostics",
 	"recall",
@@ -36,8 +35,8 @@ var expectedTools = []string{
 // Deps mirrors a "boot has not progressed past starting" state: the Manager
 // is freshly constructed (StateStarting) and services are zero-valued. With
 // State == StateStarting, write tools return PIPELINE_NOT_READY through the
-// CheckState gate. Read-only tools (console_status / diagnostics) bypass the
-// gate but their service nil-checks must hold.
+// CheckState gate. Read-only tools (diagnostics) bypass the gate but their
+// service nil-checks must hold.
 func newSession(t *testing.T) *sdkmcp.ClientSession {
 	t.Helper()
 	ctx := t.Context()
@@ -170,7 +169,7 @@ func TestRegister_WriteToolsGated(t *testing.T) {
 	}
 }
 
-// TestRegister_ReadOnlyToolsBypassGate — console_status / diagnostics
+// TestRegister_ReadOnlyToolsBypassGate — diagnostics
 // must respond successfully (no PIPELINE_NOT_READY) even
 // when State == StateStarting. These tools work
 // degraded so the operator can troubleshoot pre-active.
@@ -189,15 +188,6 @@ func TestRegister_ReadOnlyToolsBypassGate(t *testing.T) {
 		mustContain    []string // substrings that should appear in TextContent
 		mustNotContain []string
 	}{
-		{
-			// nil Console → not configured
-			name:        "console_status",
-			args:        nil,
-			mustContain: []string{`"console_configured":false`, "not configured"},
-			mustNotContain: []string{
-				"PIPELINE_NOT_READY",
-			},
-		},
 		{
 			// Diagnostics returns the 7-section snapshot; environment section
 			// always populated. We avoid asserting on `state` because it
