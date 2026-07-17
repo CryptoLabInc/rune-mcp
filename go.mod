@@ -5,7 +5,7 @@ go 1.26.4
 require (
 	github.com/CryptoLabInc/rune-console v0.0.0-20260506055025-ad52b6bd549d
 	github.com/CryptoLabInc/runed v0.1.0
-	github.com/CryptoLabInc/runespace-sdk v0.1.3
+	github.com/CryptoLabInc/runespace-sdk v1.0.0
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.5.0
 	github.com/zalando/go-keyring v0.2.8
@@ -13,11 +13,8 @@ require (
 	google.golang.org/grpc v1.81.0
 )
 
-// Local siblings (integration test): runeconsole provides the ConsoleService stubs;
-// the runespace SDK provides client-side EncKey encryption (cgo).
+// Local sibling (integration test): rune-console provides the ConsoleService stubs.
 replace github.com/CryptoLabInc/rune-console => ../rune-console
-
-replace github.com/CryptoLabInc/runespace-sdk => ../runespace-sdk
 
 replace github.com/CryptoLabInc/runed => ../runed
 
