@@ -478,19 +478,17 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		return bootRetry
 	}
 
-	// Every insert carries the RMP+MM dual
-	// representation — the engine, the console proto, and the SDK all reject an
-	// MM-less item — so a cluster-less (flat-only) runespace is an unsupported
-	// deployment, not a mode. An empty centroid_set_version means either that,
-	// or the console could not reach the engine while building the manifest;
-	// both block capture, so fail the boot loudly here instead of activating
-	// into a state where every capture would fail. The boot loop retries, so a
-	// transient engine outage recovers by itself.
+	// An empty centroid_set_version means the workspace isn't wired to a
+	// runespace yet, or Console couldn't fetch the set while building the
+	// manifest. Every insert needs the RMP+MM dual representation (engine,
+	// console proto, and SDK all reject an MM-less item), so with no set every
+	// capture would fail — wait and retry instead of activating into that state.
+	// The boot loop retries, so a transient outage recovers on its own.
 	if bundle.CentroidSetVersion == "" {
 		m.SetState(StateWaitingForConsole)
-		msg := "console manifest carries no centroid_set_version — runespace has no cluster tier (flat-only, unsupported) or the console cannot reach the engine"
+		msg := "console has not provided a centroid set yet — the rune workspace may not be connected to Console yet, or the set could not be fetched"
 		m.lastError.Store(msg)
-		m.SetBootError(&domain.BootError{Kind: domain.BootErrConsoleManifest, Detail: msg, Hint: "Configure the runespace cluster tier (centroid set) and check console→runespace connectivity."})
+		m.SetBootError(&domain.BootError{Kind: domain.BootErrConsoleManifest, Detail: msg, Hint: "Boot retries automatically as the workspace connects. If this persists, contact your Console administrator."})
 		slog.Error("boot: " + msg)
 		_ = consoleClient.Close()
 		return bootRetry
