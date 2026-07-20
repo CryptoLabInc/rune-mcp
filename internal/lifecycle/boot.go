@@ -2,13 +2,16 @@
 //
 // State machine:
 //
-//	(spawn) → starting ──(Console OK)──→ active ←──┐
-//	              ↓                      ↓       │
-//	              └─(Console fail)→ waiting_for_console │
-//	                                     ↕       │
-//	                                /rune:deactivate
-//	                                     ↕       │
-//	                                   dormant ──┘
+//	(spawn) → starting ──(Console OK, runed model ready)──→ active ←──┐
+//	              ↓            │                              ↑        │
+//	              │            └─(model still downloading)→ waiting_for_bootstrap
+//	              │                       (async watcher retriggers when ready) │
+//	              ↓                                                   │
+//	              └─(Console fail)→ waiting_for_console               │
+//	                                     ↕                            │
+//	                                /rune:deactivate                  │
+//	                                     ↕                            │
+//	                                   dormant ────────────────────────┘
 //	                                /rune:activate
 package lifecycle
 
@@ -22,6 +25,8 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
@@ -63,6 +68,14 @@ const (
 	StateWaitingForConsole
 	StateActive
 	StateDormant
+	// StateWaitingForBootstrap — the data plane is fully wired (console dialed,
+	// keys saved, encryptor open, embedder dialed, centroid set pushed to
+	// runed) and only runed's embedding model is still downloading. Distinct
+	// from Starting/WaitingForConsole (nothing is wrong and the console is
+	// reachable) and from Active (Embed cannot run until the model loads, so
+	// capture/recall stay gated). An async watcher polls runed and retriggers
+	// the boot loop once the model is ready, which then reaches Active.
+	StateWaitingForBootstrap
 )
 
 func (s State) String() string {
@@ -75,6 +88,8 @@ func (s State) String() string {
 		return "active"
 	case StateDormant:
 		return "dormant"
+	case StateWaitingForBootstrap:
+		return "waiting_for_bootstrap"
 	}
 	return "unknown"
 }
@@ -86,7 +101,13 @@ type Manager struct {
 	lastBootErr atomic.Value // *domain.BootError — structured, surfaced via diagnostics
 	attempts    atomic.Int32
 	onReload    atomic.Value // func()
-	bootLog     *BootLogger  // on-disk failure log; nil = disabled (no-op)
+	// onBootstrapWatch — invoked once the boot loop settles into
+	// StateWaitingForBootstrap, to start the async goroutine that polls runed
+	// until its model finishes downloading and then Retriggers the loop. Wired
+	// by cmd/rune-mcp (→ LifecycleService.StartBootstrapWatcher); mirrors the
+	// onReload indirection so lifecycle stays free of a service import.
+	onBootstrapWatch atomic.Value // func()
+	bootLog          *BootLogger  // on-disk failure log; nil = disabled (no-op)
 }
 
 // NewManager — initial state = Starting.
@@ -132,6 +153,28 @@ func (m *Manager) SetReloadFunc(f func()) {
 	m.onReload.Store(f)
 }
 
+// SetBootstrapWatchFunc installs the callback the boot loop fires when it
+// settles into StateWaitingForBootstrap (runed reachable + centroids pushed,
+// model still downloading). The callback should start an idempotent goroutine
+// that polls runed and calls Retrigger once the model is ready. Wired by
+// cmd/rune-mcp to LifecycleService.StartBootstrapWatcher; the service layer
+// owns the poll because only it holds the embedder client.
+func (m *Manager) SetBootstrapWatchFunc(f func()) {
+	m.onBootstrapWatch.Store(f)
+}
+
+// fireBootstrapWatch invokes the bootstrap-watch callback if one is wired.
+// No-op when unset (tests that don't wire a watcher).
+func (m *Manager) fireBootstrapWatch() {
+	v := m.onBootstrapWatch.Load()
+	if v == nil {
+		return
+	}
+	if f, ok := v.(func()); ok && f != nil {
+		f()
+	}
+}
+
 // Retrigger respawns the boot loop only if no loop is currently running and
 // only one caller wins when called concurrently
 // Transitioning Active to Starting (or Dormant to Starting) atomically claims
@@ -148,8 +191,14 @@ func (m *Manager) Retrigger() {
 	}
 
 	// Atomically claim the right to spawn. Losers fall through and return.
+	// WaitingForBootstrap is included: the boot loop has ALREADY EXITED into
+	// that state (handing off to the async watcher), so no loop is running and
+	// the watcher's Retrigger — or a manual /rune:activate — must be able to
+	// respawn it. WaitingForConsole/Starting are deliberately excluded: a loop
+	// is actively retrying there and a second one must not be spawned.
 	if !m.state.CompareAndSwap(int32(StateActive), int32(StateStarting)) &&
-		!m.state.CompareAndSwap(int32(StateDormant), int32(StateStarting)) {
+		!m.state.CompareAndSwap(int32(StateDormant), int32(StateStarting)) &&
+		!m.state.CompareAndSwap(int32(StateWaitingForBootstrap), int32(StateStarting)) {
 		return
 	}
 	f()
@@ -219,6 +268,11 @@ func (m *Manager) SetBootError(be *domain.BootError) {
 		m.lastBootErr.Store((*domain.BootError)(nil))
 		return
 	}
+	// Inline-constructed BootErrors (as opposed to ClassifyBootError output)
+	// carry no timestamp; stamp here so every stored/persisted entry has one.
+	if be.At.IsZero() {
+		be.At = time.Now().UTC()
+	}
 	m.lastBootErr.Store(be)
 	// Best-effort persist. Persist is nil-safe and swallows file errors so
 	// this can never break the boot loop.
@@ -266,6 +320,15 @@ const (
 	// service.LifecycleService.ReloadPipelines is responsible for re-spawning
 	// RunBootLoop after the user fixes config.
 	bootDormant
+
+	// bootWaitingBootstrap — the data plane is fully wired and the centroid set
+	// is pushed to runed, but runed's embedding model is still downloading.
+	// State is already set to StateWaitingForBootstrap inside bootOnce. The
+	// caller should NOT retry-spin (that would re-wire the plane while the
+	// download runs); instead it fires the bootstrap-watch callback and exits.
+	// The watcher Retriggers RunBootLoop once the model is ready, which then
+	// skips the centroid relay (version match) and reaches bootActive.
+	bootWaitingBootstrap
 )
 
 // RunBootLoop drives the boot sequence. It runs to completion (Active or
@@ -281,6 +344,8 @@ const (
 //   - console dial / GetAgentManifest   → state=WaitingForConsole, exp backoff retry
 //   - keymanager / embedder / encryptor init → exp backoff retry (might be
 //     transient — daemon down, etc.)
+//   - runed reachable + centroids pushed but model still downloading →
+//     state=WaitingForBootstrap, fire the bootstrap watcher, exit (no retry)
 //   - other config error (parse fail) → exp backoff retry (user might be editing)
 //   - ctx cancellation                → return immediately
 //
@@ -315,6 +380,17 @@ func RunBootLoop(ctx context.Context, m *Manager, deps BootAdapterInjector) {
 			m.attempts.Store(int32(attempt))
 			slog.Info("boot: dormant — awaiting /rune:configure or /rune:activate",
 				"reason", m.LastError())
+			return
+
+		case bootWaitingBootstrap:
+			// Data plane wired + centroids pushed; only runed's model download
+			// is outstanding. State already set to StateWaitingForBootstrap in
+			// bootOnce. Hand off to the async watcher and exit — do NOT retry
+			// (the watcher Retriggers this loop when the model is ready).
+			m.attempts.Store(int32(attempt))
+			slog.Info("boot: data plane wired — awaiting runed model download",
+				"reason", m.LastError())
+			m.fireBootstrapWatch()
 			return
 
 		case bootRetry:
@@ -536,8 +612,16 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	// produces, or captures would encrypt wrong-sized vectors. Best-effort:
 	// while runed is still bootstrapping, Info may fail or report 0 — skip
 	// rather than block the boot (the bootstrap wait covers that window).
+	//
+	// One Info failure is NOT tolerated: gRPC Unavailable means there is no
+	// transport at all (socket missing, daemon not running), so the centroid
+	// push below would fail the same way. Fail fast here, BEFORE the ~16MB
+	// console fetch — otherwise every retry of a stuck loop re-downloads the
+	// whole set just to fail at the push.
 	var runedCentroidVer string
-	if info, ierr := embedderClient.Info(ctx); ierr == nil {
+	info, ierr := embedderClient.Info(ctx)
+	switch {
+	case ierr == nil:
 		runedCentroidVer = info.CentroidSetVersion
 		if info.VectorDim > 0 && info.VectorDim != bundle.Dim {
 			msg := fmt.Sprintf("dim mismatch: manifest/keys=%d, runed=%d — console and embedder disagree on the embedding dimension", bundle.Dim, info.VectorDim)
@@ -547,6 +631,12 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 			slog.Error("boot: " + msg)
 			return bootRetry
 		}
+	case status.Code(ierr) == codes.Unavailable:
+		m.SetState(StateWaitingForConsole)
+		m.lastError.Store(fmt.Sprintf("embedder unreachable: %v", ierr))
+		m.SetBootError(classify(ierr, domain.BootPhaseEmbedderDial))
+		slog.Error("boot: embedder unreachable — retrying without fetching centroids", "err", ierr)
+		return bootRetry
 	}
 
 	// Relay the IVF centroid set from the console down to runed so Embed can
@@ -592,12 +682,41 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		slog.Info("boot: centroid set synced to runed", "version", cs.Version, "nlist", len(cs.Vectors))
 	}
 
+	// Gate activation on runed's embedding MODEL being ready — not merely on
+	// runed being reachable. SetCentroids above lands the routing table while
+	// runed is still downloading its model (the table is independent of the
+	// embedding backend — runed's SetCentroids never touches the backend), but
+	// Embed cannot run until the model is up. Reporting "online" now would flip
+	// the console member to online and let captures through to a backend that
+	// answers FAILED_PRECONDITION.
+	//
+	// So when the model is still loading, settle into WaitingForBootstrap
+	// instead of activating: the data plane is fully wired and the centroid set
+	// is already pushed, so the async watcher only has to wait out the download
+	// and Retrigger this loop — which then skips the relay (version match) and
+	// reaches bootActive. capture/recall stay gated until then. Only an explicit
+	// LOADING defers; OK/IDLE (model ready — the common warm re-activate) and a
+	// health-probe error (runed just answered SetCentroids, so treat a probe
+	// miss as ready and let ReportActivation proceed) both fall through to
+	// active.
+	if h, herr := embedderClient.Health(ctx); herr == nil && h.Status == "LOADING" {
+		m.SetState(StateWaitingForBootstrap)
+		m.lastError.Store("runed is downloading its embedding model")
+		// Not an error — a normal transient wait. Clear any prior boot error so
+		// diagnostics don't surface a stale failure while we wait.
+		m.SetBootError(nil)
+		slog.Info("boot: runed model still downloading — deferring activation to async watcher",
+			"phase", h.Phase, "bytes_done", h.BytesDone, "bytes_total", h.BytesTotal)
+		return bootWaitingBootstrap
+	}
+
 	// Self-report terminal activation so the console flips the member from
 	// invite_redeemed to online. Reached only after every configure step above
-	// succeeded — most importantly, runed holds the current centroid set — so
-	// "online" truthfully means the data plane can route. The call itself stays
-	// best-effort: if this one RPC fails the member simply stays invite_redeemed
-	// until a later boot re-reports, and the local data plane is already fully up.
+	// succeeded — most importantly, runed holds the current centroid set AND its
+	// model is ready — so "online" truthfully means the data plane can route.
+	// The call itself stays best-effort: if this one RPC fails the member simply
+	// stays invite_redeemed until a later boot re-reports, and the local data
+	// plane is already fully up.
 	if err := consoleClient.ReportActivation(ctx); err != nil {
 		slog.Warn("boot: report activation to console failed", "err", err)
 	}

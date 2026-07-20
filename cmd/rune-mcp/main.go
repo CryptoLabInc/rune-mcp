@@ -94,6 +94,15 @@ func main() {
 		go lifecycle.RunBootLoop(ctx, deps.State, deps)
 	})
 
+	// Wire the bootstrap-watch callback → the async goroutine that polls runed
+	// until its embedding model finishes downloading, then Retriggers the boot
+	// loop. The boot loop fires this when it settles into waiting_for_bootstrap
+	// (runed reachable + centroids pushed, model still loading), so activation
+	// completes on its own without the user re-running /rune:activate.
+	deps.State.SetBootstrapWatchFunc(func() {
+		deps.Lifecycle.StartBootstrapWatcher()
+	})
+
 	go lifecycle.RunBootLoop(ctx, deps.State, deps)
 
 	srv := sdkmcp.NewServer(&sdkmcp.Implementation{

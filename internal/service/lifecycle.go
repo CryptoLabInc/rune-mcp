@@ -271,8 +271,10 @@ type ConfigureResult struct {
 	ConfiguredAt string `json:"configured_at"`
 	NextStep     string `json:"next_step,omitempty"`
 
-	// Reachable=nil  : skip probe
-	// Reachable-false: HealthCheck failed, ProbeError is the reason
+	// ConsoleReachable is derived from the boot state after bring-up:
+	// true  — reached active OR waiting_for_bootstrap (console was dialed and
+	//         the centroid set relayed; only runed's model download may remain).
+	// false — a classified boot failure; ProbeError carries its detail.
 	ConsoleReachable *bool  `json:"console_reachable,omitempty"`
 	ProbeError       string `json:"probe_error,omitempty"`
 }
@@ -373,23 +375,42 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 	// is /rune:activate or /rune:status and never a fresh invite. (The only
 	// spent-invite dead end is a config.Save failure, handled above with
 	// CodeRegistrationConsumed before the token could ever take effect.)
+
+	// The boot loop only DIALS runed's socket — it never spawns the daemon, and
+	// a first-time configure has no runed running yet. Mirror /rune:activate's
+	// pre-check: bring the daemon up before driving the boot loop, or a fresh
+	// install can never reach active from configure alone. On failure, surface
+	// the recovery hint (install + /rune:activate retry) instead of failing the
+	// call — the credentials above are already saved.
+	if socketPath := embedder.ResolveSocketPath(""); socketPath != "" {
+		if br := s.ensureDaemon(ctx, socketPath); br != nil {
+			result.State = s.State.Current().String()
+			result.NextStep = br.Hint
+			return result, nil
+		}
+	}
+
 	rr, err := s.ReloadPipelines(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("configure: bring pipelines online: %w", err)
 	}
 	result.State = rr.State
-	reachable := rr.State == lifecycle.StateActive.String()
+	// Console is reachable in BOTH active and waiting_for_bootstrap: the boot
+	// loop only reaches those after dialing the console, fetching the manifest,
+	// and relaying the centroid set. In waiting_for_bootstrap only runed's model
+	// download remains, and the async watcher finishes activation on its own.
+	reachable := rr.State == lifecycle.StateActive.String() ||
+		rr.State == lifecycle.StateWaitingForBootstrap.String()
 	result.ConsoleReachable = &reachable
 	switch {
-	case reachable:
+	case rr.State == lifecycle.StateActive.String():
 		result.NextStep = "Rune is active. Organizational memory is online."
+	case rr.State == lifecycle.StateWaitingForBootstrap.String():
+		result.NextStep = waitingForBootstrapHint
 	case rr.LastBootError != nil:
 		// Boot reached a classified failure — surface its hint verbatim.
 		result.ProbeError = rr.LastBootError.Detail
 		result.NextStep = rr.LastBootError.Hint
-	case rr.ConsoleWarmup != nil && rr.ConsoleWarmup.Error != nil:
-		result.ProbeError = *rr.ConsoleWarmup.Error
-		result.NextStep = "Credentials saved but Console is not reachable yet. Run /rune:activate to retry, or /rune:status to inspect."
 	default:
 		result.NextStep = "Credentials saved but pipelines are not active yet. Run /rune:status to inspect."
 	}
@@ -403,7 +424,8 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 //	stage 1 — decode the string, fetch the console CA over an untrusted channel,
 //	          verify it against the pinned SHA-256, and persist it.
 //	stage 2 — dial with the pinned CA and unwrap the one-time handle → real token.
-//	stage 3 — (the caller) write the resolved credentials + probe the console.
+//	stage 3 — (the caller) write the resolved credentials + bring the pipelines
+//	          online via ReloadPipelines (the boot loop dials the console).
 func (s *LifecycleService) bootstrapFromRegistration(ctx context.Context, regString string) (*resolvedCreds, error) {
 	reg, err := regstr.Decode(regString)
 	if err != nil {
@@ -492,6 +514,11 @@ type ActivateResult struct {
 
 const bootstrapProbeTimeout = 2 * time.Second
 
+// daemonReadyTimeout bounds how long /rune:activate waits for the freshly
+// spawned runed to open its socket. Shorter than spawn's 15s default so the
+// whole activate call stays well under the 30s MCP timeout.
+const daemonReadyTimeout = 10 * time.Second
+
 func (s *LifecycleService) Activate(ctx context.Context) (*ActivateResult, error) {
 	// Pre-check: config ($HOME/.rune/config.json)
 	cfg, err := config.Load()
@@ -529,6 +556,22 @@ func (s *LifecycleService) Activate(ctx context.Context) (*ActivateResult, error
 		}, nil
 	}
 
+	// Idempotent: already waiting on runed's model download. The async watcher
+	// was started when the boot loop first reached this state and will flip us
+	// to active on its own once the model is ready — re-running the boot loop
+	// here would needlessly re-dial the console and re-open the cgo encryptor.
+	// Just make sure the watcher is alive (restart is a no-op when it is) and
+	// report current download progress.
+	if s.State != nil && s.State.Current() == lifecycle.StateWaitingForBootstrap {
+		s.startBootstrapWatcher()
+		return &ActivateResult{
+			OK:        true,
+			Status:    ActivateStatusWaitingForBootstrap,
+			Hint:      waitingForBootstrapHint,
+			Bootstrap: s.bootstrapProgress(ctx),
+		}, nil
+	}
+
 	// Clear a user-initiated deactivation before re-triggering the boot loop.
 	//
 	// /rune:activate is an explicit "come back online" intent. If the daemon
@@ -557,17 +600,27 @@ func (s *LifecycleService) Activate(ctx context.Context) (*ActivateResult, error
 		}
 	}
 
-	// Pre-check: runed bootstrap state. Show progress if runed is self-bootstrapping
-	if s.Embedder() != nil {
-		if br := s.probeBootstrap(ctx); br != nil {
-			return br, nil
-		}
-	}
-
-	// Call reload_pipelines
+	// Bring the pipelines online. The boot loop wires the data plane and pushes
+	// the centroid set — both succeed while runed's model is still downloading —
+	// then either reaches active (model already loaded, the warm re-activate
+	// case) or settles into waiting_for_bootstrap and hands off to the async
+	// watcher. Either way this returns within a bounded window; a multi-minute
+	// model download never blocks here (the watcher finishes activation).
 	rr, err := s.ReloadPipelines(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("reload pipelines: %w", err)
+	}
+
+	// runed still downloading its model: report progress, not a raw "not active".
+	// The boot loop already fired the watcher on entering this state.
+	if rr.State == lifecycle.StateWaitingForBootstrap.String() {
+		return &ActivateResult{
+			OK:        true,
+			Status:    ActivateStatusWaitingForBootstrap,
+			Hint:      waitingForBootstrapHint,
+			Bootstrap: s.bootstrapProgress(ctx),
+			Reload:    rr,
+		}, nil
 	}
 
 	return &ActivateResult{
@@ -576,6 +629,11 @@ func (s *LifecycleService) Activate(ctx context.Context) (*ActivateResult, error
 		Reload: rr,
 	}, nil
 }
+
+// waitingForBootstrapHint is the user-facing next-step text while runed's model
+// downloads. Activation completes on its own via the async bootstrap watcher,
+// so it deliberately does NOT ask the user to re-run /rune:activate.
+const waitingForBootstrapHint = "runed is bootstrapping (downloading llama-server and/or the embedding model). Activation will complete automatically once the download finishes — no further /rune:activate needed."
 
 // Makes runed reachable at socketPath, spawning if needed
 // On failure, install_pending hint tells agent command to run for recovery (spawn.AgentInstallRecoverHint)
@@ -602,6 +660,11 @@ func (s *LifecycleService) ensureDaemon(ctx context.Context, socketPath string) 
 		RuneBinary:    runeBin,
 		SocketPath:    socketPath,
 		SpawnLockPath: paths.spawnLock,
+		// runed opens its gRPC socket well before its model download starts, so
+		// 10s is ample for "reachable" while keeping the whole /rune:activate
+		// call comfortably under the 30s MCP timeout. If the socket isn't up by
+		// then, return install_pending — a retry is the right recovery.
+		ReadyTimeout: daemonReadyTimeout,
 	}
 	if err := spawn.EnsureDaemon(ctx, cfg); err != nil {
 		return &ActivateResult{
@@ -629,33 +692,36 @@ func embedderPaths(socketPath string) (runedSpawnPaths, error) {
 	}, nil
 }
 
-func (s *LifecycleService) probeBootstrap(ctx context.Context) *ActivateResult {
-	probeCtx, cancel := context.WithTimeout(ctx, bootstrapProbeTimeout)
-	defer cancel()
-
+// bootstrapProgress returns a snapshot of runed's model-download progress for
+// display, or nil if the embedder isn't wired / doesn't answer in time. It does
+// NOT start the watcher or decide state — the boot loop owns the model-ready
+// gate (bootOnce) and fires the watcher; this is purely a read for the response.
+func (s *LifecycleService) bootstrapProgress(ctx context.Context) *BootstrapDetail {
 	e := s.Embedder()
 	if e == nil {
 		return nil
 	}
-
+	probeCtx, cancel := context.WithTimeout(ctx, bootstrapProbeTimeout)
+	defer cancel()
 	h, err := e.Health(probeCtx)
-	if err != nil || h.Status != "LOADING" {
-		return nil // Health errors are ignored here
+	if err != nil {
+		return nil
 	}
-
-	s.startBootstrapWatcher()
-	return &ActivateResult{
-		OK:     true,
-		Status: ActivateStatusWaitingForBootstrap,
-		Hint:   "runed is bootstrapping (downloading llama-server and/or the embedding model). Activation will complete automatically once the download finishes - no further /rune:activate needed.",
-		Bootstrap: &BootstrapDetail{
-			Phase:      h.Phase,
-			BytesDone:  h.BytesDone,
-			BytesTotal: h.BytesTotal,
-			Message:    h.Message,
-		},
+	return &BootstrapDetail{
+		Phase:      h.Phase,
+		BytesDone:  h.BytesDone,
+		BytesTotal: h.BytesTotal,
+		Message:    h.Message,
 	}
 }
+
+// StartBootstrapWatcher starts (idempotently) the async goroutine that polls
+// runed until its embedding model finishes downloading, then Retriggers the
+// boot loop. Exported so cmd/rune-mcp can wire it as the Manager's
+// bootstrap-watch callback: the boot loop fires that callback when it settles
+// into waiting_for_bootstrap (runed reachable + centroids pushed, model still
+// loading). Also called from /rune:activate to revive the watcher if it died.
+func (s *LifecycleService) StartBootstrapWatcher() { s.startBootstrapWatcher() }
 
 var bootstrapWatchInterval = 15 * time.Second
 var bootstrapWatcherHealthTimeout = 5 * time.Second
@@ -747,20 +813,9 @@ type ReloadPipelinesResult struct {
 	// is available; nil otherwise.
 	LastBootError *domain.BootError `json:"last_boot_error,omitempty"`
 	Errors        []string          `json:"errors,omitempty"`
-	ConsoleWarmup *WarmupInfo       `json:"console_warmup,omitempty"`
 }
 
-// WarmupInfo — Console HealthCheck probe (60s timeout).
-type WarmupInfo struct {
-	OK        bool     `json:"ok"`
-	LatencyMs *float64 `json:"latency_ms,omitempty"`
-	Error     *string  `json:"error,omitempty"`
-}
-
-// WarmupTimeout — console warmup HealthCheck deadline. 60s.
-const WarmupTimeout = 60 * time.Second
-
-// ReloadPipelines — re-trigger the boot loop from Dormant + warmup the console.
+// ReloadPipelines — re-trigger the boot loop from Dormant.
 //
 // On a terminal Dormant state (boot loop's goroutine has exited), call
 // Manager.Retrigger to spawn a fresh RunBootLoop bound to the same ctx +
@@ -795,11 +850,6 @@ func (s *LifecycleService) ReloadPipelines(ctx context.Context) (*ReloadPipeline
 		}
 	}
 
-	if s.Console != nil {
-		warmup := s.warmupConsole(ctx, WarmupTimeout)
-		result.ConsoleWarmup = warmup
-	}
-
 	return result, nil
 }
 
@@ -826,7 +876,7 @@ func (s *LifecycleService) waitForBootProgress(ctx context.Context, timeout time
 
 	for time.Now().Before(deadline) {
 		switch s.State.Current() {
-		case lifecycle.StateActive, lifecycle.StateDormant:
+		case lifecycle.StateActive, lifecycle.StateDormant, lifecycle.StateWaitingForBootstrap:
 			return
 		}
 		select {
@@ -835,23 +885,6 @@ func (s *LifecycleService) waitForBootProgress(ctx context.Context, timeout time
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-}
-
-// warmupConsole — Console HealthCheck under a 60s timeout.
-func (s *LifecycleService) warmupConsole(ctx context.Context, timeout time.Duration) *WarmupInfo {
-	ctx2, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	t0 := time.Now()
-	_, err := s.Console.HealthCheck(ctx2)
-	elapsed := float64(time.Since(t0).Milliseconds())
-
-	if err != nil {
-		errStr := err.Error()
-		return &WarmupInfo{OK: false, LatencyMs: &elapsed, Error: &errStr}
-	}
-
-	return &WarmupInfo{OK: true, LatencyMs: &elapsed}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
