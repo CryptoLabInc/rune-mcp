@@ -200,7 +200,12 @@ func classifyConsoleSentinel(err error, be *domain.BootError, c BootErrCtx) bool
 	switch ve.Code {
 	case console.ErrConsoleAuthFailed.Code:
 		be.Kind = domain.BootErrConsoleAuth
-		be.Hint = "Console rejected the token. Check the token in ~/.rune/config.json — it may be wrong or revoked. Re-issue with `runeconsole token issue` if needed."
+		// The session token is derived from a one-time invite (configure →
+		// Unwrap); there is no self-service token reissue. An Unauthenticated
+		// here means the token expired or was revoked, and the only recovery is
+		// a fresh invite. (If it self-heals on the next retry, it was a transient
+		// console blip rather than a dead token.)
+		be.Hint = "Console rejected the token — it may have expired or been revoked. There is no manual token reissue: request a new Rune invite email and re-run /rune:configure with the fresh registration string."
 	case console.ErrConsolePermissionDenied.Code:
 		be.Kind = domain.BootErrConsolePermission
 		be.Hint = "Token authenticated but lacks the required role/scope. Re-issue the token with the correct role."
@@ -265,7 +270,7 @@ func classifyGRPCStatus(err error, be *domain.BootError, c BootErrCtx) bool {
 	switch st.Code() {
 	case codes.Unauthenticated:
 		be.Kind = domain.BootErrConsoleAuth
-		be.Hint = "Console rejected the token (gRPC Unauthenticated)."
+		be.Hint = "Console rejected the token as unauthenticated — it may have expired or been revoked. Request a new Rune invite and re-run /rune:configure with the fresh registration string."
 	case codes.PermissionDenied:
 		be.Kind = domain.BootErrConsolePermission
 		be.Hint = "Token authenticated but lacks required role (gRPC PermissionDenied)."

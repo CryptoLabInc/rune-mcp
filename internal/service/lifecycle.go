@@ -277,8 +277,6 @@ type ConfigureResult struct {
 	ProbeError       string `json:"probe_error,omitempty"`
 }
 
-const ConfigureProbeTimeout = 5 * time.Second
-
 func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*ConfigureResult, error) {
 	if args.RegistrationString == "" {
 		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "registration_string is required"}
@@ -313,7 +311,18 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 	}
 	if err := keyring.Set(creds.Endpoint, creds.Token); err != nil {
 		if !keyring.IsUnavailable(err) {
-			return nil, fmt.Errorf("store token in keyring: %w", err)
+			// Post-unwrap: the invite is already spent but the token could not be
+			// persisted to the keyring (locked/denied keychain, not merely
+			// absent). Same dead end as a config.Save failure — a fresh invite is
+			// required once the keyring is fixed. Do not return a generic error
+			// the caller would retry with the now-useless string.
+			return nil, &domain.RuneError{
+				Code:      domain.CodeRegistrationConsumed,
+				Message:   fmt.Sprintf("invite redeemed but storing the token in the OS keyring failed: %v", err),
+				Retryable: false,
+				RecoveryHint: "The one-time invite was consumed by this attempt but the token could not be stored in the OS keyring. " +
+					"Unlock/allow the keychain, then request a NEW invite — the same registration string can no longer be reused.",
+			}
 		}
 		slog.Warn("keyring unavailable; storing token in config file (0600)", "err", err.Error())
 		consoleCfg.Token = creds.Token
@@ -354,25 +363,35 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 		ConfiguredAt: now,
 	}
 
-	// Console HealthCheck
-	probeCtx, cancel := context.WithTimeout(ctx, ConfigureProbeTimeout)
-	defer cancel()
-
-	vc, probeErr := console.NewClient(creds.Endpoint, creds.Token, console.ClientOpts{
-		CACertPath: creds.CACertPath,
-	})
-	if probeErr == nil {
-		_, probeErr = vc.HealthCheck(probeCtx)
-		_ = vc.Close()
+	// Credentials are persisted and the one-time invite is fully consumed, so
+	// configure owns bringing the pipelines online from here: drive the real boot
+	// loop (the same path /rune:activate uses) instead of a throwaway HealthCheck.
+	// A follow-up /rune:activate then short-circuits to "already active".
+	//
+	// Any failure past this point is a connectivity/boot problem, never a
+	// spent-invite one — the invite was already redeemed above, so the recovery
+	// is /rune:activate or /rune:status and never a fresh invite. (The only
+	// spent-invite dead end is a config.Save failure, handled above with
+	// CodeRegistrationConsumed before the token could ever take effect.)
+	rr, err := s.ReloadPipelines(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("configure: bring pipelines online: %w", err)
 	}
-
-	reachable := probeErr == nil
+	result.State = rr.State
+	reachable := rr.State == lifecycle.StateActive.String()
 	result.ConsoleReachable = &reachable
-	if probeErr != nil {
-		result.ProbeError = probeErr.Error()
-		result.NextStep = "Console unreachable from this host - verify endpoint/token, then run /rune:activate to retry"
-	} else {
-		result.NextStep = "Run /rune:activate to apply the new credentials"
+	switch {
+	case reachable:
+		result.NextStep = "Rune is active. Organizational memory is online."
+	case rr.LastBootError != nil:
+		// Boot reached a classified failure — surface its hint verbatim.
+		result.ProbeError = rr.LastBootError.Detail
+		result.NextStep = rr.LastBootError.Hint
+	case rr.ConsoleWarmup != nil && rr.ConsoleWarmup.Error != nil:
+		result.ProbeError = *rr.ConsoleWarmup.Error
+		result.NextStep = "Credentials saved but Console is not reachable yet. Run /rune:activate to retry, or /rune:status to inspect."
+	default:
+		result.NextStep = "Credentials saved but pipelines are not active yet. Run /rune:status to inspect."
 	}
 
 	return result, nil
@@ -403,11 +422,24 @@ func (s *LifecycleService) bootstrapFromRegistration(ctx context.Context, regStr
 	// (a stale CA file is harmless and overwritten on the next attempt).
 	caPEM, err := console.FetchCACert(ctx, reg.Endpoint, reg.CASHA256)
 	if err != nil {
-		return nil, fmt.Errorf("bootstrap: fetch CA: %w", err)
+		// Pre-unwrap: the one-time handle is still unused, so the SAME
+		// registration string can be retried once the cause is fixed.
+		return nil, &domain.RuneError{
+			Code:         domain.CodeConsoleConnection,
+			Message:      "bootstrap: fetch console CA: " + err.Error(),
+			Retryable:    true,
+			RecoveryHint: "The invite was NOT consumed. Fix the connection/endpoint and re-run /rune:configure with the same registration string.",
+		}
 	}
 	caPath, err := config.SaveConsoleCA(caPEM)
 	if err != nil {
-		return nil, fmt.Errorf("bootstrap: save CA: %w", err)
+		// Still pre-unwrap — the handle is unused, same string is reusable.
+		return nil, &domain.RuneError{
+			Code:         domain.CodeInternal,
+			Message:      "bootstrap: save console CA: " + err.Error(),
+			Retryable:    true,
+			RecoveryHint: "The invite was NOT consumed. Fix ~/.rune permissions/disk space and re-run /rune:configure with the same registration string.",
+		}
 	}
 
 	// Stage 2: unwrap the one-time handle into the real access token. The
@@ -479,6 +511,21 @@ func (s *LifecycleService) Activate(ctx context.Context) (*ActivateResult, error
 			OK:     true,
 			Status: ActivateStatusConfigureRequired,
 			Hint:   "Console endpoint/token missing in ~/.rune/config.json. Run /rune:configure.",
+		}, nil
+	}
+
+	// Idempotent: already active → report and stop. Activation is a "come back
+	// online" intent; if the pipelines are already up there is nothing to
+	// resume, and re-triggering the boot loop would needlessly re-dial the
+	// console and re-open the cgo encryptor. (configure itself brings a fresh
+	// setup to active, so the /rune:configure → /rune:activate handoff lands
+	// here.) A dead session token still surfaces on the next capture/recall or
+	// via /rune:status, not by pre-emptively re-booting here.
+	if s.State != nil && s.State.Current() == lifecycle.StateActive {
+		return &ActivateResult{
+			OK:     true,
+			Status: ActivateStatusActive,
+			Hint:   "Rune is already active. Organizational memory is online.",
 		}, nil
 	}
 
@@ -812,9 +859,15 @@ func (s *LifecycleService) warmupConsole(ctx context.Context, timeout time.Durat
 // ─────────────────────────────────────────────────────────────────────────────
 
 // DeactivateResult.
+//
+// AlreadyDormant distinguishes a no-op (Rune was already dormant) from a fresh
+// active→dormant transition, so the caller can say "already deactivated"
+// instead of "now dormant". Hint carries the user-facing next step.
 type DeactivateResult struct {
-	OK    bool   `json:"ok"`
-	State string `json:"state"`
+	OK             bool   `json:"ok"`
+	State          string `json:"state"`
+	AlreadyDormant bool   `json:"already_dormant,omitempty"`
+	Hint           string `json:"hint,omitempty"`
 }
 
 // Deactivate is the inverse of Activate: it flips the running pipelines to
@@ -824,10 +877,25 @@ type DeactivateResult struct {
 // dormant config and settles the Manager into StateDormant -- at which point
 // the state gate rejects capture/recall with PIPELINE_NOT_READY.
 func (s *LifecycleService) Deactivate(ctx context.Context) (*DeactivateResult, error) {
+	// Idempotent: already dormant → report, don't re-mark or re-run the boot
+	// loop. capture/recall are already gated in this state, so there is nothing
+	// to pause.
+	if s.State != nil && s.State.Current() == lifecycle.StateDormant {
+		return &DeactivateResult{
+			OK:             true,
+			State:          lifecycle.StateDormant.String(),
+			AlreadyDormant: true,
+			Hint:           "Rune is already dormant. Organizational memory is paused — /rune:activate to resume.",
+		}, nil
+	}
 	if err := config.MarkDormant("user_deactivated"); err != nil {
 		return nil, fmt.Errorf("deactivate: mark dormant: %w", err)
 	}
 	s.State.Retrigger()
 	s.waitForBootProgress(ctx, 5*time.Second)
-	return &DeactivateResult{OK: true, State: s.State.Current().String()}, nil
+	return &DeactivateResult{
+		OK:    true,
+		State: s.State.Current().String(),
+		Hint:  "Rune is now dormant. Organizational memory is paused — /rune:activate to resume.",
+	}, nil
 }
