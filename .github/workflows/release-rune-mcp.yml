@@ -63,7 +63,11 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-          cache: true
+          # No module cache: rune-console is a private module pinned by a tag
+          # (v1.0.0-alpha) that this dev flow re-tags in place, so a restored
+          # cache can hold stale content that conflicts with the updated go.sum
+          # (checksum mismatch). Fetch fresh every run.
+          cache: false
 
 
       # rune-mcp links runespace-sdk via CGO, so the linux binary depends on
