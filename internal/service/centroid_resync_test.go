@@ -47,6 +47,7 @@ type resyncConsole struct {
 }
 
 func (v *resyncConsole) GetAgentManifest(context.Context) (*console.Bundle, error) { return nil, nil }
+func (v *resyncConsole) ReportActivation(context.Context) error                    { return nil }
 func (v *resyncConsole) Search(context.Context, []float32, int) ([]console.Hit, error) {
 	return nil, nil
 }

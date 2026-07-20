@@ -124,6 +124,7 @@ type CentroidSet struct {
 // Client interface — implemented by gRPC client (and test mocks).
 type Client interface {
 	GetAgentManifest(ctx context.Context) (*Bundle, error)
+	ReportActivation(ctx context.Context) error
 	Insert(ctx context.Context, item InsertItem) (string, error)
 	Search(ctx context.Context, vector []float32, topK int) ([]Hit, error)
 	Centroids(ctx context.Context) (*CentroidSet, error)
@@ -224,6 +225,20 @@ func (c *client) GetAgentManifest(ctx context.Context) (*Bundle, error) {
 		return nil, &Error{Code: ErrConsoleInternal.Code, Message: "GetAgentManifest: " + msg, Retryable: true}
 	}
 	return ParseManifestJSON(resp.GetManifestJson())
+}
+
+// ReportActivation tells the console this agent reached terminal active
+// (configure/activate fully succeeded), which advances the member from
+// invite_redeemed to online. Best-effort at the call site: a failure never
+// blocks boot.
+func (c *client) ReportActivation(ctx context.Context) error {
+	ctx, cancel := withTimeout(c.authCtx(ctx), DefaultTimeout)
+	defer cancel()
+
+	if _, err := c.stub.ReportActivation(ctx, &consolepb.ReportActivationRequest{Token: c.token}); err != nil {
+		return MapGRPCError(err)
+	}
+	return nil
 }
 
 func (c *client) Insert(ctx context.Context, item InsertItem) (string, error) {

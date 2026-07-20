@@ -572,6 +572,14 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		}
 	}
 
+	// Self-report terminal activation so the console flips the member from
+	// invite_redeemed to online. Best-effort: a failure never blocks activation
+	// (the console keeps showing invite_redeemed until a later boot re-reports),
+	// and the data plane is already fully up by here.
+	if err := consoleClient.ReportActivation(ctx); err != nil {
+		slog.Warn("boot: report activation to console failed", "err", err)
+	}
+
 	return bootActive
 }
 

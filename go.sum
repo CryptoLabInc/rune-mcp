@@ -1,6 +1,6 @@
 buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260415201107-50325440f8f2.1 h1:s6hzCXtND/ICdGPTMGk7C+/BFlr2Jg5GyH0NKf4XGXg=
 buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260415201107-50325440f8f2.1/go.mod h1:tvtbpgaVXZX4g6Pn+AnzFycuRK3MOz5HJfEGeEllXYM=
-github.com/CryptoLabInc/rune-console v1.0.0-alpha h1:X3hL2ch/n9S+0xV95Okb6F7RFc9fCBqCmXN63BS6EfE=
+github.com/CryptoLabInc/rune-console v1.0.0-alpha h1:qplVI2bXGgAyLucUYZmduMJ+/4C5+GdZXMa2PXuV9OI=
 github.com/CryptoLabInc/rune-console v1.0.0-alpha/go.mod h1:GNsF/8kOXQ9jwEQyOJ12i6LoDhCzu7t7AiV/f+rgtTU=
 github.com/CryptoLabInc/runed v1.0.0-alpha h1:bnDRcvQwMtQcCVqq1P9rJMVokxop0Xq6E66jATC0NNs=
 github.com/CryptoLabInc/runed v1.0.0-alpha/go.mod h1:bhtNz/XvGxzyiipabzMOEROstuwG5KBANybj6MfCF7o=
