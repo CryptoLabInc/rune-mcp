@@ -58,7 +58,7 @@ func (s *LifecycleService) SetEmbedder(c embedder.Client) {
 // rune_diagnostics — read-only.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// DiagnosticsResult — aggregates 7 sub-sections (env + runtime ×6). Install
+// DiagnosticsResult — aggregates 6 sub-sections (env + runtime ×5). Install
 // state (config.json, runed binary, model file, socket) is a substrate
 // concern owned by the `rune` CLI; agents wanting that visibility shell
 // out to `rune verify` separately. Keeping the MCP server's diagnostics
@@ -71,7 +71,6 @@ type DiagnosticsResult struct {
 	DormantSince  *string       `json:"dormant_since,omitempty"`
 	Console       ConsoleInfo   `json:"console"`
 	Keys          KeysInfo      `json:"keys"`
-	Pipelines     PipelinesInfo `json:"pipelines"`
 	Embedding     EmbeddingInfo `json:"embedding"`
 }
 
@@ -109,12 +108,6 @@ type ConsoleInfo struct {
 type KeysInfo struct {
 	Custodian string `json:"custodian"` // "console" — sole key holder
 	KeyID     string `json:"key_id,omitempty"`
-}
-
-// PipelinesInfo — scribe/retriever init state.
-type PipelinesInfo struct {
-	ScribeInitialized    bool `json:"scribe_initialized"`
-	RetrieverInitialized bool `json:"retriever_initialized"`
 }
 
 // EmbeddingInfo - external embedder info snapshot
@@ -173,12 +166,6 @@ func (s *LifecycleService) Diagnostics(ctx context.Context) *DiagnosticsResult {
 	r.Keys = KeysInfo{
 		Custodian: "console",
 		KeyID:     s.KeyID,
-	}
-
-	// Pipelines
-	r.Pipelines = PipelinesInfo{
-		ScribeInitialized:    s.State != nil && s.State.Current() == lifecycle.StateActive,
-		RetrieverInitialized: s.State != nil && s.State.Current() == lifecycle.StateActive,
 	}
 
 	// Embedding
@@ -704,10 +691,8 @@ func (s *LifecycleService) runBootstrapWatcher() {
 
 // ReloadPipelinesResult.
 type ReloadPipelinesResult struct {
-	OK                   bool   `json:"ok"`
-	State                string `json:"state"`
-	ScribeInitialized    bool   `json:"scribe_initialized"`
-	RetrieverInitialized bool   `json:"retriever_initialized"`
+	OK    bool   `json:"ok"`
+	State string `json:"state"`
 	// LastBootError mirrors ConsoleInfo.LastBootError so callers (agent, UI)
 	// can fast-fail on this single response — no follow-up diagnostics call
 	// needed for the common case of "reload finished, boot failed, here's
@@ -751,10 +736,7 @@ func (s *LifecycleService) ReloadPipelines(ctx context.Context) (*ReloadPipeline
 		State: s.State.Current().String(),
 	}
 
-	if s.State.Current() == lifecycle.StateActive {
-		result.ScribeInitialized = true
-		result.RetrieverInitialized = true
-	} else {
+	if s.State.Current() != lifecycle.StateActive {
 		// Boot did not reach active within the 5s wait window. Surface the
 		// most recent classified boot error so the caller can fast-fail
 		// without needing a separate diagnostics call. May still be nil

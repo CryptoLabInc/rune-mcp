@@ -174,7 +174,7 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 		handleRecall(deps))
 	// Read / diagnostic tools — bypass state gate.
 	mustAdd(srv, deps.Inflight, "diagnostics",
-		"Collect a 6-section health snapshot (env / state / console / keys / pipelines / embedding).",
+		"Collect a 5-section health snapshot (env / state / console / keys / embedding).",
 		handleDiagnostics(deps))
 	mustAdd(srv, deps.Inflight, "configure",
 		"Use to connect Rune to its Console: first-time setup, or reconnecting with a new invite. Pass the registration_string (the runev1_… string from the invite email) — the server bootstraps the endpoint, token, and pinned CA from it.",
