@@ -3,62 +3,44 @@ package service
 import (
 	"context"
 	"errors"
-	"log/slog"
 
-	sdk "github.com/CryptoLabInc/envector-go-sdk"
-
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/envector"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
 )
 
-// We cannot easily rely on tranport interceptor since Insert and Score are streaming gRPC
-// Below helpers replicate interceptor: wait for retrigger on a retryable failure then retry once
+// These helpers replicate the transport interceptor: on a retryable console
+// failure, wait for the pipeline to become active again, then retry once.
 
-func insertWithRecovery(ctx context.Context, state *lifecycle.Manager, c envector.Client, req envector.InsertRequest) (*envector.InsertResult, error) {
-	res, err := c.Insert(ctx, req)
+func insertWithRecovery(ctx context.Context, state *lifecycle.Manager, c console.Client, item console.InsertItem) (string, error) {
+	id, err := c.Insert(ctx, item)
 	if err == nil {
-		return res, nil
+		return id, nil
 	}
-	if errors.Is(err, sdk.ErrAlreadyExists) {
-		slog.Info("capture: insert request_id already committed (idempotent retry)",
-			"request_id", req.RequestID)
-		return &envector.InsertResult{}, nil
+	if state == nil || !isConsoleRetryable(err) {
+		return "", err
 	}
-	if state == nil || !isEnvectorRetryable(err) {
-		return nil, err
-	}
-
 	if !state.WaitForActive(ctx, lifecycle.RecoverTimeout) {
-		return nil, err
+		return "", err
 	}
-
-	res, err = c.Insert(ctx, req)
-	if err == nil {
-		return res, nil
-	}
-	if errors.Is(err, sdk.ErrAlreadyExists) {
-		slog.Info("capture: insert request_id already committed on retry",
-			"request_id", req.RequestID)
-		return &envector.InsertResult{}, nil
-	}
-	return nil, err
+	// Same item (same ID) — the forward is idempotent on retry.
+	return c.Insert(ctx, item)
 }
 
-func scoreWithRecovery(ctx context.Context, state *lifecycle.Manager, c envector.Client, vec []float32) ([][]byte, error) {
-	blobs, err := c.Score(ctx, vec)
+func searchWithRecovery(ctx context.Context, state *lifecycle.Manager, c console.Client, vec []float32, topK int) ([]console.Hit, error) {
+	hits, err := c.Search(ctx, vec, topK)
 	if err == nil {
-		return blobs, nil
+		return hits, nil
 	}
-	if state == nil || !isEnvectorRetryable(err) {
+	if state == nil || !isConsoleRetryable(err) {
 		return nil, err
 	}
 	if !state.WaitForActive(ctx, lifecycle.RecoverTimeout) {
 		return nil, err
 	}
-	return c.Score(ctx, vec)
+	return c.Search(ctx, vec, topK)
 }
 
-func isEnvectorRetryable(err error) bool {
-	var e *envector.Error
+func isConsoleRetryable(err error) bool {
+	var e *console.Error
 	return errors.As(err, &e) && e.Retryable
 }

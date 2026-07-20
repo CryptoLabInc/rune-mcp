@@ -1,10 +1,8 @@
 // Package config loads ~/.rune/config.json (3-section schema, Go v0.4).
-// Spec: docs/v04/spec/components/rune-mcp.md §Config.
-// Python: agents/common/config.py (365 LoC) — Go reduced from 7 sections to 3.
 //
-// Dropped sections (per scope SOT — docs/v04/overview/architecture.md):
+// Dropped sections:
 //
-//	envector / embedding / llm / scribe / retriever — moved to Vault bundle
+//	runespace / embedding / llm / scribe / retriever — moved to Console bundle
 //	(memory only) or external embedder process.
 package config
 
@@ -14,26 +12,43 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/keyring"
 )
 
 // Config — top-level. Read-only by rune-mcp (write path: /rune:configure CLI).
 type Config struct {
-	Vault         VaultConfig    `json:"vault"`
+	Console ConsoleConfig `json:"console"`
+
 	State         string         `json:"state"` // "active" | "dormant"
 	DormantReason string         `json:"dormant_reason,omitempty"`
 	DormantSince  string         `json:"dormant_since,omitempty"` // RFC3339 UTC
 	Metadata      map[string]any `json:"metadata,omitempty"`      // configVersion/lastUpdated/installedFrom
 }
 
-// VaultConfig — connection + auth.
-type VaultConfig struct {
-	Endpoint   string `json:"endpoint"` // tcp://host:port | http(s)://... | host[:port]
-	Token      string `json:"token"`
-	CACert     string `json:"ca_cert,omitempty"`
-	TLSDisable bool   `json:"tls_disable,omitempty"`
+// Token storage modes for ConsoleConfig.TokenStorage.
+const (
+	// TokenStorageConfig keeps the token in this file (Token field); also the
+	// implied mode when TokenStorage is empty.
+	TokenStorageConfig = "config"
+	// TokenStorageKeyring keeps the token in the OS keyring; the Token field is
+	// blank and the value is read from the keyring keyed by Endpoint.
+	TokenStorageKeyring = "keyring"
+)
+
+// ConsoleConfig — connection + auth.
+type ConsoleConfig struct {
+	Endpoint string `json:"endpoint"` // tcp://host:port | http(s)://... | host[:port]
+	// Token holds the access token when TokenStorage != "keyring". It is blank
+	// when the token lives in the OS keyring.
+	Token  string `json:"token,omitempty"`
+	CACert string `json:"ca_cert,omitempty"`
+	// TokenStorage selects where the token is read from: "keyring" (OS secret
+	// store, keyed by Endpoint) or "config"/"" (the Token field above).
+	TokenStorage string `json:"token_storage,omitempty"`
 }
 
-// FilePerms — per rune-mcp.md §Config:
+// FilePerms:
 //
 //	~/.rune/               0700
 //	~/.rune/config.json    0600
@@ -56,6 +71,25 @@ func (c *Config) IsActive() bool {
 	return c.State == "active"
 }
 
+// ResolveToken returns the effective console token. When TokenStorage is
+// "keyring" it reads the OS keyring (keyed by Endpoint); otherwise it returns
+// the in-file Token. A keyring miss or an unusable keyring is an error — the
+// caller configured keyring storage, so silently falling back to an empty token
+// would connect unauthenticated.
+func (c *Config) ResolveToken() (string, error) {
+	if c.Console.TokenStorage != TokenStorageKeyring {
+		return c.Console.Token, nil
+	}
+	tok, ok, err := keyring.Get(c.Console.Endpoint)
+	if err != nil {
+		return "", fmt.Errorf("config: read token from keyring: %w", err)
+	}
+	if !ok {
+		return "", fmt.Errorf("config: token_storage=keyring but no keyring entry for %q (re-run /rune:configure)", c.Console.Endpoint)
+	}
+	return tok, nil
+}
+
 func RuneDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -70,6 +104,32 @@ func DefaultConfigPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "config.json"), nil // ~/.rune/config.json
+}
+
+// ConsoleCAPath is where the bootstrap persists the console's pinned CA.
+func ConsoleCAPath() (string, error) {
+	dir, err := RuneDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "console-ca.pem"), nil // ~/.rune/console-ca.pem
+}
+
+// SaveConsoleCA writes the pinned CA PEM to ~/.rune/console-ca.pem (0600) and
+// returns its path. The path is what /rune:configure stores as console.ca_cert
+// so subsequent connections verify against the pinned anchor.
+func SaveConsoleCA(pem []byte) (string, error) {
+	if err := EnsureDirectories(); err != nil {
+		return "", fmt.Errorf("config: ensure directories: %w", err)
+	}
+	path, err := ConsoleCAPath()
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, pem, FilePerm); err != nil {
+		return "", fmt.Errorf("config: write CA %s: %w", path, err)
+	}
+	return path, nil
 }
 
 func Load() (*Config, error) {

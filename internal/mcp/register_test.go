@@ -1,9 +1,8 @@
 // Phase A.5 smoke tests — in-memory MCP server/client to assert that the
-// 8-tool catalog and state-gated handlers survive future refactors.
+// 7-tool catalog and state-gated handlers survive future refactors.
 //
-// These mirror the bash/jq cookbook in docs/v04/progress/phase-a-mcp-boot.md
-// §4.2 (tools/list) and §4.3 (tools/call). Replacing the cookbook with Go
-// tests turns the verification into a CI gate.
+// These exercise tools/list and tools/call, replacing the old bash/jq cookbook
+// with Go tests that turn the verification into a CI gate.
 
 package mcp_test
 
@@ -20,28 +19,24 @@ import (
 )
 
 // expectedTools — alphabetical order matches what the SDK advertises in
-// tools/list (Python rune v0.3.x bit-identical names).
+// tools/list.
 var expectedTools = []string{
 	"activate",
-	"batch_capture",
 	"capture",
-	"capture_history",
 	"configure",
+	"deactivate",
 	"diagnostics",
 	"recall",
-	"reload_pipelines",
-	"vault_status",
 }
 
 // newSession spins up an in-memory MCP server with all registered tools
-// (delete_capture is intentionally gated out this release — see Register)
 // and returns a connected client session ready for tools/list and tools/call.
 //
 // Deps mirrors a "boot has not progressed past starting" state: the Manager
 // is freshly constructed (StateStarting) and services are zero-valued. With
 // State == StateStarting, write tools return PIPELINE_NOT_READY through the
-// CheckState gate. Read-only tools (vault_status / diagnostics /
-// capture_history) bypass the gate but their service nil-checks must hold.
+// CheckState gate. Read-only tools (diagnostics) bypass the gate but their
+// service nil-checks must hold.
 func newSession(t *testing.T) *sdkmcp.ClientSession {
 	t.Helper()
 	ctx := t.Context()
@@ -131,51 +126,12 @@ func TestRegister_SchemasInferred(t *testing.T) {
 	}
 }
 
-// TestRegister_BatchCaptureItemsDescribed — the `items` param is string-typed,
-// so the inferred schema cannot express the per-element shape. The jsonschema
-// struct tag on BatchCaptureArgs.Items is the only place that steers the model
-// away from the wrong-by-analogy [{text, extracted}, ...] wrapper. Lock the
-// description into the surfaced inputSchema so a dropped tag is caught here, not
-// by a user's first failed call.
-func TestRegister_BatchCaptureItemsDescribed(t *testing.T) {
-	cs := newSession(t)
-
-	res, err := cs.ListTools(t.Context(), &sdkmcp.ListToolsParams{})
-	if err != nil {
-		t.Fatalf("ListTools: %v", err)
-	}
-
-	var found bool
-	for _, tool := range res.Tools {
-		if tool.Name != "batch_capture" {
-			continue
-		}
-		found = true
-		raw, err := json.Marshal(tool.InputSchema)
-		if err != nil {
-			t.Fatalf("marshal InputSchema: %v", err)
-		}
-		// The tag value is surfaced verbatim as the property description; assert
-		// the load-bearing phrases survive into the schema the model reads.
-		for _, want := range []string{"FLAT", "wrapper"} {
-			if !strings.Contains(string(raw), want) {
-				t.Errorf("batch_capture items description missing %q; schema=%s", want, raw)
-			}
-		}
-	}
-	if !found {
-		t.Fatal("batch_capture not present in tools/list")
-	}
-}
-
-// TestRegister_WriteToolsGated — write tools (capture, batch_capture, recall)
+// TestRegister_WriteToolsGated — write tools (capture, recall)
 // must surface PIPELINE_NOT_READY when Deps.State is in StateStarting. Confirms
-// the CheckState gate fires before service dispatch. (delete_capture is gated
-// out of registration this release — see TestRegister_DeleteCaptureHidden.)
+// the CheckState gate fires before service dispatch.
 //
-// reload_pipelines is intentionally NOT gated (it is the dormant→active
-// unblocker / `/rune:activate` handler per rune-mcp.md). Smoke tests for it
-// live in the diagnostic suite once an envector mock is in place.
+// activate / deactivate are intentionally NOT gated — they are the state
+// toggles themselves and must run from any state.
 func TestRegister_WriteToolsGated(t *testing.T) {
 	cs := newSession(t)
 
@@ -183,8 +139,7 @@ func TestRegister_WriteToolsGated(t *testing.T) {
 		name string
 		args map[string]any
 	}{
-		{"batch_capture", map[string]any{"items": "[]"}},
-		{"capture", map[string]any{"text": "hi", "source": "test", "extracted": map[string]any{}}},
+		{"capture", map[string]any{"insight": "hi"}},
 		{"recall", map[string]any{"query": "hello"}},
 	}
 
@@ -214,37 +169,9 @@ func TestRegister_WriteToolsGated(t *testing.T) {
 	}
 }
 
-// TestRegister_DeleteCaptureHidden — delete_capture is intentionally gated out
-// of registration for this release (see Register in tools.go: the by-ID lookup
-// is unreliable, so the tool is hidden rather than shipped broken). It must not
-// appear in tools/list and must be uncallable. Re-enabling the registration
-// should flip this test — restore delete_capture to expectedTools and the
-// WriteToolsGated suite at the same time.
-func TestRegister_DeleteCaptureHidden(t *testing.T) {
-	cs := newSession(t)
-
-	res, err := cs.ListTools(t.Context(), &sdkmcp.ListToolsParams{})
-	if err != nil {
-		t.Fatalf("ListTools: %v", err)
-	}
-	for _, tool := range res.Tools {
-		if tool.Name == "delete_capture" {
-			t.Fatalf("delete_capture is registered but must be hidden this release")
-		}
-	}
-
-	// Unregistered tool → transport-level "unknown tool" error.
-	if _, err := cs.CallTool(t.Context(), &sdkmcp.CallToolParams{
-		Name:      "delete_capture",
-		Arguments: map[string]any{"record_id": "test-id"},
-	}); err == nil {
-		t.Fatal("CallTool delete_capture: got nil error, want unknown-tool error")
-	}
-}
-
-// TestRegister_ReadOnlyToolsBypassGate — vault_status / diagnostics /
-// capture_history must respond successfully (no PIPELINE_NOT_READY) even
-// when State == StateStarting. Per rune-mcp.md these tools work
+// TestRegister_ReadOnlyToolsBypassGate — diagnostics
+// must respond successfully (no PIPELINE_NOT_READY) even
+// when State == StateStarting. These tools work
 // degraded so the operator can troubleshoot pre-active.
 func TestRegister_ReadOnlyToolsBypassGate(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // TempDir as $HOME
@@ -262,15 +189,6 @@ func TestRegister_ReadOnlyToolsBypassGate(t *testing.T) {
 		mustNotContain []string
 	}{
 		{
-			// nil Vault → "standard mode"
-			name:        "vault_status",
-			args:        nil,
-			mustContain: []string{`"vault_configured":false`, "standard"},
-			mustNotContain: []string{
-				"PIPELINE_NOT_READY",
-			},
-		},
-		{
 			// Diagnostics returns the 7-section snapshot; environment section
 			// always populated. We avoid asserting on `state` because it
 			// reflects config.json contents (not runtime Manager) and the
@@ -278,43 +196,17 @@ func TestRegister_ReadOnlyToolsBypassGate(t *testing.T) {
 			// `LifecycleService.Diagnostics` for the read path.
 			name:        "diagnostics",
 			args:        nil,
-			mustContain: []string{`"environment"`, `"vault"`, `"keys"`, `"embedding"`},
+			mustContain: []string{`"environment"`, `"console"`, `"keys"`, `"embedding"`},
 			mustNotContain: []string{
 				"PIPELINE_NOT_READY",
 			},
 		},
 		{
-			// CaptureHistory reads ~/.rune/capture_log.jsonl (likely missing in test env);
-			// the handler should still respond without error (entries: empty, ok: true).
-			name:        "capture_history",
-			args:        map[string]any{"limit": 5.0},
-			mustContain: []string{`"ok":true`},
-			mustNotContain: []string{
-				"PIPELINE_NOT_READY",
-			},
-		},
-		{
-			name: "configure",
-			args: map[string]any{
-				"endpoint": "tcp://test.example:50051",
-				"token":    "test-token",
-			},
-			mustContain: []string{
-				`"ok":true`,
-				`"state":"active"`,
-				`"configured_at"`,
-				`"next_step"`,
-				`"vault_reachable":false`,
-				`"probe_error"`,
-			},
-			mustNotContain: []string{
-				"PIPELINE_NOT_READY",
-			},
-		},
-		{
+			// No config in the test env → activate short-circuits to
+			// configure_required before the runed/install checks.
 			name:        "activate",
 			args:        nil,
-			mustContain: []string{`"ok":true`, `"status":"install_pending"`, `"hint"`, "rune CLI not found"},
+			mustContain: []string{`"ok":true`, `"status":"configure_required"`, `"hint"`},
 			mustNotContain: []string{
 				"PIPELINE_NOT_READY",
 			},
@@ -368,7 +260,7 @@ func TestRegister_ErrorResultPreservesRuneError(t *testing.T) {
 
 	res, err := cs.CallTool(t.Context(), &sdkmcp.CallToolParams{
 		Name:      "capture",
-		Arguments: map[string]any{"text": "hi", "source": "test", "extracted": map[string]any{}},
+		Arguments: map[string]any{"insight": "hi"},
 	})
 	if err != nil {
 		t.Fatalf("CallTool transport: %v", err)

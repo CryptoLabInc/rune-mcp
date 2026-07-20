@@ -11,8 +11,6 @@ import (
 
 // infoCache caches the embedder Info RPC response.
 //
-// Spec: docs/v04/spec/components/embedder.md §Info 캐시.
-//
 // Behavior:
 //   - Success: snapshot cached for the lifetime of the cache
 //   - Error  : NOT cached. The next Get() re-attempts the RPC. Within the cooldown
@@ -47,11 +45,12 @@ func (ic *infoCache) Get(ctx context.Context) (InfoSnapshot, error) {
 		return InfoSnapshot{}, err
 	}
 	ic.snap = InfoSnapshot{
-		DaemonVersion: resp.GetDaemonVersion(),
-		ModelIdentity: resp.GetModelIdentity(),
-		VectorDim:     int(resp.GetVectorDim()),
-		MaxTextLength: int(resp.GetMaxTextLength()),
-		MaxBatchSize:  int(resp.GetMaxBatchSize()),
+		DaemonVersion:      resp.GetDaemonVersion(),
+		ModelIdentity:      resp.GetModelIdentity(),
+		VectorDim:          int(resp.GetVectorDim()),
+		MaxTextLength:      int(resp.GetMaxTextLength()),
+		MaxBatchSize:       int(resp.GetMaxBatchSize()),
+		CentroidSetVersion: resp.GetCentroidSetVersion(),
 	}
 	ic.loaded = true
 	ic.lastErr = nil

@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,29 +10,25 @@ import (
 	"sync"
 	"time"
 
+	"github.com/CryptoLabInc/rune-console/pkg/regstr"
+
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/envector"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/logio"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/vault"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/keyring"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
 	"github.com/CryptoLabInc/rune-mcp/internal/spawn"
 )
 
-// LifecycleService holds the 6 lifecycle/operational tool implementations.
-// Spec: docs/v04/spec/flows/lifecycle.md.
+// LifecycleService holds the lifecycle/operational tool implementations.
 type LifecycleService struct {
-	Vault     vault.Client
-	Envector  envector.Client
-	State     *lifecycle.Manager
-	IndexName string
-	ConfigDir string // for CaptureHistory reading capture_log.jsonl
+	Console console.Client
+	State   *lifecycle.Manager
 
-	// Key state (for diagnostics)
-	EncKeyLoaded bool
-	KeyID        string
-	AgentDEK     []byte
+	// Key state (for diagnostics). In the runespace model the console is the sole
+	// key custodian; mcp holds no key material, only the KeyID from the manifest.
+	KeyID string
 
 	bootstrapWatcherMu      sync.Mutex
 	bootstrapWatcherRunning bool
@@ -60,62 +55,10 @@ func (s *LifecycleService) SetEmbedder(c embedder.Client) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. rune_vault_status — read-only. server.py:L496-528. Spec §1.
+// rune_diagnostics — read-only.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// VaultStatusResult — lifecycle.md §1.
-type VaultStatusResult struct {
-	OK                    bool    `json:"ok"`
-	VaultConfigured       bool    `json:"vault_configured"`
-	VaultEndpoint         *string `json:"vault_endpoint,omitempty"`
-	SecureSearchAvailable bool    `json:"secure_search_available"`
-	Mode                  string  `json:"mode"` // "secure (Vault-backed)" | "standard (no Vault)"
-	VaultHealthy          *bool   `json:"vault_healthy,omitempty"`
-	TeamIndexName         *string `json:"team_index_name,omitempty"`
-	Warning               *string `json:"warning,omitempty"`
-}
-
-// VaultStatus — branches on vault == nil (standard mode) vs configured.
-func (s *LifecycleService) VaultStatus(ctx context.Context) (*VaultStatusResult, error) {
-	if s.Vault == nil {
-		warning := "secret key may be accessible locally. Configure Vault for secure mode."
-		return &VaultStatusResult{
-			OK:              true,
-			VaultConfigured: false,
-			Mode:            "standard (no Vault)",
-			Warning:         &warning,
-		}, nil
-	}
-
-	endpoint := s.Vault.Endpoint()
-	healthy, err := s.Vault.HealthCheck(ctx)
-	if err != nil {
-		slog.Warn("vault health check failed", "err", err)
-		h := false
-		return &VaultStatusResult{
-			OK:              true,
-			VaultConfigured: true,
-			VaultEndpoint:   &endpoint,
-			VaultHealthy:    &h,
-			Mode:            "secure (Vault-backed)",
-		}, nil
-	}
-
-	return &VaultStatusResult{
-		OK:                    true,
-		VaultConfigured:       true,
-		VaultEndpoint:         &endpoint,
-		SecureSearchAvailable: healthy,
-		Mode:                  "secure (Vault-backed)",
-		VaultHealthy:          &healthy,
-	}, nil
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 2. rune_diagnostics — read-only. server.py:L540-684. Spec §2.
-// ─────────────────────────────────────────────────────────────────────────────
-
-// DiagnosticsResult — aggregates 7 sub-sections (env + runtime ×6). Install
+// DiagnosticsResult — aggregates 6 sub-sections (env + runtime ×5). Install
 // state (config.json, runed binary, model file, socket) is a substrate
 // concern owned by the `rune` CLI; agents wanting that visibility shell
 // out to `rune verify` separately. Keeping the MCP server's diagnostics
@@ -126,11 +69,9 @@ type DiagnosticsResult struct {
 	State         *string       `json:"state,omitempty"`
 	DormantReason *string       `json:"dormant_reason,omitempty"`
 	DormantSince  *string       `json:"dormant_since,omitempty"`
-	Vault         VaultInfo     `json:"vault"`
+	Console       ConsoleInfo   `json:"console"`
 	Keys          KeysInfo      `json:"keys"`
-	Pipelines     PipelinesInfo `json:"pipelines"`
 	Embedding     EmbeddingInfo `json:"embedding"`
-	Envector      EnvectorInfo  `json:"envector"`
 }
 
 // EnvInfo — OS, Go runtime version, cwd.
@@ -141,17 +82,17 @@ type EnvInfo struct {
 	GOArch  string `json:"goarch"`
 }
 
-// VaultInfo — subset exposed in diagnostics.
+// ConsoleInfo — subset exposed in diagnostics.
 //
-// Configured = a Vault gRPC client is wired (boot loop reached Active).
+// Configured = a Console gRPC client is wired (boot loop reached Active).
 // Healthy    = the most recent HealthCheck succeeded.
 // Error      = HealthCheck error (operational, set only when Healthy=false).
 // LastBootError = structured boot failure from lifecycle.Manager. Surfaces
 //
-//	the actual reason for waiting_for_vault state — agents
+//	the actual reason for waiting_for_console state — agents
 //	branch on .kind to fast-fail without manual probing. Nil
 //	when boot has succeeded or no attempt has been made yet.
-type VaultInfo struct {
+type ConsoleInfo struct {
 	Configured    bool              `json:"configured"`
 	Healthy       bool              `json:"healthy"`
 	Endpoint      string            `json:"endpoint,omitempty"`
@@ -159,17 +100,14 @@ type VaultInfo struct {
 	LastBootError *domain.BootError `json:"last_boot_error,omitempty"`
 }
 
-// KeysInfo — memory-resident key state.
+// KeysInfo — key custody status. In the runespace model the console is the sole
+// key custodian (EncKey/EvalKey/SecKey never leave it); the mcp process holds
+// no key material. Key readiness is not reported here: it has no signal
+// independent of console.healthy (the same HealthCheck probe), so callers should
+// read console.healthy instead.
 type KeysInfo struct {
-	EncKeyLoaded   bool   `json:"enc_key_loaded"`
-	KeyID          string `json:"key_id,omitempty"`
-	AgentDEKLoaded bool   `json:"agent_dek_loaded"`
-}
-
-// PipelinesInfo — scribe/retriever init state.
-type PipelinesInfo struct {
-	ScribeInitialized    bool `json:"scribe_initialized"`
-	RetrieverInitialized bool `json:"retriever_initialized"`
+	Custodian string `json:"custodian"` // "console" — sole key holder
+	KeyID     string `json:"key_id,omitempty"`
 }
 
 // EmbeddingInfo - external embedder info snapshot
@@ -178,7 +116,6 @@ type PipelinesInfo struct {
 // LOADING
 type EmbeddingInfo struct {
 	Model         string `json:"model"`
-	Mode          string `json:"mode"` // "external gRPC"
 	VectorDim     int    `json:"vector_dim,omitempty"`
 	DaemonVersion string `json:"daemon_version,omitempty"`
 	SocketPath    string `json:"socket_path,omitempty"`
@@ -193,20 +130,10 @@ type EmbeddingInfo struct {
 	HealthError   string `json:"health_error,omitempty"`
 }
 
-// EnvectorInfo — reachability probe
-type EnvectorInfo struct {
-	Reachable bool    `json:"reachable"`
-	LatencyMs float64 `json:"latency_ms,omitempty"`
-	Error     string  `json:"error,omitempty"`
-	ErrorType string  `json:"error_type,omitempty"` // connection_refused|auth_failure|deadline_exceeded|timeout|unknown
-	ElapsedMs float64 `json:"elapsed_ms,omitempty"`
-	Hint      string  `json:"hint,omitempty"`
-}
-
-// DiagnosticsTimeout — Python ENVECTOR_DIAGNOSIS_TIMEOUT (server.py:L633). 5s.
+// DiagnosticsTimeout — per-probe deadline for diagnostics HealthCheck calls. 5s.
 const DiagnosticsTimeout = 5 * time.Second
 
-// Diagnostics collects all 7 sections + derives top-level OK.
+// Diagnostics collects all 6 sections + derives top-level OK.
 func (s *LifecycleService) Diagnostics(ctx context.Context) *DiagnosticsResult {
 	r := &DiagnosticsResult{OK: true}
 
@@ -232,43 +159,30 @@ func (s *LifecycleService) Diagnostics(ctx context.Context) *DiagnosticsResult {
 		}
 	}
 
-	// Vault
-	r.Vault = s.collectVault(ctx, DiagnosticsTimeout)
+	// Console
+	r.Console = s.collectConsole(ctx, DiagnosticsTimeout)
 
 	// Keys
 	r.Keys = KeysInfo{
-		EncKeyLoaded:   s.EncKeyLoaded,
-		KeyID:          s.KeyID,
-		AgentDEKLoaded: len(s.AgentDEK) > 0,
-	}
-
-	// Pipelines
-	r.Pipelines = PipelinesInfo{
-		ScribeInitialized:    s.State != nil && s.State.Current() == lifecycle.StateActive,
-		RetrieverInitialized: s.State != nil && s.State.Current() == lifecycle.StateActive,
+		Custodian: "console",
+		KeyID:     s.KeyID,
 	}
 
 	// Embedding
 	r.Embedding = s.collectEmbedding(ctx, DiagnosticsTimeout)
 
-	// Envector
-	r.Envector = s.collectEnvector(ctx, DiagnosticsTimeout)
-
-	if s.Vault != nil && !r.Vault.Healthy {
-		r.OK = false
-	}
-	if !r.Keys.EncKeyLoaded {
+	if s.Console != nil && !r.Console.Healthy {
 		r.OK = false
 	}
 
 	return r
 }
 
-func (s *LifecycleService) collectVault(ctx context.Context, timeout time.Duration) VaultInfo {
-	info := VaultInfo{Configured: s.Vault != nil}
+func (s *LifecycleService) collectConsole(ctx context.Context, timeout time.Duration) ConsoleInfo {
+	info := ConsoleInfo{Configured: s.Console != nil}
 
 	// Surface the most recent boot failure regardless of client state.
-	// When the boot loop is stuck on waiting_for_vault, s.Vault is nil but
+	// When the boot loop is stuck on waiting_for_console, s.Console is nil but
 	// LastBootError holds the actual reason — agents need this to skip
 	// expensive trial-and-error diagnosis.
 	if s.State != nil {
@@ -277,16 +191,16 @@ func (s *LifecycleService) collectVault(ctx context.Context, timeout time.Durati
 		}
 	}
 
-	if s.Vault == nil {
+	if s.Console == nil {
 		return info
 	}
 
-	info.Endpoint = s.Vault.Endpoint()
+	info.Endpoint = s.Console.Endpoint()
 
 	ctx2, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	healthy, err := s.Vault.HealthCheck(ctx2)
+	healthy, err := s.Console.HealthCheck(ctx2)
 	if err != nil {
 		info.Error = err.Error()
 	}
@@ -297,7 +211,7 @@ func (s *LifecycleService) collectVault(ctx context.Context, timeout time.Durati
 }
 
 func (s *LifecycleService) collectEmbedding(ctx context.Context, timeout time.Duration) EmbeddingInfo {
-	info := EmbeddingInfo{Mode: "external gRPC"}
+	info := EmbeddingInfo{}
 	e := s.Embedder()
 	if e == nil {
 		return info
@@ -332,214 +246,22 @@ func (s *LifecycleService) collectEmbedding(ctx context.Context, timeout time.Du
 	return info
 }
 
-func (s *LifecycleService) collectEnvector(ctx context.Context, timeout time.Duration) EnvectorInfo {
-	if s.Envector == nil {
-		return EnvectorInfo{}
-	}
-	info, _ := s.probeEnvector(ctx, timeout)
-	return info
-}
-
-func (s *LifecycleService) probeEnvector(ctx context.Context, timeout time.Duration) (EnvectorInfo, error) {
-	ctx2, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	ch := make(chan error, 1)
-	t0 := time.Now()
-
-	go func() {
-		_, err := s.Envector.GetIndexList(ctx2)
-		ch <- err
-	}()
-
-	select {
-	case probeErr := <-ch:
-		elapsed := time.Since(t0)
-		if probeErr == nil {
-			return EnvectorInfo{
-				Reachable: true,
-				LatencyMs: float64(elapsed.Milliseconds()),
-			}, nil
-		}
-		errType, hint := ClassifyEnvectorError(probeErr, elapsed)
-		return EnvectorInfo{
-			Error:     probeErr.Error(),
-			ErrorType: string(errType),
-			Hint:      hint,
-			ElapsedMs: float64(elapsed.Milliseconds()),
-		}, probeErr
-	case <-ctx2.Done():
-		elapsed := time.Since(t0)
-		return EnvectorInfo{
-			Error: fmt.Sprintf(
-				"Health check timed out after %.0fs (elapsed: %.1fms).",
-				timeout.Seconds(), float64(elapsed.Milliseconds()),
-			),
-			ErrorType: string(EnvErrTimeout),
-			ElapsedMs: float64(elapsed.Milliseconds()),
-		}, ctx2.Err()
-	}
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
-// 3. rune_capture_history — read-only. server.py:L1092-1111. Spec §4.
+// rune_configure — write Console credentials to $HOME/.rune/config.json.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// CaptureHistoryArgs — limit default 20, max 100.
-type CaptureHistoryArgs struct {
-	Limit  int     `json:"limit,omitempty"`
-	Domain *string `json:"domain,omitempty"`
-	Since  *string `json:"since,omitempty"` // ISO date lex compare
-}
-
-// CaptureHistoryResult — entries preserved as map for format flexibility.
-type CaptureHistoryResult struct {
-	OK      bool             `json:"ok"`
-	Count   int              `json:"count"`
-	Entries []map[string]any `json:"entries"`
-}
-
-// CaptureHistory — reverse-read capture_log.jsonl, filter, cap at limit.
-func (s *LifecycleService) CaptureHistory(_ context.Context, args CaptureHistoryArgs) (*CaptureHistoryResult, error) {
-	limit := args.Limit
-	if limit <= 0 {
-		limit = 20
-	}
-	if limit > 100 {
-		limit = 100
-	}
-
-	logPath := filepath.Join(s.ConfigDir, logio.DefaultFilename)
-	entries, err := logio.Tail(logPath, limit, args.Domain, args.Since)
-	if err != nil {
-		slog.Warn("capture history read failed (degraded)", "err", err)
-		return &CaptureHistoryResult{OK: true, Entries: []map[string]any{}}, nil
-	}
-
-	// Convert to map[string]any for format flexibility
-	mapEntries := make([]map[string]any, len(entries))
-	for i, e := range entries {
-		data, _ := json.Marshal(e)
-		var m map[string]any
-		_ = json.Unmarshal(data, &m)
-		mapEntries[i] = m
-	}
-
-	return &CaptureHistoryResult{
-		OK:      true,
-		Count:   len(mapEntries),
-		Entries: mapEntries,
-	}, nil
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 4. rune_delete_capture — soft-delete. server.py:L1123-1206. Spec §5.
-// ─────────────────────────────────────────────────────────────────────────────
-
-// DeleteCaptureArgs — single record ID target.
-type DeleteCaptureArgs struct {
-	RecordID string `json:"record_id"`
-}
-
-// DeleteCaptureResult.
-type DeleteCaptureResult struct {
-	OK       bool   `json:"ok"`
-	Deleted  bool   `json:"deleted"`
-	RecordID string `json:"record_id"`
-	Title    string `json:"title"`
-	Method   string `json:"method"` // "soft-delete (status=reverted)"
-}
-
-// DeleteCapture — soft-delete workflow:
-//  1. SearchByID(id): find record
-//  2. set metadata["status"] = "reverted"
-//  3. re-embed + re-insert
-//  4. capture_log append with mode="soft-delete", action="deleted"
-func (s *LifecycleService) DeleteCapture(ctx context.Context, args DeleteCaptureArgs, capSvc *CaptureService) (*DeleteCaptureResult, error) {
-	// Search by ID
-	hit, err := SearchByID(ctx, s.Embedder(), s.Vault, s.Envector, s.IndexName, args.RecordID)
-	if err != nil {
-		return nil, fmt.Errorf("delete: search by ID: %w", err)
-	}
-	if hit == nil {
-		return nil, &domain.RuneError{
-			Code:    domain.CodeInvalidInput,
-			Message: fmt.Sprintf("record %s not found", args.RecordID),
-		}
-	}
-
-	// Mutate metadata
-	metadata := hit.Metadata
-	if metadata == nil {
-		metadata = make(map[string]any)
-	}
-	metadata["status"] = "reverted"
-	title := hit.Title
-
-	// Re-embed + re-insert
-	embedText := hit.ReusableInsight
-	if embedText == "" {
-		embedText = hit.PayloadText
-	}
-
-	vec, err := s.Embedder().EmbedSingle(ctx, embedText)
-	if err != nil {
-		return nil, fmt.Errorf("delete: re-embed: %w", err)
-	}
-
-	body, err := json.Marshal(metadata)
-	if err != nil {
-		return nil, fmt.Errorf("delete: marshal: %w", err)
-	}
-
-	if capSvc == nil || len(capSvc.AgentDEK) == 0 || capSvc.AgentID == "" {
-		return nil, fmt.Errorf("delete: missing agent DEK or ID for encryption")
-	}
-
-	envelope, err := envector.Seal(capSvc.AgentDEK, capSvc.AgentID, body)
-	if err != nil {
-		return nil, fmt.Errorf("delete: seal: %w", err)
-	}
-
-	insertReq := envector.InsertRequest{
-		Vectors:  [][]float32{vec},
-		Metadata: []string{envelope},
-	}
-	_, err = s.Envector.Insert(ctx, insertReq)
-	if err != nil {
-		return nil, fmt.Errorf("delete: re-insert: %w", err)
-	}
-
-	// Capture log
-	if capSvc != nil && capSvc.CaptureLog != nil {
-		_ = capSvc.CaptureLog.Append(domain.CaptureLogEntry{
-			TS:     time.Now().UTC().Format(time.RFC3339),
-			Action: "deleted",
-			ID:     args.RecordID,
-			Title:  title,
-			Domain: hit.Domain,
-			Mode:   "soft-delete",
-		})
-	}
-
-	return &DeleteCaptureResult{
-		OK:       true,
-		Deleted:  true,
-		RecordID: args.RecordID,
-		Title:    title,
-		Method:   "soft-delete (status=reverted)",
-	}, nil
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 5. rune_configure — write Vault credentials to $HOME/.rune/config.json.
-// ─────────────────────────────────────────────────────────────────────────────
-
+// ConfigureArgs — the configure tool takes only the registration string; the
+// server derives endpoint, token, and CA from it (see bootstrapFromRegistration).
 type ConfigureArgs struct {
-	Endpoint   string `json:"endpoint"`
-	Token      string `json:"token"`
-	CACertPath string `json:"ca_cert_path,omitempty"`
-	TLSDisable bool   `json:"tls_disable,omitempty"`
+	RegistrationString string `json:"registration_string" jsonschema:"The one-time runev1_… string from your Rune invite email. This is the only input — the server bootstraps the endpoint, access token, and pinned CA from it."`
+}
+
+// resolvedCreds holds the Console credentials the bootstrap derives from a
+// registration string.
+type resolvedCreds struct {
+	Endpoint   string
+	Token      string
+	CACertPath string
 }
 
 type ConfigureResult struct {
@@ -551,18 +273,19 @@ type ConfigureResult struct {
 
 	// Reachable=nil  : skip probe
 	// Reachable-false: HealthCheck failed, ProbeError is the reason
-	VaultReachable *bool  `json:"vault_reachable,omitempty"`
-	ProbeError     string `json:"probe_error,omitempty"`
+	ConsoleReachable *bool  `json:"console_reachable,omitempty"`
+	ProbeError       string `json:"probe_error,omitempty"`
 }
 
-const ConfigureProbeTimeout = 5 * time.Second
-
 func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*ConfigureResult, error) {
-	if args.Endpoint == "" {
-		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "endpoint is required"}
+	if args.RegistrationString == "" {
+		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "registration_string is required"}
 	}
-	if args.Token == "" {
-		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "token is required"}
+	// The server runs the 3-stage bootstrap from the registration string: decode
+	// → fetch + pin the CA → unwrap the one-time handle into the real token.
+	creds, err := s.bootstrapFromRegistration(ctx, args.RegistrationString)
+	if err != nil {
+		return nil, err
 	}
 
 	cfg, err := config.Load()
@@ -570,12 +293,45 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 		cfg = &config.Config{} // fall back to fresh config
 	}
 
-	cfg.Vault = config.VaultConfig{
-		Endpoint:   args.Endpoint,
-		Token:      args.Token,
-		CACert:     args.CACertPath,
-		TLSDisable: args.TLSDisable,
+	// Reconfigure starts from a clean slate: drop the previous endpoint's
+	// keyring token so re-running configure (e.g. with a fresh invite) never
+	// orphans a stale secret under an old endpoint key. Best-effort — Delete is
+	// a no-op when nothing is stored and non-fatal when the keyring is
+	// unavailable.
+	if cfg.Console.Endpoint != "" {
+		_ = keyring.Delete(cfg.Console.Endpoint)
 	}
+
+	// Prefer the OS keyring for the token so it never lands in a plaintext file.
+	// Fall back to the config file (0600) when the host has no usable keyring
+	// (headless CI, no D-Bus session, locked/denied keychain).
+	consoleCfg := config.ConsoleConfig{
+		Endpoint: creds.Endpoint,
+		CACert:   creds.CACertPath,
+	}
+	if err := keyring.Set(creds.Endpoint, creds.Token); err != nil {
+		if !keyring.IsUnavailable(err) {
+			// Post-unwrap: the invite is already spent but the token could not be
+			// persisted to the keyring (locked/denied keychain, not merely
+			// absent). Same dead end as a config.Save failure — a fresh invite is
+			// required once the keyring is fixed. Do not return a generic error
+			// the caller would retry with the now-useless string.
+			return nil, &domain.RuneError{
+				Code:      domain.CodeRegistrationConsumed,
+				Message:   fmt.Sprintf("invite redeemed but storing the token in the OS keyring failed: %v", err),
+				Retryable: false,
+				RecoveryHint: "The one-time invite was consumed by this attempt but the token could not be stored in the OS keyring. " +
+					"Unlock/allow the keychain, then request a NEW invite — the same registration string can no longer be reused.",
+			}
+		}
+		slog.Warn("keyring unavailable; storing token in config file (0600)", "err", err.Error())
+		consoleCfg.Token = creds.Token
+		consoleCfg.TokenStorage = config.TokenStorageConfig
+	} else {
+		consoleCfg.TokenStorage = config.TokenStorageKeyring
+		slog.Info("console token stored in OS keyring", "endpoint", creds.Endpoint)
+	}
+	cfg.Console = consoleCfg
 	cfg.State = "active"
 	cfg.DormantReason = ""
 	cfg.DormantSince = ""
@@ -587,7 +343,16 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 	cfg.Metadata["lastUpdated"] = now
 
 	if err := config.Save(cfg); err != nil {
-		return nil, fmt.Errorf("save config: %w", err)
+		// The invite was already redeemed during bootstrap, so the handle is
+		// spent — surface that a fresh invite is needed rather than a generic
+		// save error the caller would retry in vain.
+		return nil, &domain.RuneError{
+			Code:      domain.CodeRegistrationConsumed,
+			Message:   fmt.Sprintf("invite redeemed but saving credentials failed: %v", err),
+			Retryable: false,
+			RecoveryHint: "The one-time invite was consumed by this attempt but credentials could not be written to ~/.rune. " +
+				"Resolve the local error (free disk space, fix ~/.rune permissions), then request a NEW invite — the same registration string can no longer be reused.",
+		}
 	}
 
 	path, _ := config.DefaultConfigPath()
@@ -598,45 +363,111 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 		ConfiguredAt: now,
 	}
 
-	// Vault HealthCheck
-	probeCtx, cancel := context.WithTimeout(ctx, ConfigureProbeTimeout)
-	defer cancel()
-
-	vc, probeErr := vault.NewClient(args.Endpoint, args.Token, vault.ClientOpts{
-		CACertPath: args.CACertPath,
-		TLSDisable: args.TLSDisable,
-	})
-	if probeErr == nil {
-		_, probeErr = vc.HealthCheck(probeCtx)
-		_ = vc.Close()
+	// Credentials are persisted and the one-time invite is fully consumed, so
+	// configure owns bringing the pipelines online from here: drive the real boot
+	// loop (the same path /rune:activate uses) instead of a throwaway HealthCheck.
+	// A follow-up /rune:activate then short-circuits to "already active".
+	//
+	// Any failure past this point is a connectivity/boot problem, never a
+	// spent-invite one — the invite was already redeemed above, so the recovery
+	// is /rune:activate or /rune:status and never a fresh invite. (The only
+	// spent-invite dead end is a config.Save failure, handled above with
+	// CodeRegistrationConsumed before the token could ever take effect.)
+	rr, err := s.ReloadPipelines(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("configure: bring pipelines online: %w", err)
 	}
-
-	reachable := probeErr == nil
-	result.VaultReachable = &reachable
-	if probeErr != nil {
-		result.ProbeError = probeErr.Error()
-		result.NextStep = "Vault unreachable from this host - verify endpoint/token, then run /rune:activate to retry"
-	} else {
-		result.NextStep = "Run /rune:activate to apply the new credentials"
+	result.State = rr.State
+	reachable := rr.State == lifecycle.StateActive.String()
+	result.ConsoleReachable = &reachable
+	switch {
+	case reachable:
+		result.NextStep = "Rune is active. Organizational memory is online."
+	case rr.LastBootError != nil:
+		// Boot reached a classified failure — surface its hint verbatim.
+		result.ProbeError = rr.LastBootError.Detail
+		result.NextStep = rr.LastBootError.Hint
+	case rr.ConsoleWarmup != nil && rr.ConsoleWarmup.Error != nil:
+		result.ProbeError = *rr.ConsoleWarmup.Error
+		result.NextStep = "Credentials saved but Console is not reachable yet. Run /rune:activate to retry, or /rune:status to inspect."
+	default:
+		result.NextStep = "Credentials saved but pipelines are not active yet. Run /rune:status to inspect."
 	}
 
 	return result, nil
 }
 
+// bootstrapFromRegistration runs the 3-stage connection bootstrap from an
+// opaque registration string and returns the resolved Console credentials:
+//
+//	stage 1 — decode the string, fetch the console CA over an untrusted channel,
+//	          verify it against the pinned SHA-256, and persist it.
+//	stage 2 — dial with the pinned CA and unwrap the one-time handle → real token.
+//	stage 3 — (the caller) write the resolved credentials + probe the console.
+func (s *LifecycleService) bootstrapFromRegistration(ctx context.Context, regString string) (*resolvedCreds, error) {
+	reg, err := regstr.Decode(regString)
+	if err != nil {
+		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "invalid registration string: " + err.Error()}
+	}
+	if reg.Endpoint == "" {
+		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "registration string has no endpoint"}
+	}
+	if reg.Token == "" {
+		return nil, &domain.RuneError{Code: domain.CodeInvalidInput, Message: "registration string has no wrapping token"}
+	}
+
+	// Stage 1: fetch + pin the CA, then persist it before unwrapping. The CA
+	// write is fallible; doing it ahead of the irreversible unwrap keeps a
+	// disk/permission failure from spending the single-use handle for nothing
+	// (a stale CA file is harmless and overwritten on the next attempt).
+	caPEM, err := console.FetchCACert(ctx, reg.Endpoint, reg.CASHA256)
+	if err != nil {
+		// Pre-unwrap: the one-time handle is still unused, so the SAME
+		// registration string can be retried once the cause is fixed.
+		return nil, &domain.RuneError{
+			Code:         domain.CodeConsoleConnection,
+			Message:      "bootstrap: fetch console CA: " + err.Error(),
+			Retryable:    true,
+			RecoveryHint: "The invite was NOT consumed. Fix the connection/endpoint and re-run /rune:configure with the same registration string.",
+		}
+	}
+	caPath, err := config.SaveConsoleCA(caPEM)
+	if err != nil {
+		// Still pre-unwrap — the handle is unused, same string is reusable.
+		return nil, &domain.RuneError{
+			Code:         domain.CodeInternal,
+			Message:      "bootstrap: save console CA: " + err.Error(),
+			Retryable:    true,
+			RecoveryHint: "The invite was NOT consumed. Fix ~/.rune permissions/disk space and re-run /rune:configure with the same registration string.",
+		}
+	}
+
+	// Stage 2: unwrap the one-time handle into the real access token. The
+	// handle is spent the moment this returns, so the caller must not fail a
+	// later persistence step without surfacing that a fresh invite is needed.
+	token, err := console.Unwrap(ctx, reg.Endpoint, caPEM, reg.Token)
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap: unwrap: %w", err)
+	}
+
+	slog.Info("console: bootstrap complete", "endpoint", reg.Endpoint)
+	return &resolvedCreds{Endpoint: reg.Endpoint, Token: token, CACertPath: caPath}, nil
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// 6. rune_activate - pre-check + reload
+// rune_activate — pre-check + reload
 //
 //  ActivateStatus:
-//	  configure_required  - config.json missing or vault block empty
+//	  configure_required  - config.json missing or console block empty
 //	  install_pending     - runed socket absent (daemon not installed/running)
-//	  active / waiting_for_vault / dormant - passed through from reload
+//	  active / waiting_for_console / dormant - passed through from reload
 // ─────────────────────────────────────────────────────────────────────────────
 
 const (
 	ActivateStatusConfigureRequired   = "configure_required"
 	ActivateStatusInstallPending      = "install_pending"
 	ActivateStatusActive              = "active"
-	ActivateStatusWaitingForVault     = "waiting_for_vault"
+	ActivateStatusWaitingForConsole   = "waiting_for_console"
 	ActivateStatusWaitingForBootstrap = "waiting_for_bootstrap"
 	ActivateStatusDormant             = "dormant"
 )
@@ -649,7 +480,7 @@ type BootstrapDetail struct {
 	Message    string `json:"message,omitempty"`     // free-text detail for end-user display
 }
 
-// When Status is active / waiting_for_vault / dormant, Reload mirrors ReloadPipilines
+// When Status is active / waiting_for_console / dormant, Reload mirrors ReloadPipilines
 // When Status is waiting_for_bootstrap, Bootstrap mirrors runed's self-bootstrap progress
 type ActivateResult struct {
 	OK        bool                   `json:"ok"`
@@ -668,14 +499,33 @@ func (s *LifecycleService) Activate(ctx context.Context) (*ActivateResult, error
 		return &ActivateResult{
 			OK:     true,
 			Status: ActivateStatusConfigureRequired,
-			Hint:   "Run /rune:configure to write Vault credentials.",
+			Hint:   "Run /rune:configure to write Console credentials.",
 		}, nil
 	}
-	if cfg.Vault.Endpoint == "" || cfg.Vault.Token == "" {
+	// Configured = an endpoint plus a token source (in-file token, or keyring
+	// storage whose entry is validated at boot). A blank Token is normal under
+	// keyring storage, so don't treat it as unconfigured.
+	hasToken := cfg.Console.Token != "" || cfg.Console.TokenStorage == config.TokenStorageKeyring
+	if cfg.Console.Endpoint == "" || !hasToken {
 		return &ActivateResult{
 			OK:     true,
 			Status: ActivateStatusConfigureRequired,
-			Hint:   "Vault endpoint/token missing in ~/.rune/config.json. Run /rune:configure.",
+			Hint:   "Console endpoint/token missing in ~/.rune/config.json. Run /rune:configure.",
+		}, nil
+	}
+
+	// Idempotent: already active → report and stop. Activation is a "come back
+	// online" intent; if the pipelines are already up there is nothing to
+	// resume, and re-triggering the boot loop would needlessly re-dial the
+	// console and re-open the cgo encryptor. (configure itself brings a fresh
+	// setup to active, so the /rune:configure → /rune:activate handoff lands
+	// here.) A dead session token still surfaces on the next capture/recall or
+	// via /rune:status, not by pre-emptively re-booting here.
+	if s.State != nil && s.State.Current() == lifecycle.StateActive {
+		return &ActivateResult{
+			OK:     true,
+			Status: ActivateStatusActive,
+			Hint:   "Rune is already active. Organizational memory is online.",
 		}, nil
 	}
 
@@ -689,7 +539,7 @@ func (s *LifecycleService) Activate(ctx context.Context) (*ActivateResult, error
 	// reload below is a no-op and activation never takes effect.
 	//
 	// Scope is deliberately limited to user-deactivation: substrate-driven
-	// dormancy (not_configured / vault_unconfigured) is already handled by the
+	// dormancy (not_configured / console_unconfigured) is already handled by the
 	// configure_required pre-checks above, so reaching this point means valid
 	// credentials exist and the user's own deactivation is the only thing
 	// pinning the daemon dormant.
@@ -883,48 +733,47 @@ func (s *LifecycleService) runBootstrapWatcher() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 7. rune_reload_pipelines
+// rune_reload_pipelines (internal — invoked by activate/deactivate, not a tool)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ReloadPipelinesResult.
 type ReloadPipelinesResult struct {
-	OK                   bool   `json:"ok"`
-	State                string `json:"state"`
-	ScribeInitialized    bool   `json:"scribe_initialized"`
-	RetrieverInitialized bool   `json:"retriever_initialized"`
-	// LastBootError mirrors VaultInfo.LastBootError so callers (agent, UI)
+	OK    bool   `json:"ok"`
+	State string `json:"state"`
+	// LastBootError mirrors ConsoleInfo.LastBootError so callers (agent, UI)
 	// can fast-fail on this single response — no follow-up diagnostics call
 	// needed for the common case of "reload finished, boot failed, here's
 	// why". Populated only when state != "active" AND a classified error
 	// is available; nil otherwise.
-	LastBootError  *domain.BootError `json:"last_boot_error,omitempty"`
-	Errors         []string          `json:"errors,omitempty"`
-	EnvectorWarmup *WarmupInfo       `json:"envector_warmup,omitempty"`
+	LastBootError *domain.BootError `json:"last_boot_error,omitempty"`
+	Errors        []string          `json:"errors,omitempty"`
+	ConsoleWarmup *WarmupInfo       `json:"console_warmup,omitempty"`
 }
 
-// WarmupInfo — GetIndexList probe (60s timeout).
+// WarmupInfo — Console HealthCheck probe (60s timeout).
 type WarmupInfo struct {
 	OK        bool     `json:"ok"`
 	LatencyMs *float64 `json:"latency_ms,omitempty"`
 	Error     *string  `json:"error,omitempty"`
 }
 
-// WarmupTimeout — Python WARMUP_TIMEOUT (server.py:L1059). 60s.
+// WarmupTimeout — console warmup HealthCheck deadline. 60s.
 const WarmupTimeout = 60 * time.Second
 
-// ReloadPipelines — re-trigger the boot loop from Dormant + warmup envector.
+// ReloadPipelines — re-trigger the boot loop from Dormant + warmup the console.
 //
 // On a terminal Dormant state (boot loop's goroutine has exited), call
 // Manager.Retrigger to spawn a fresh RunBootLoop bound to the same ctx +
 // Deps; main.go wires the spawn callback at startup. Manager.Retrigger
-// is a silent no-op when state is Starting / WaitingForVault / Active —
-// safe to call unconditionally if the trigger surface ever widens.
+// is a silent no-op only while a boot loop is already running (Starting /
+// WaitingForConsole); from Active or Dormant it claims the transition via CAS
+// and respawns the loop.
 //
 // /rune:activate from a freshly-spawned MCP server (no ~/.rune/config.json
 // at boot, then user ran /rune:configure) reaches Active via this path.
 // No process restart is required.
 func (s *LifecycleService) ReloadPipelines(ctx context.Context) (*ReloadPipelinesResult, error) {
-	// Always re-trigger so config changes such as new vault endpoint and rotated token are picked
+	// Always re-trigger so config changes such as new console endpoint and rotated token are picked
 	// without restarting MCP
 	s.State.Retrigger()
 	s.waitForBootProgress(ctx, 5*time.Second)
@@ -934,24 +783,21 @@ func (s *LifecycleService) ReloadPipelines(ctx context.Context) (*ReloadPipeline
 		State: s.State.Current().String(),
 	}
 
-	if s.State.Current() == lifecycle.StateActive {
-		result.ScribeInitialized = true
-		result.RetrieverInitialized = true
-	} else {
+	if s.State.Current() != lifecycle.StateActive {
 		// Boot did not reach active within the 5s wait window. Surface the
 		// most recent classified boot error so the caller can fast-fail
 		// without needing a separate diagnostics call. May still be nil
 		// (e.g., boot loop is genuinely in-flight and hasn't recorded an
 		// error yet) — in that case the agent should follow up with
-		// diagnostics per the Fast-Fail Rule in SKILL.md.
+		// diagnostics per the Fast-Fail Rule.
 		if be := s.State.LastBootError(); be != nil {
 			result.LastBootError = be
 		}
 	}
 
-	if s.Envector != nil {
-		warmup := s.warmupEnvector(ctx, WarmupTimeout)
-		result.EnvectorWarmup = warmup
+	if s.Console != nil {
+		warmup := s.warmupConsole(ctx, WarmupTimeout)
+		result.ConsoleWarmup = warmup
 	}
 
 	return result, nil
@@ -960,7 +806,7 @@ func (s *LifecycleService) ReloadPipelines(ctx context.Context) (*ReloadPipeline
 // waitForBootProgress polls Manager.Current() until either Active or a
 // terminal Dormant is reached, or the deadline elapses. The caller has
 // already triggered a fresh boot loop; this just gives it room to make
-// progress before we snapshot state for the response. WaitingForVault
+// progress before we snapshot state for the response. WaitingForConsole
 // (transient retry) is treated as still-in-progress because the loop is
 // actively retrying with backoff and may yet reach Active.
 //
@@ -991,13 +837,13 @@ func (s *LifecycleService) waitForBootProgress(ctx context.Context, timeout time
 	}
 }
 
-// warmupEnvector — GetIndexList under 60s timeout.
-func (s *LifecycleService) warmupEnvector(ctx context.Context, timeout time.Duration) *WarmupInfo {
+// warmupConsole — Console HealthCheck under a 60s timeout.
+func (s *LifecycleService) warmupConsole(ctx context.Context, timeout time.Duration) *WarmupInfo {
 	ctx2, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	t0 := time.Now()
-	_, err := s.Envector.GetIndexList(ctx2)
+	_, err := s.Console.HealthCheck(ctx2)
 	elapsed := float64(time.Since(t0).Milliseconds())
 
 	if err != nil {
@@ -1006,4 +852,50 @@ func (s *LifecycleService) warmupEnvector(ctx context.Context, timeout time.Dura
 	}
 
 	return &WarmupInfo{OK: true, LatencyMs: &elapsed}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// rune_deactivate — flip active -> dormant, preserving credentials.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// DeactivateResult.
+//
+// AlreadyDormant distinguishes a no-op (Rune was already dormant) from a fresh
+// active→dormant transition, so the caller can say "already deactivated"
+// instead of "now dormant". Hint carries the user-facing next step.
+type DeactivateResult struct {
+	OK             bool   `json:"ok"`
+	State          string `json:"state"`
+	AlreadyDormant bool   `json:"already_dormant,omitempty"`
+	Hint           string `json:"hint,omitempty"`
+}
+
+// Deactivate is the inverse of Activate: it flips the running pipelines to
+// dormant without touching Console credentials, so /rune:activate can resume
+// from the same config. MarkDormant persists state=dormant (reason
+// user_deactivated); Retrigger then re-runs the boot loop, which reads the
+// dormant config and settles the Manager into StateDormant -- at which point
+// the state gate rejects capture/recall with PIPELINE_NOT_READY.
+func (s *LifecycleService) Deactivate(ctx context.Context) (*DeactivateResult, error) {
+	// Idempotent: already dormant → report, don't re-mark or re-run the boot
+	// loop. capture/recall are already gated in this state, so there is nothing
+	// to pause.
+	if s.State != nil && s.State.Current() == lifecycle.StateDormant {
+		return &DeactivateResult{
+			OK:             true,
+			State:          lifecycle.StateDormant.String(),
+			AlreadyDormant: true,
+			Hint:           "Rune is already dormant. Organizational memory is paused — /rune:activate to resume.",
+		}, nil
+	}
+	if err := config.MarkDormant("user_deactivated"); err != nil {
+		return nil, fmt.Errorf("deactivate: mark dormant: %w", err)
+	}
+	s.State.Retrigger()
+	s.waitForBootProgress(ctx, 5*time.Second)
+	return &DeactivateResult{
+		OK:    true,
+		State: s.State.Current().String(),
+		Hint:  "Rune is now dormant. Organizational memory is paused — /rune:activate to resume.",
+	}, nil
 }

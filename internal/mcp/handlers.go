@@ -30,20 +30,6 @@ func handleCapture(deps *Deps) sdkmcp.ToolHandlerFor[domain.CaptureRequest, doma
 	}
 }
 
-func handleBatchCapture(deps *Deps) sdkmcp.ToolHandlerFor[service.BatchCaptureArgs, service.BatchCaptureResult] {
-	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, in service.BatchCaptureArgs) (*sdkmcp.CallToolResult, service.BatchCaptureResult, error) {
-		var zero service.BatchCaptureResult
-		if err := CheckState(deps.State); err != nil {
-			return errorResult(err), zero, nil
-		}
-		out, err := deps.Capture.Batch(ctx, in)
-		if err != nil {
-			return errorResult(err), zero, nil
-		}
-		return okResult(out), *out, nil
-	}
-}
-
 func handleRecall(deps *Deps) sdkmcp.ToolHandlerFor[domain.RecallArgs, domain.RecallResult] {
 	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, in domain.RecallArgs) (*sdkmcp.CallToolResult, domain.RecallResult, error) {
 		var zero domain.RecallResult
@@ -61,46 +47,10 @@ func handleRecall(deps *Deps) sdkmcp.ToolHandlerFor[domain.RecallArgs, domain.Re
 	}
 }
 
-func handleDeleteCapture(deps *Deps) sdkmcp.ToolHandlerFor[service.DeleteCaptureArgs, service.DeleteCaptureResult] {
-	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, in service.DeleteCaptureArgs) (*sdkmcp.CallToolResult, service.DeleteCaptureResult, error) {
-		var zero service.DeleteCaptureResult
-		if err := CheckState(deps.State); err != nil {
-			return errorResult(err), zero, nil
-		}
-		out, err := deps.Lifecycle.DeleteCapture(ctx, in, deps.Capture)
-		if err != nil {
-			return errorResult(err), zero, nil
-		}
-		return okResult(out), *out, nil
-	}
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Read / diagnostic tools — bypass CheckState. Surface partial state to the
-// agent (vault_status, diagnostics) so users can troubleshoot pre-active.
+// agent (diagnostics) so users can troubleshoot pre-active.
 // ─────────────────────────────────────────────────────────────────────────────
-
-func handleCaptureHistory(deps *Deps) sdkmcp.ToolHandlerFor[service.CaptureHistoryArgs, service.CaptureHistoryResult] {
-	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, in service.CaptureHistoryArgs) (*sdkmcp.CallToolResult, service.CaptureHistoryResult, error) {
-		var zero service.CaptureHistoryResult
-		out, err := deps.Lifecycle.CaptureHistory(ctx, in)
-		if err != nil {
-			return errorResult(err), zero, nil
-		}
-		return okResult(out), *out, nil
-	}
-}
-
-func handleVaultStatus(deps *Deps) sdkmcp.ToolHandlerFor[emptyArgs, service.VaultStatusResult] {
-	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, _ emptyArgs) (*sdkmcp.CallToolResult, service.VaultStatusResult, error) {
-		var zero service.VaultStatusResult
-		out, err := deps.Lifecycle.VaultStatus(ctx)
-		if err != nil {
-			return errorResult(err), zero, nil
-		}
-		return okResult(out), *out, nil
-	}
-}
 
 func handleDiagnostics(deps *Deps) sdkmcp.ToolHandlerFor[emptyArgs, service.DiagnosticsResult] {
 	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, _ emptyArgs) (*sdkmcp.CallToolResult, service.DiagnosticsResult, error) {
@@ -112,7 +62,7 @@ func handleDiagnostics(deps *Deps) sdkmcp.ToolHandlerFor[emptyArgs, service.Diag
 func handleConfigure(deps *Deps) sdkmcp.ToolHandlerFor[service.ConfigureArgs, service.ConfigureResult] {
 	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, in service.ConfigureArgs) (*sdkmcp.CallToolResult, service.ConfigureResult, error) {
 		var zero service.ConfigureResult
-		out, err := deps.Lifecycle.Configure(ctx, in) // write Vault credentials to $HOME/.rune/config.json
+		out, err := deps.Lifecycle.Configure(ctx, in) // write Console credentials to $HOME/.rune/config.json
 		if err != nil {
 			return errorResult(err), zero, nil
 		}
@@ -131,10 +81,10 @@ func handleActivate(deps *Deps) sdkmcp.ToolHandlerFor[emptyArgs, service.Activat
 	}
 }
 
-func handleReloadPipelines(deps *Deps) sdkmcp.ToolHandlerFor[emptyArgs, service.ReloadPipelinesResult] {
-	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, _ emptyArgs) (*sdkmcp.CallToolResult, service.ReloadPipelinesResult, error) {
-		var zero service.ReloadPipelinesResult
-		out, err := deps.Lifecycle.ReloadPipelines(ctx)
+func handleDeactivate(deps *Deps) sdkmcp.ToolHandlerFor[emptyArgs, service.DeactivateResult] {
+	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, _ emptyArgs) (*sdkmcp.CallToolResult, service.DeactivateResult, error) {
+		var zero service.DeactivateResult
+		out, err := deps.Lifecycle.Deactivate(ctx)
 		if err != nil {
 			return errorResult(err), zero, nil
 		}

@@ -1,0 +1,299 @@
+package console_test
+
+import (
+	"context"
+	"errors"
+	"net"
+	"strings"
+	"testing"
+
+	consolepb "github.com/CryptoLabInc/rune-console/pkg/consolepb"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
+
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
+)
+
+// fakeServer implements ConsoleServiceServer + HealthServer for in-process tests.
+type fakeServer struct {
+	consolepb.UnimplementedConsoleServiceServer
+	healthpb.UnimplementedHealthServer
+
+	getAgentManifestFn func(*consolepb.GetAgentManifestRequest) (*consolepb.GetAgentManifestResponse, error)
+	insertFn           func(*consolepb.InsertRequest) (*consolepb.InsertResponse, error)
+	searchFn           func(*consolepb.SearchRequest) (*consolepb.SearchResponse, error)
+	healthFn           func(*healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error)
+	getCentroidsFn     func(consolepb.ConsoleService_GetCentroidsServer) error
+}
+
+func (f *fakeServer) GetAgentManifest(_ context.Context, req *consolepb.GetAgentManifestRequest) (*consolepb.GetAgentManifestResponse, error) {
+	if f.getAgentManifestFn != nil {
+		return f.getAgentManifestFn(req)
+	}
+	return nil, status.Error(codes.Unimplemented, "test server: GetAgentManifest not stubbed")
+}
+
+func (f *fakeServer) Insert(_ context.Context, req *consolepb.InsertRequest) (*consolepb.InsertResponse, error) {
+	if f.insertFn != nil {
+		return f.insertFn(req)
+	}
+	return nil, status.Error(codes.Unimplemented, "test server: Insert not stubbed")
+}
+
+func (f *fakeServer) Search(_ context.Context, req *consolepb.SearchRequest) (*consolepb.SearchResponse, error) {
+	if f.searchFn != nil {
+		return f.searchFn(req)
+	}
+	return nil, status.Error(codes.Unimplemented, "test server: Search not stubbed")
+}
+
+func (f *fakeServer) Check(_ context.Context, req *healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error) {
+	if f.healthFn != nil {
+		return f.healthFn(req)
+	}
+	return &healthpb.HealthCheckResponse{Status: healthpb.HealthCheckResponse_SERVING}, nil
+}
+
+func startFakeServer(t *testing.T) (*fakeServer, console.Client) {
+	t.Helper()
+	lis := bufconn.Listen(1 << 20)
+	srv := grpc.NewServer()
+	fake := &fakeServer{}
+	consolepb.RegisterConsoleServiceServer(srv, fake)
+	healthpb.RegisterHealthServer(srv, fake)
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	conn, err := grpc.NewClient(
+		"passthrough://bufconn",
+		grpc.WithContextDialer(func(_ context.Context, _ string) (net.Conn, error) {
+			return lis.DialContext(context.Background())
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("grpc dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	return fake, console.NewBufconnClient(conn, "test-token")
+}
+
+// ── GetAgentManifest (config-only bundle) ─────────────────────────
+
+func TestGetAgentManifest_HappyPath(t *testing.T) {
+	fake, c := startFakeServer(t)
+	fake.getAgentManifestFn = func(req *consolepb.GetAgentManifestRequest) (*consolepb.GetAgentManifestResponse, error) {
+		if req.GetToken() != "test-token" {
+			return nil, status.Error(codes.Unauthenticated, "wrong token")
+		}
+		return &consolepb.GetAgentManifestResponse{
+			ManifestJson: `{"key_id":"key_test","agent_id":"agent_test","dim":1024}`,
+		}, nil
+	}
+
+	bundle, err := c.GetAgentManifest(context.Background())
+	if err != nil {
+		t.Fatalf("GetAgentManifest: %v", err)
+	}
+	if bundle.KeyID != "key_test" || bundle.AgentID != "agent_test" || bundle.Dim != 1024 {
+		t.Errorf("bundle mismatch: %+v", bundle)
+	}
+}
+
+func TestGetAgentManifest_ResponseErrorString(t *testing.T) {
+	fake, c := startFakeServer(t)
+	fake.getAgentManifestFn = func(*consolepb.GetAgentManifestRequest) (*consolepb.GetAgentManifestResponse, error) {
+		return &consolepb.GetAgentManifestResponse{Error: "manifest build failed"}, nil
+	}
+	_, err := c.GetAgentManifest(context.Background())
+	var ve *console.Error
+	if !errors.As(err, &ve) || !strings.Contains(ve.Message, "manifest build failed") {
+		t.Fatalf("expected wrapped console.Error, got %v", err)
+	}
+}
+
+func TestGetAgentManifest_MalformedJSON(t *testing.T) {
+	fake, c := startFakeServer(t)
+	fake.getAgentManifestFn = func(*consolepb.GetAgentManifestRequest) (*consolepb.GetAgentManifestResponse, error) {
+		return &consolepb.GetAgentManifestResponse{ManifestJson: "not json {"}, nil
+	}
+	_, err := c.GetAgentManifest(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "parse manifest_json") {
+		t.Fatalf("want parse error, got %v", err)
+	}
+}
+
+// ── Insert ────────────────────────────────────────────────────────
+
+func TestInsert_HappyPath(t *testing.T) {
+	fake, c := startFakeServer(t)
+	fake.insertFn = func(req *consolepb.InsertRequest) (*consolepb.InsertResponse, error) {
+		if req.GetId() != "id-xyz" || len(req.GetRmpItem()) == 0 || len(req.GetMmItem()) == 0 || req.GetCentroidSetVersion() != "v1" {
+			t.Errorf("insert req mismatch: %+v", req)
+		}
+		return &consolepb.InsertResponse{Id: req.GetId()}, nil
+	}
+	id, err := c.Insert(context.Background(), console.InsertItem{
+		ID:                 "id-xyz",
+		RMPItem:            []byte{1, 2},
+		MMItem:             []byte{3, 4},
+		ClusterID:          2,
+		CentroidSetVersion: "v1",
+		SealedMetadata:     `{"a":"x","c":"y"}`,
+	})
+	if err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if id != "id-xyz" {
+		t.Errorf("id: got %q, want id-xyz", id)
+	}
+}
+
+func TestInsert_ResponseError(t *testing.T) {
+	fake, c := startFakeServer(t)
+	fake.insertFn = func(*consolepb.InsertRequest) (*consolepb.InsertResponse, error) {
+		return &consolepb.InsertResponse{Error: "insert failed"}, nil
+	}
+	_, err := c.Insert(context.Background(), console.InsertItem{ID: "id-1", RMPItem: []byte{1}, MMItem: []byte{2}, CentroidSetVersion: "v"})
+	if err == nil || !strings.Contains(err.Error(), "insert failed") {
+		t.Fatalf("want insert error, got %v", err)
+	}
+}
+
+// ── Search ────────────────────────────────────────────────────────
+
+func TestSearch_HappyPath(t *testing.T) {
+	fake, c := startFakeServer(t)
+	fake.searchFn = func(req *consolepb.SearchRequest) (*consolepb.SearchResponse, error) {
+		if req.GetTopK() != 5 {
+			t.Errorf("topk: got %d, want 5", req.GetTopK())
+		}
+		return &consolepb.SearchResponse{Hits: []*consolepb.SearchHit{
+			{Id: "a", Score: 0.95, Metadata: `{"title":"A"}`},
+			{Id: "b", Score: 0.80, Metadata: `{"title":"B"}`},
+		}}, nil
+	}
+	hits, err := c.Search(context.Background(), []float32{0.1}, 5)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(hits) != 2 || hits[0].ID != "a" || hits[0].Score != 0.95 || hits[0].Metadata != `{"title":"A"}` {
+		t.Errorf("hits mismatch: %+v", hits)
+	}
+}
+
+func TestSearch_GRPCError(t *testing.T) {
+	fake, c := startFakeServer(t)
+	fake.searchFn = func(*consolepb.SearchRequest) (*consolepb.SearchResponse, error) {
+		return nil, status.Error(codes.PermissionDenied, "denied")
+	}
+	_, err := c.Search(context.Background(), []float32{1}, 5)
+	var ve *console.Error
+	if !errors.As(err, &ve) || ve.Code != "CONSOLE_PERMISSION_DENIED" || ve.Retryable {
+		t.Fatalf("want non-retryable CONSOLE_PERMISSION_DENIED, got %v", err)
+	}
+}
+
+// ── Health / Endpoint / Close ─────────────────────────────────────
+
+func TestHealthCheck(t *testing.T) {
+	fake, c := startFakeServer(t)
+	fake.healthFn = func(*healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error) {
+		return &healthpb.HealthCheckResponse{Status: healthpb.HealthCheckResponse_SERVING}, nil
+	}
+	healthy, err := c.HealthCheck(context.Background())
+	if err != nil || !healthy {
+		t.Fatalf("healthy=%v err=%v", healthy, err)
+	}
+}
+
+func TestEndpointAndClose(t *testing.T) {
+	_, c := startFakeServer(t)
+	if c.Endpoint() != "bufconn" {
+		t.Errorf("Endpoint: got %q", c.Endpoint())
+	}
+	if err := c.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+}
+
+// ── MapGRPCError matrix (unchanged mapping) ───────────────────────
+
+func TestMapGRPCError_CodeMatrix(t *testing.T) {
+	cases := []struct {
+		grpcCode  codes.Code
+		msg       string
+		wantCode  string
+		retryable bool
+	}{
+		{codes.Unauthenticated, "x", "CONSOLE_AUTH_FAILED", false},
+		{codes.PermissionDenied, "x", "CONSOLE_PERMISSION_DENIED", false},
+		{codes.InvalidArgument, "x", "CONSOLE_INVALID_INPUT", false},
+		{codes.InvalidArgument, "top_k 8 exceeds limit 3 for role 'r'", "CONSOLE_TOPK_EXCEEDED", false},
+		{codes.ResourceExhausted, "x", "CONSOLE_RATE_LIMITED", true},
+		{codes.NotFound, "x", "CONSOLE_KEY_NOT_FOUND", false},
+		{codes.Unavailable, "x", "CONSOLE_UNAVAILABLE", true},
+		{codes.DeadlineExceeded, "x", "CONSOLE_TIMEOUT", true},
+		{codes.Internal, "x", "CONSOLE_INTERNAL", true},
+		{codes.Aborted, "x", "CONSOLE_INTERNAL", true},
+	}
+	for _, tc := range cases {
+		err := console.MapGRPCError(status.Error(tc.grpcCode, tc.msg))
+		var ve *console.Error
+		if !errors.As(err, &ve) {
+			t.Fatalf("expected *console.Error, got %T", err)
+		}
+		if ve.Code != tc.wantCode || ve.Retryable != tc.retryable {
+			t.Errorf("%v/%q → %s(retry=%v), want %s(retry=%v)", tc.grpcCode, tc.msg, ve.Code, ve.Retryable, tc.wantCode, tc.retryable)
+		}
+	}
+}
+
+func TestMapGRPCError_NilReturnsNil(t *testing.T) {
+	if got := console.MapGRPCError(nil); got != nil {
+		t.Errorf("MapGRPCError(nil): got %v, want nil", got)
+	}
+}
+
+func TestParseManifestJSON_NotJSON(t *testing.T) {
+	if _, err := console.ParseManifestJSON("nope"); err == nil {
+		t.Fatal("expected parse error")
+	}
+}
+
+// ── Centroids relay ───────────────────────────────────────────────
+
+func (f *fakeServer) GetCentroids(_ *consolepb.GetCentroidsRequest, stream consolepb.ConsoleService_GetCentroidsServer) error {
+	if f.getCentroidsFn != nil {
+		return f.getCentroidsFn(stream)
+	}
+	return status.Error(codes.Unimplemented, "test server: GetCentroids not stubbed")
+}
+
+func TestCentroids_Relay(t *testing.T) {
+	fake, c := startFakeServer(t)
+	fake.getCentroidsFn = func(stream consolepb.ConsoleService_GetCentroidsServer) error {
+		if err := stream.Send(&consolepb.CentroidChunk{Payload: &consolepb.CentroidChunk_Header{
+			Header: &consolepb.CentroidSetHeader{Version: "v9", Dim: 2, Nlist: 2},
+		}}); err != nil {
+			return err
+		}
+		return stream.Send(&consolepb.CentroidChunk{Payload: &consolepb.CentroidChunk_Batch{
+			Batch: &consolepb.CentroidBatch{Centroids: []*consolepb.Centroid{
+				{Id: 0, Vec: []float32{1, 0}}, {Id: 1, Vec: []float32{0, 1}},
+			}},
+		}})
+	}
+	cs, err := c.Centroids(context.Background())
+	if err != nil {
+		t.Fatalf("Centroids: %v", err)
+	}
+	if cs.Version != "v9" || cs.Dim != 2 || len(cs.Vectors) != 2 {
+		t.Fatalf("relay mismatch: %+v", cs)
+	}
+}

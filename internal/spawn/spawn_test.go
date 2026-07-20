@@ -85,6 +85,20 @@ func TestResolveRuneBinary_NotFound(t *testing.T) {
 
 //--- Socket tests ---//
 
+// sockPath returns a unix socket path short enough for the sun_path limit
+// (~104 bytes on darwin). t.TempDir() embeds the test name plus nesting, which
+// on macOS pushes the path past the limit and makes net.Listen("unix", …) fail
+// with EINVAL; a short MkdirTemp base stays well under it.
+func sockPath(t *testing.T, name string) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "rs")
+	if err != nil {
+		t.Fatalf("mkdir temp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, name)
+}
+
 func startListener(t *testing.T, path string) {
 	t.Helper()
 	lis, err := net.Listen("unix", path)
@@ -106,7 +120,7 @@ func startListener(t *testing.T, path string) {
 }
 
 func TestProbeSocket_ReachableTrue(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "embed.sock")
+	path := sockPath(t, "embed.sock")
 	startListener(t, path)
 
 	if !probeSocket(path) {
@@ -115,14 +129,14 @@ func TestProbeSocket_ReachableTrue(t *testing.T) {
 }
 
 func TestProbeSocket_NoListenerFalse(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "embed.sock")
+	path := sockPath(t, "embed.sock")
 	if probeSocket(path) {
 		t.Errorf("probeSocket should return false when socket file is absent")
 	}
 }
 
 func TestWaitForSocket_ReturnsWhenListenerAppears(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "embed.sock")
+	path := sockPath(t, "embed.sock")
 
 	go func() {
 		time.Sleep(100 * time.Millisecond)
@@ -136,7 +150,7 @@ func TestWaitForSocket_ReturnsWhenListenerAppears(t *testing.T) {
 }
 
 func TestWaitForSocket_TimesOut(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "never.sock")
+	path := sockPath(t, "never.sock")
 
 	start := time.Now()
 	err := waitForSocket(context.Background(), path, 100*time.Millisecond, 30*time.Millisecond)
@@ -156,7 +170,7 @@ func TestWaitForSocket_TimesOut(t *testing.T) {
 //--- EnsureDaemon tests ---//
 
 func TestEnsureDaemon_AlreadyReachableSkipsSpawn(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "embed.sock")
+	socketPath := sockPath(t, "embed.sock")
 	startListener(t, socketPath)
 
 	cfg := Config{
@@ -171,7 +185,7 @@ func TestEnsureDaemon_AlreadyReachableSkipsSpawn(t *testing.T) {
 }
 
 func TestEnsureDaemon_LockContentionSkipsExecPollsSocket(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "embed.sock")
+	socketPath := sockPath(t, "embed.sock")
 	lockPath := filepath.Join(t.TempDir(), "spawn.lock")
 
 	// Simluate another mcp hold lock
