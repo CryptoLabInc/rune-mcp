@@ -3,7 +3,7 @@ module github.com/CryptoLabInc/rune-mcp
 go 1.26.4
 
 require (
-	github.com/CryptoLabInc/rune-console v1.0.0-alpha
+	github.com/CryptoLabInc/rune-console v1.0.0-alpha.1
 	github.com/CryptoLabInc/runed v1.0.0-alpha
 	github.com/CryptoLabInc/runespace-sdk v1.0.0
 	github.com/google/uuid v1.6.0
