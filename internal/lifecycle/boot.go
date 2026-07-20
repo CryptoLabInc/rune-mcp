@@ -550,32 +550,54 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	}
 
 	// Relay the IVF centroid set from the console down to runed so Embed can
-	// route inserts. Best-effort at boot: a failure here does not block
-	// activation — capture self-heals at the point of use (EmbedRoute
-	// FAILED_PRECONDITION → the service resyncs the set and retries once) —
-	// but a healthy path pushes it now so the first capture pays no resync.
+	// route inserts. This is a HARD boot gate: runed must actually hold the
+	// current set before we activate. Activation self-reports the member as
+	// "online" to the console (below), and online must mean the data plane can
+	// route right now — not "up but silently unable to route until the first
+	// capture self-heals". A relay failure keeps the boot in WaitingForConsole
+	// and retries, exactly like any other console-side gap; the capture-time
+	// resync (EmbedRoute FAILED_PRECONDITION → the service resyncs and retries
+	// once) still covers post-boot centroid replacement while active.
 	//
-	// Skip when runed already holds the manifest's exact set: Info just told
-	// us its version, and re-relaying it costs a ~16MB console fetch + a ~16MB
-	// runed push per session boot for nothing. A cold runed (empty version)
-	// or any mismatch still takes the full relay, and the self-heal
-	// keeps covering post-boot centroid replacement.
+	// Skip only when runed already holds the manifest's exact set: Info just
+	// told us its version, and re-relaying it costs a ~16MB console fetch + a
+	// ~16MB runed push per session boot for nothing. A cold runed (empty
+	// version) or any mismatch takes the full relay.
 	if runedCentroidVer != "" && runedCentroidVer == bundle.CentroidSetVersion {
 		slog.Info("boot: centroid relay skipped — runed already holds the current set", "version", runedCentroidVer)
-	} else if cs, err := consoleClient.Centroids(ctx); err != nil {
-		slog.Warn("boot: centroid relay fetch failed (routing unavailable until retry)", "err", err)
-	} else if cs != nil && cs.Version != "" && len(cs.Vectors) > 0 {
-		if err := embedderClient.SetCentroids(ctx, cs.Version, cs.Dim, cs.Preset, cs.Vectors); err != nil {
-			slog.Warn("boot: centroid push to runed failed", "err", err)
-		} else {
-			slog.Info("boot: centroid set synced to runed", "version", cs.Version, "nlist", len(cs.Vectors))
+	} else {
+		cs, err := consoleClient.Centroids(ctx)
+		if err != nil {
+			m.SetState(StateWaitingForConsole)
+			m.lastError.Store(fmt.Sprintf("centroid relay fetch: %v", err))
+			m.SetBootError(classify(err, domain.BootPhaseRunespaceIndex))
+			slog.Error("boot: centroid relay fetch failed — cannot activate until runed holds the set", "err", err)
+			return bootRetry
 		}
+		if cs == nil || cs.Version == "" || len(cs.Vectors) == 0 {
+			m.SetState(StateWaitingForConsole)
+			msg := "console returned an empty centroid set"
+			m.lastError.Store(msg)
+			m.SetBootError(&domain.BootError{Kind: domain.BootErrRunespaceIndex, Detail: msg, Hint: "The runespace has no centroid set to relay yet. Boot retries automatically as it becomes available; if this persists, check console→runespace connectivity with your Console admin."})
+			slog.Error("boot: " + msg)
+			return bootRetry
+		}
+		if err := embedderClient.SetCentroids(ctx, cs.Version, cs.Dim, cs.Preset, cs.Vectors); err != nil {
+			m.SetState(StateWaitingForConsole)
+			m.lastError.Store(fmt.Sprintf("centroid push to runed: %v", err))
+			m.SetBootError(classify(err, domain.BootPhaseEmbedderDial))
+			slog.Error("boot: centroid push to runed failed — cannot activate", "err", err)
+			return bootRetry
+		}
+		slog.Info("boot: centroid set synced to runed", "version", cs.Version, "nlist", len(cs.Vectors))
 	}
 
 	// Self-report terminal activation so the console flips the member from
-	// invite_redeemed to online. Best-effort: a failure never blocks activation
-	// (the console keeps showing invite_redeemed until a later boot re-reports),
-	// and the data plane is already fully up by here.
+	// invite_redeemed to online. Reached only after every configure step above
+	// succeeded — most importantly, runed holds the current centroid set — so
+	// "online" truthfully means the data plane can route. The call itself stays
+	// best-effort: if this one RPC fails the member simply stays invite_redeemed
+	// until a later boot re-reports, and the local data plane is already fully up.
 	if err := consoleClient.ReportActivation(ctx); err != nil {
 		slog.Warn("boot: report activation to console failed", "err", err)
 	}
