@@ -272,6 +272,8 @@ type ConfigureResult struct {
 	NextStep     string `json:"next_step,omitempty"`
 
 	// ConsoleReachable is derived from the boot state after bring-up:
+	// nil   — bring-up stopped before the boot loop could probe the console
+	//         (runed spawn failed first; NextStep carries the recovery).
 	// true  — reached active OR waiting_for_bootstrap (console was dialed and
 	//         the centroid set relayed; only runed's model download may remain).
 	// false — a classified boot failure; ProbeError carries its detail.
@@ -384,12 +386,21 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 	// call — the credentials above are already saved.
 	if socketPath := embedder.ResolveSocketPath(""); socketPath != "" {
 		if br := s.ensureDaemon(ctx, socketPath); br != nil {
+			// Retrigger even though runed could not be brought up: the saved
+			// credentials must take effect now. The boot loop reloads the new
+			// config, parks in waiting_for_console with an embedder_unreachable
+			// error (cheap retries — the centroid gate skips the console fetch),
+			// and self-heals the moment runed comes up. Without this, a
+			// reconfigure-while-active would keep the OLD pipelines running and
+			// report state "active" for credentials that are not in effect yet.
+			s.State.Retrigger()
 			result.State = s.State.Current().String()
 			result.NextStep = br.Hint
 			return result, nil
 		}
 	}
 
+	bootFrom := time.Now().UTC()
 	rr, err := s.ReloadPipelines(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("configure: bring pipelines online: %w", err)
@@ -407,10 +418,17 @@ func (s *LifecycleService) Configure(ctx context.Context, args ConfigureArgs) (*
 		result.NextStep = "Rune is active. Organizational memory is online."
 	case rr.State == lifecycle.StateWaitingForBootstrap.String():
 		result.NextStep = waitingForBootstrapHint
-	case rr.LastBootError != nil:
-		// Boot reached a classified failure — surface its hint verbatim.
+	case rr.LastBootError != nil && !rr.LastBootError.At.Before(bootFrom):
+		// Boot reached a classified failure with THESE credentials — surface
+		// its hint verbatim.
 		result.ProbeError = rr.LastBootError.Detail
 		result.NextStep = rr.LastBootError.Hint
+	case rr.LastBootError != nil:
+		// Only an error from BEFORE this configure is available: a prior boot
+		// loop is still mid-backoff and has not retried with the new
+		// credentials yet (Retrigger is a no-op while a loop is running).
+		// Don't blame the fresh setup with the stale error.
+		result.NextStep = "Credentials saved; the boot loop retries with them shortly (within ~60s). Run /rune:status to confirm."
 	default:
 		result.NextStep = "Credentials saved but pipelines are not active yet. Run /rune:status to inspect."
 	}
@@ -556,20 +574,26 @@ func (s *LifecycleService) Activate(ctx context.Context) (*ActivateResult, error
 		}, nil
 	}
 
-	// Idempotent: already waiting on runed's model download. The async watcher
-	// was started when the boot loop first reached this state and will flip us
-	// to active on its own once the model is ready — re-running the boot loop
-	// here would needlessly re-dial the console and re-open the cgo encryptor.
-	// Just make sure the watcher is alive (restart is a no-op when it is) and
-	// report current download progress.
+	// Idempotent: already waiting on runed's model download — but only when the
+	// download is actually in progress (runed answers LOADING). Then keep the
+	// watcher alive (restart is a no-op) and report progress; re-running the
+	// boot loop would needlessly re-dial the console and re-open the cgo
+	// encryptor. Any other answer — DEGRADED, no answer at all (runed crashed
+	// mid-download), or OK/IDLE with the watcher gone past its 30min deadline —
+	// falls through to the full path below: ensureDaemon respawns a dead
+	// daemon and ReloadPipelines re-runs the boot gate to settle the real
+	// state. Without the fall-through this branch would keep promising
+	// "completes automatically" from a state nothing can complete.
 	if s.State != nil && s.State.Current() == lifecycle.StateWaitingForBootstrap {
-		s.startBootstrapWatcher()
-		return &ActivateResult{
-			OK:        true,
-			Status:    ActivateStatusWaitingForBootstrap,
-			Hint:      waitingForBootstrapHint,
-			Bootstrap: s.bootstrapProgress(ctx),
-		}, nil
+		if h, ok := s.probeBootstrapHealth(ctx); ok && h.Status == "LOADING" {
+			s.startBootstrapWatcher()
+			return &ActivateResult{
+				OK:        true,
+				Status:    ActivateStatusWaitingForBootstrap,
+				Hint:      waitingForBootstrapHint,
+				Bootstrap: bootstrapDetailFrom(h),
+			}, nil
+		}
 	}
 
 	// Clear a user-initiated deactivation before re-triggering the boot loop.
@@ -692,27 +716,42 @@ func embedderPaths(socketPath string) (runedSpawnPaths, error) {
 	}, nil
 }
 
-// bootstrapProgress returns a snapshot of runed's model-download progress for
-// display, or nil if the embedder isn't wired / doesn't answer in time. It does
-// NOT start the watcher or decide state — the boot loop owns the model-ready
-// gate (bootOnce) and fires the watcher; this is purely a read for the response.
-func (s *LifecycleService) bootstrapProgress(ctx context.Context) *BootstrapDetail {
+// probeBootstrapHealth issues a bounded Health probe against the wired
+// embedder. ok=false when no embedder is wired or the probe fails, so callers
+// can distinguish "runed answered" from "runed is gone".
+func (s *LifecycleService) probeBootstrapHealth(ctx context.Context) (embedder.HealthSnapshot, bool) {
 	e := s.Embedder()
 	if e == nil {
-		return nil
+		return embedder.HealthSnapshot{}, false
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, bootstrapProbeTimeout)
 	defer cancel()
 	h, err := e.Health(probeCtx)
 	if err != nil {
-		return nil
+		return embedder.HealthSnapshot{}, false
 	}
+	return h, true
+}
+
+func bootstrapDetailFrom(h embedder.HealthSnapshot) *BootstrapDetail {
 	return &BootstrapDetail{
 		Phase:      h.Phase,
 		BytesDone:  h.BytesDone,
 		BytesTotal: h.BytesTotal,
 		Message:    h.Message,
 	}
+}
+
+// bootstrapProgress returns a snapshot of runed's model-download progress for
+// display, or nil if the embedder isn't wired / doesn't answer in time. It does
+// NOT start the watcher or decide state — the boot loop owns the model-ready
+// gate (bootOnce) and fires the watcher; this is purely a read for the response.
+func (s *LifecycleService) bootstrapProgress(ctx context.Context) *BootstrapDetail {
+	h, ok := s.probeBootstrapHealth(ctx)
+	if !ok {
+		return nil
+	}
+	return bootstrapDetailFrom(h)
 }
 
 // StartBootstrapWatcher starts (idempotently) the async goroutine that polls
