@@ -201,3 +201,46 @@ func TestBootstrapWatcher_ExitsOnHealthError(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 }
+
+// --- bootstrapProgress (read-only snapshot for the activate response) ---//
+
+func TestBootstrapProgress_NilEmbedder(t *testing.T) {
+	s := &LifecycleService{State: lifecycle.NewManager()}
+	if d := s.bootstrapProgress(context.Background()); d != nil {
+		t.Errorf("nil embedder: want nil BootstrapDetail, got %+v", d)
+	}
+}
+
+func TestBootstrapProgress_ReturnsDownloadDetail(t *testing.T) {
+	stub := &stubEmbedder{healthFn: func(context.Context) (embedder.HealthSnapshot, error) {
+		return embedder.HealthSnapshot{
+			Status:     "LOADING",
+			Phase:      "FETCHING_MODEL",
+			BytesDone:  512,
+			BytesTotal: 2048,
+			Message:    "downloading",
+		}, nil
+	}}
+	s := &LifecycleService{State: lifecycle.NewManager()}
+	s.SetEmbedder(stub)
+
+	d := s.bootstrapProgress(context.Background())
+	if d == nil {
+		t.Fatal("want BootstrapDetail, got nil")
+	}
+	if d.Phase != "FETCHING_MODEL" || d.BytesDone != 512 || d.BytesTotal != 2048 || d.Message != "downloading" {
+		t.Errorf("unexpected detail: %+v", d)
+	}
+}
+
+func TestBootstrapProgress_HealthErrorIsNil(t *testing.T) {
+	stub := &stubEmbedder{healthFn: func(context.Context) (embedder.HealthSnapshot, error) {
+		return embedder.HealthSnapshot{}, errors.New("unreachable")
+	}}
+	s := &LifecycleService{State: lifecycle.NewManager()}
+	s.SetEmbedder(stub)
+
+	if d := s.bootstrapProgress(context.Background()); d != nil {
+		t.Errorf("health error: want nil BootstrapDetail, got %+v", d)
+	}
+}

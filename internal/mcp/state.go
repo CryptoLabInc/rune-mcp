@@ -20,10 +20,11 @@ const maxRecallTopK = 50
 // Returns appropriate RuneError for non-active states.
 //
 // Recovery hints differ by internal state:
-//   - starting            → "Wait 1-2s and retry"
-//   - waiting_for_console   → "Last console error: {err}. Run /rune:status"
-//   - dormant(user)       → "Run /rune:activate"
-//   - dormant(console)      → "Check config.console.endpoint"
+//   - starting              → "Wait 1-2s and retry"
+//   - waiting_for_console     → "Last console error: {err}. Run /rune:status"
+//   - waiting_for_bootstrap → "runed is downloading its model; completes automatically"
+//   - dormant(user)         → "Run /rune:activate"
+//   - dormant(console)        → "Check config.console.endpoint"
 func CheckState(m *lifecycle.Manager) error {
 	if m == nil {
 		return withHint(domain.ErrPipelineNotReady, "rune-mcp boot has not been wired (Deps.State == nil).")
@@ -35,6 +36,8 @@ func CheckState(m *lifecycle.Manager) error {
 		return withHint(domain.ErrPipelineNotReady, "Rune is starting up. Wait 1-2 seconds and retry.")
 	case lifecycle.StateWaitingForConsole:
 		return withHint(domain.ErrPipelineNotReady, "Waiting for Console connection. Run /rune:status for diagnostics.")
+	case lifecycle.StateWaitingForBootstrap:
+		return withHint(domain.ErrPipelineNotReady, "runed is downloading its embedding model — activation finishes automatically once it completes. Run /rune:status for progress.")
 	case lifecycle.StateDormant:
 		return withHint(domain.ErrPipelineNotReady, "Rune is deactivated. Run /rune:activate to re-enable.")
 	}

@@ -145,6 +145,58 @@ func TestClassifyBootError_PhaseFallback_EmbedderDial(t *testing.T) {
 	}
 }
 
+// Regression: a runed transport failure at the embedder phase must classify as
+// embedder_unreachable, NOT console_network. The embedder speaks to the local
+// runed daemon over a UDS; the phase-blind net/gRPC classifiers would otherwise
+// mislabel a down/absent runed as "Console not reachable" — the exact bug where
+// /rune:configure reported a Console failure while the Console was healthy.
+func TestClassifyBootError_EmbedderPhase_GRPCUnavailableIsNotConsole(t *testing.T) {
+	// grpc.NewClient dials lazily, so a missing runed surfaces at the first RPC
+	// (e.g. the centroid relay's SetCentroids) as a wrapped Unavailable.
+	err := fmt.Errorf("embedder: set centroids close: %w",
+		status.Error(codes.Unavailable, `connection error: desc = "transport: Error while dialing: dial unix /home/u/.runed/embedding.sock: connect: no such file or directory"`))
+	be := ClassifyBootError(err, BootErrCtx{
+		Phase:           domain.BootPhaseEmbedderDial,
+		ConsoleEndpoint: "tcp://console.example:50051",
+	})
+	if be.Kind != domain.BootErrEmbedderUnreachable {
+		t.Fatalf("kind: got %q want %q", be.Kind, domain.BootErrEmbedderUnreachable)
+	}
+	if be.Kind == domain.BootErrConsoleNetwork {
+		t.Fatal("runed transport failure must not be classified as a Console network error")
+	}
+	if strings.Contains(strings.ToLower(be.Hint), "console") {
+		t.Errorf("hint must not blame the Console for a runed failure: %q", be.Hint)
+	}
+}
+
+func TestClassifyBootError_EmbedderPhase_NetOpErrorIsNotConsole(t *testing.T) {
+	opErr := &net.OpError{Op: "dial", Net: "unix", Err: errors.New("connect: connection refused")}
+	be := ClassifyBootError(opErr, BootErrCtx{
+		Phase:           domain.BootPhaseEmbedderDial,
+		ConsoleEndpoint: "tcp://console.example:50051",
+	})
+	if be.Kind != domain.BootErrEmbedderUnreachable {
+		t.Fatalf("kind: got %q want %q", be.Kind, domain.BootErrEmbedderUnreachable)
+	}
+}
+
+func TestClassifyBootError_EmbedderPhase_FailedPreconditionIsNotReady(t *testing.T) {
+	// runed is up (socket open before its model download finishes) but returns
+	// FAILED_PRECONDITION — surface "not ready / downloading", not unreachable.
+	be := ClassifyBootError(
+		status.Error(codes.FailedPrecondition, "backend not wired yet"),
+		BootErrCtx{Phase: domain.BootPhaseEmbedderDial},
+	)
+	if be.Kind != domain.BootErrEmbedderUnreachable {
+		t.Fatalf("kind: got %q want %q", be.Kind, domain.BootErrEmbedderUnreachable)
+	}
+	if !strings.Contains(strings.ToLower(be.Hint), "not ready") &&
+		!strings.Contains(strings.ToLower(be.Hint), "downloading") {
+		t.Errorf("hint should indicate runed is still starting: %q", be.Hint)
+	}
+}
+
 func TestClassifyBootError_PhaseFallback_RunespaceIndex(t *testing.T) {
 	be := ClassifyBootError(
 		fmt.Errorf("unknown index error"),

@@ -52,6 +52,18 @@ func ClassifyBootError(err error, c BootErrCtx) *domain.BootError {
 		Attempts: c.Attempts,
 	}
 
+	// The embedder phase talks to the LOCAL runed daemon over a UDS, not the
+	// Console. The net/gRPC classifiers below are Console-oriented and
+	// phase-blind, so without this guard a transport failure from runed
+	// (gRPC Unavailable / net.OpError) is mislabeled console_network — "Console
+	// not reachable" — even though the Console already answered GetAgentManifest
+	// earlier in the same boot. Route embedder-phase errors to their own
+	// classifier first.
+	if c.Phase == domain.BootPhaseEmbedderDial {
+		classifyEmbedderErr(err, be)
+		return be
+	}
+
 	// Order matters: more specific checks first. Each branch fills Kind+Hint
 	// and returns. The phase-aware fallback at the bottom catches anything
 	// that didn't match a structured sentinel.
@@ -106,6 +118,26 @@ func ClassifyDormantReason(reason string) *domain.BootError {
 		be.Hint = "Dormant: " + reason
 	}
 	return be
+}
+
+// embedderUnreachableHint is the recovery text for a runed daemon that can't be
+// reached on its local socket. /rune:activate spawns runed automatically, so a
+// persistent failure means the daemon isn't installed, crashed, or never came
+// up — point the user at a retry and the daemon log.
+const embedderUnreachableHint = "The runed embedding daemon is not reachable on its local socket. Run /rune:activate to (re)start it; if this persists, inspect ~/.runed/logs/daemon.log."
+
+// classifyEmbedderErr classifies a failure from the runed (embedder) phase.
+// Every failure here is runed-local — the daemon is unreachable, still
+// starting, or rejecting the request — never a Console problem. A gRPC
+// FailedPrecondition means runed is up but not ready (e.g. mid model-download),
+// which retries into readiness; everything else is treated as unreachable.
+func classifyEmbedderErr(err error, be *domain.BootError) {
+	be.Kind = domain.BootErrEmbedderUnreachable
+	if st, ok := status.FromError(err); ok && st.Code() == codes.FailedPrecondition {
+		be.Hint = "The runed daemon is running but not ready yet — it may still be downloading its embedding model. Boot retries automatically; check progress with /rune:status."
+		return
+	}
+	be.Hint = embedderUnreachableHint
 }
 
 // ── individual classifiers ────────────────────────────────────────────────
@@ -323,7 +355,7 @@ func applyPhaseFallback(be *domain.BootError, c BootErrCtx) {
 		be.Hint = "Could not save key material to ~/.rune/. Check filesystem permissions."
 	case domain.BootPhaseEmbedderDial:
 		be.Kind = domain.BootErrEmbedderUnreachable
-		be.Hint = "Embedder daemon (runed) is not reachable on its UDS socket. Start it with `runed start`."
+		be.Hint = embedderUnreachableHint
 	case domain.BootPhaseRunespaceInit:
 		be.Kind = domain.BootErrRunespaceInit
 		be.Hint = "The client-side runespace encryptor could not be initialized — the EncKey from the console manifest may be invalid. Re-run /rune:configure."
