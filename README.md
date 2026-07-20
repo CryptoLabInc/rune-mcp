@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src=".github/assets/repo-badges.svg" alt="MCP server · Go 1.26+ · Apache 2.0" width="590">
+  <img src=".github/assets/repo-badges.svg" alt="MCP server · Go 1.26+ · Apache 2.0 · Release v1.0.0-alpha" width="790">
 </p>
 
 <p align="center">
