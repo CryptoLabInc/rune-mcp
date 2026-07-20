@@ -3,10 +3,12 @@ package service
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
 )
@@ -242,5 +244,103 @@ func TestBootstrapProgress_HealthErrorIsNil(t *testing.T) {
 
 	if d := s.bootstrapProgress(context.Background()); d != nil {
 		t.Errorf("health error: want nil BootstrapDetail, got %+v", d)
+	}
+}
+
+// --- Activate: waiting_for_bootstrap short-circuit is health-gated ---//
+
+// writeActiveConfig provisions a minimal ~/.rune/config.json (under the
+// test-scoped $HOME) so Activate gets past its configure_required pre-checks.
+func writeActiveConfig(t *testing.T) {
+	t.Helper()
+	cfg := &config.Config{State: "active"}
+	cfg.Console.Endpoint = "127.0.0.1:1"
+	cfg.Console.Token = "test-token"
+	if err := config.Save(cfg); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+}
+
+// isolateActivateEnv scopes HOME (config), the runed socket, and every rune
+// binary lookup path to empty test dirs, so Activate's ensureDaemon path
+// deterministically resolves to install_pending instead of spawning anything.
+func isolateActivateEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("RUNE_EMBEDDER_SOCKET", filepath.Join(t.TempDir(), "embedding.sock"))
+	t.Setenv("RUNE_HOME", t.TempDir())
+	t.Setenv("CLAUDE_PLUGIN_ROOT", "")
+	t.Setenv("PATH", "")
+}
+
+// While runed reports LOADING, Activate must short-circuit: report progress,
+// keep the watcher alive, and NOT re-run the boot loop.
+func TestActivate_WaitingForBootstrap_LoadingReportsProgress(t *testing.T) {
+	isolateActivateEnv(t)
+	writeActiveConfig(t)
+
+	mgr := lifecycle.NewManager()
+	mgr.SetState(lifecycle.StateWaitingForBootstrap)
+	s := &LifecycleService{State: mgr}
+	s.SetEmbedder(&stubEmbedder{healthFn: func(context.Context) (embedder.HealthSnapshot, error) {
+		return embedder.HealthSnapshot{Status: "LOADING", Phase: "FETCHING_MODEL", BytesDone: 1, BytesTotal: 2}, nil
+	}})
+
+	res, err := s.Activate(context.Background())
+	if err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+	if res.Status != ActivateStatusWaitingForBootstrap {
+		t.Fatalf("status: got %q want %q", res.Status, ActivateStatusWaitingForBootstrap)
+	}
+	if res.Bootstrap == nil || res.Bootstrap.Phase != "FETCHING_MODEL" {
+		t.Errorf("bootstrap detail: got %+v, want FETCHING_MODEL progress", res.Bootstrap)
+	}
+	if got := mgr.Current(); got != lifecycle.StateWaitingForBootstrap {
+		t.Errorf("state: got %v, want unchanged waiting_for_bootstrap", got)
+	}
+}
+
+// When the state says waiting_for_bootstrap but runed does NOT answer LOADING
+// (crashed mid-download, DEGRADED, or the model finished after the watcher's
+// deadline), Activate must fall through to the full path instead of promising
+// "completes automatically" forever. With no rune binary resolvable in the
+// test env, the full path deterministically surfaces install_pending.
+func TestActivate_WaitingForBootstrap_NotLoadingFallsThrough(t *testing.T) {
+	cases := []struct {
+		name     string
+		healthFn func(context.Context) (embedder.HealthSnapshot, error)
+	}{
+		{"runed dead", func(context.Context) (embedder.HealthSnapshot, error) {
+			return embedder.HealthSnapshot{}, errors.New("unavailable")
+		}},
+		{"runed degraded", func(context.Context) (embedder.HealthSnapshot, error) {
+			return embedder.HealthSnapshot{Status: "DEGRADED"}, nil
+		}},
+		{"model ready, watcher expired", func(context.Context) (embedder.HealthSnapshot, error) {
+			return embedder.HealthSnapshot{Status: "OK"}, nil
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateActivateEnv(t)
+			writeActiveConfig(t)
+
+			mgr := lifecycle.NewManager()
+			mgr.SetState(lifecycle.StateWaitingForBootstrap)
+			s := &LifecycleService{State: mgr}
+			s.SetEmbedder(&stubEmbedder{healthFn: tc.healthFn})
+
+			res, err := s.Activate(context.Background())
+			if err != nil {
+				t.Fatalf("Activate: %v", err)
+			}
+			if res.Status == ActivateStatusWaitingForBootstrap {
+				t.Fatalf("status: still %q — short-circuit did not fall through", res.Status)
+			}
+			if res.Status != ActivateStatusInstallPending {
+				t.Errorf("status: got %q want %q (full path reached ensureDaemon)", res.Status, ActivateStatusInstallPending)
+			}
+		})
 	}
 }
