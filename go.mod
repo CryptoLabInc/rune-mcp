@@ -6,6 +6,7 @@ require (
 	github.com/CryptoLabInc/rune-console v1.0.0
 	github.com/CryptoLabInc/runed v1.0.0
 	github.com/CryptoLabInc/runespace-sdk v1.0.2
+	github.com/godbus/dbus/v5 v5.2.2
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.5.0
 	github.com/zalando/go-keyring v0.2.8
@@ -16,7 +17,6 @@ require (
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260415201107-50325440f8f2.1 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
-	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect

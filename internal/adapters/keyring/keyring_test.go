@@ -10,6 +10,8 @@ import (
 // the test never touches the host's real keychain.
 func TestRoundTrip(t *testing.T) {
 	zk.MockInit()
+	available = func() bool { return true }
+	t.Cleanup(func() { available = detectAvailable })
 
 	const account = "127.0.0.1:50051"
 
