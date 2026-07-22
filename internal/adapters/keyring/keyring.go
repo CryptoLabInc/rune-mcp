@@ -5,6 +5,7 @@
 // It is a thin wrapper over github.com/zalando/go-keyring. Every call can fail
 // on a host with no usable keyring (headless CI, no D-Bus, a locked keychain);
 // callers detect that via IsUnavailable and fall back to config-file storage.
+
 package keyring
 
 import (
@@ -23,9 +24,15 @@ const service = "rune-mcp"
 // fall back to config-file storage rather than treating it as fatal.
 var ErrUnavailable = errors.New("keyring unavailable")
 
+var available = detectAvailable // detect whether OS keyring backend is present or not
+
 // Set stores token for account (the console endpoint). A backend failure is
 // returned wrapped in ErrUnavailable.
 func Set(account, token string) error {
+	if !available() {
+		return fmt.Errorf("%w: no Secret service on this host", ErrUnavailable)
+	}
+
 	if err := zk.Set(service, account, token); err != nil {
 		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
@@ -37,6 +44,10 @@ func Set(account, token string) error {
 // itself is unusable — a distinction callers need to tell "not stored here" from
 // "cannot read the store".
 func Get(account string) (string, bool, error) {
+	if !available() {
+		return "", false, fmt.Errorf("%w: no Secret service on this host", ErrUnavailable)
+	}
+
 	v, err := zk.Get(service, account)
 	if errors.Is(err, zk.ErrNotFound) {
 		return "", false, nil
@@ -49,6 +60,10 @@ func Get(account string) (string, bool, error) {
 
 // Delete removes the account's entry. A missing entry is not an error.
 func Delete(account string) error {
+	if !available() {
+		return nil
+	}
+
 	if err := zk.Delete(service, account); err != nil {
 		if errors.Is(err, zk.ErrNotFound) {
 			return nil
