@@ -1,58 +1,58 @@
-// Package seal produces the client-side AES-256-CTR metadata envelope used
-// on the capture path. rune-mcp holds the agent_dek (delivered in the Console
-// manifest) and seals metadata locally, so plaintext metadata never leaves
-// the developer machine; the Console opens the envelope on recall (it owns
-// team_secret and every agent's dek).
-//
-// Envelope: {"a": agent_id, "c": base64(IV(16B) || AES-256-CTR(dek, plaintext))}.
-//
-// AES-CTR is unauthenticated (no MAC/AAD). A wrong-key open yields garbage
-// rather than an error; the Console guards that on recall (utf8 check) and the
-// planned AES-GCM migration removes the malleability. Restored from the
-// pre-integration adapter (git fe751b4^ internal/adapters/envector/aes_ctr.go);
-// Open lives on the Console, not here.
+// Package seal produces authenticated client-side metadata envelopes. The
+// Console receives ciphertext, validates and opens it on insert, and opens it
+// again on recall using the same derived agent key and authenticated identity.
 package seal
 
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 )
 
-// envelope is the on-wire/at-rest shape; field names are the stable contract
-// the Console's openMeta unmarshals.
 type envelope struct {
-	A string `json:"a"` // agent_id
-	C string `json:"c"` // base64(IV || ciphertext)
+	V int    `json:"v"`
+	A string `json:"a"`
+	R string `json:"r"`
+	C string `json:"c"`
 }
 
-// Seal encrypts plaintext with AES-256-CTR under dek (32 bytes) and a fresh
-// random IV, returning the JSON envelope. agentID is stored so the Console can
-// re-derive the same dek on open.
-func Seal(dek []byte, agentID string, plaintext []byte) (string, error) {
-	if len(dek) != 32 {
-		return "", fmt.Errorf("seal: invalid DEK size %d (expected 32)", len(dek))
+// SealV2 uses an HKDF-separated AES-256-GCM key and a fresh 12-byte nonce.
+// Agent and outer storage record IDs are authenticated with the ciphertext.
+func SealV2(baseDEK []byte, agentID, recordID string, plaintext []byte) (string, error) {
+	if len(baseDEK) != 32 {
+		return "", fmt.Errorf("seal: invalid DEK size %d (expected 32)", len(baseDEK))
 	}
-	block, err := aes.NewCipher(dek)
+	if agentID == "" || recordID == "" {
+		return "", fmt.Errorf("seal: agent ID and record ID must be nonempty")
+	}
+	key, err := hkdf.Key(sha256.New, baseDEK, nil, "rune/metadata/aes256gcm/v2", 32)
 	if err != nil {
-		return "", fmt.Errorf("seal: aes.NewCipher: %w", err)
+		return "", fmt.Errorf("seal: derive key: %w", err)
 	}
-	iv := make([]byte, aes.BlockSize)
-	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
-		return "", fmt.Errorf("seal: rand IV: %w", err)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", fmt.Errorf("seal: aes: %w", err)
 	}
-	ct := make([]byte, len(plaintext))
-	cipher.NewCTR(block, iv).XORKeyStream(ct, plaintext)
-
-	combined := make([]byte, 0, len(iv)+len(ct))
-	combined = append(combined, iv...)
-	combined = append(combined, ct...)
-	env := envelope{A: agentID, C: base64.StdEncoding.EncodeToString(combined)}
-	data, err := json.Marshal(env)
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("seal: gcm: %w", err)
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", fmt.Errorf("seal: random nonce: %w", err)
+	}
+	aad, err := json.Marshal([]string{"rune-metadata", "2", agentID, recordID})
+	if err != nil {
+		return "", fmt.Errorf("seal: marshal AAD: %w", err)
+	}
+	payload := gcm.Seal(nonce, nonce, plaintext, aad)
+	data, err := json.Marshal(envelope{V: 2, A: agentID, R: recordID, C: base64.StdEncoding.EncodeToString(payload)})
 	if err != nil {
 		return "", fmt.Errorf("seal: marshal envelope: %w", err)
 	}

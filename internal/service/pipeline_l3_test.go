@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,8 +19,9 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/seal"
 )
 
-// TestPipelineL3 exercises the full client-side-crypto pipeline through the
-// mcp-side clients against a LIVE local stack (runed + runeconsole + runespace):
+// TestPipelineL3 is an adapter/crypto round-trip against a LIVE local stack
+// (runed + runeconsole + runespace). It calls adapters directly, bypassing
+// CaptureService.Handle and MCP response shaping; it is not MCP-process E2E:
 //
 //	manifest → save EncKey → open encryptor (cgo)
 //	centroid relay → runed SetCentroids
@@ -27,7 +29,7 @@ import (
 //	query → EmbedSingle → console.Search → opened plaintext hit
 //
 // Gated on RUNECONSOLE_ADDR (e.g. 127.0.0.1:50051). The console must be a build
-// that distributes EncKey/agent_dek (pre_encrypted capability).
+// that distributes EncKey/agent_dek (metadata_envelope_v2 capability).
 //
 //	RUNECONSOLE_ADDR=127.0.0.1:50051 RUNE_HOME=$(mktemp -d) go test ./internal/service -run PipelineL3 -v
 func TestPipelineL3(t *testing.T) {
@@ -68,6 +70,9 @@ func TestPipelineL3(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAgentManifest: %v", err)
 	}
+	if !slices.Contains(bundle.Capabilities, "metadata_envelope_v2") {
+		t.Fatal("Console must advertise metadata_envelope_v2; upgrade Console before capture")
+	}
 	keyDir, err := keymanager.SaveEncKeys(bundle.KeyID, bundle.RMPEncKey, bundle.MMEncKey)
 	if err != nil {
 		t.Fatalf("SaveEncKeys: %v", err)
@@ -102,18 +107,19 @@ func TestPipelineL3(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EncryptClustered: %v", err)
 	}
+	recordID := uuid.NewString()
 	meta, _ := json.Marshal(map[string]any{
-		"id":               "rec-db-choice",
+		"id":               recordID,
 		"title":            "Database choice",
 		"reusable_insight": insight,
 		"domain":           "architecture",
 	})
-	sealed, err := seal.Seal(bundle.AgentDEK, bundle.AgentID, meta)
+	sealed, err := seal.SealV2(bundle.AgentDEK, bundle.AgentID, recordID, meta)
 	if err != nil {
 		t.Fatalf("seal: %v", err)
 	}
 	id, err := vc.Insert(ctx, console.InsertItem{
-		ID:                 uuid.NewString(), // runespace requires a UUID item id
+		ID:                 recordID, // runespace requires a UUID item id
 		RMPItem:            rmp,
 		MMItem:             mm,
 		ClusterID:          routed.ClusterID,
@@ -136,14 +142,14 @@ func TestPipelineL3(t *testing.T) {
 	}
 	t.Logf("recall returned %d hits", len(hits))
 	for i, h := range hits {
-		t.Logf("  hit[%d] id=%s score=%.4f meta=%s", i, h.ID, h.Score, h.Metadata)
+		t.Logf("  hit[%d] id=%s score=%.4f", i, h.ID, h.Score)
 	}
 	if len(hits) == 0 {
 		t.Fatal("recall returned 0 hits")
 	}
 	found := false
 	for _, h := range hits {
-		if strings.Contains(h.Metadata, "PostgreSQL") && strings.Contains(h.Metadata, "Database choice") {
+		if h.ID == recordID && strings.Contains(h.Metadata, "PostgreSQL") && strings.Contains(h.Metadata, "Database choice") {
 			found = true
 		}
 	}

@@ -1,13 +1,14 @@
 // Package console is the Rune-console gRPC client.
 //
-// Under the runespace model the console holds ALL FHE keys and is the sole
-// runespace client. rune-mcp is a pure-Go client that only talks to this
-// service — it never encrypts/decrypts or touches runespace directly.
+// MCP encrypts capture vectors with public EncKeys and seals metadata with its
+// per-agent DEK. Console retains the HE secret keys and team secret, forwards
+// ciphertext inserts to runespace, and decrypts authorized scores and content.
+// Recall sends a plaintext query embedding to Console.
 //
 // Responsibility:
-//   - GetAgentManifest: fetch agent config (no keys)
-//   - Insert: send a plaintext embedding + metadata; console encrypts + seals + stores
-//   - Search: send a plaintext query; console searches + decrypts + opens metadata
+//   - GetAgentManifest: fetch agent config, public EncKeys and per-agent DEK
+//   - Insert: send encrypted vectors and authenticated metadata ciphertext
+//   - Search: send a plaintext query embedding; receive authorized opened hits
 package console
 
 import (
@@ -42,9 +43,10 @@ const HealthCheckTimeout = 5 * time.Second
 // derived agent_dek so rune-mcp can encrypt/seal locally; SecKey and
 // team_secret stay in the Console.
 type Bundle struct {
-	AgentID string
-	KeyID   string
-	Dim     int
+	Capabilities []string
+	AgentID      string
+	KeyID        string
+	Dim          int
 
 	AuthorEmail       string // record attribution
 	AuthorDisplayName string
@@ -56,15 +58,16 @@ type Bundle struct {
 }
 
 type manifestJSON struct {
-	AgentID            string `json:"agent_id"`
-	KeyID              string `json:"key_id"`
-	Dim                int    `json:"dim"`
-	AuthorEmail        string `json:"author_email"`
-	AuthorDisplayName  string `json:"author_display_name"`
-	RMPEncKey          string `json:"rmp_enc_key"`
-	MMEncKey           string `json:"mm_enc_key"`
-	AgentDEK           string `json:"agent_dek"`
-	CentroidSetVersion string `json:"centroid_set_version"`
+	Capabilities       []string `json:"capabilities"`
+	AgentID            string   `json:"agent_id"`
+	KeyID              string   `json:"key_id"`
+	Dim                int      `json:"dim"`
+	AuthorEmail        string   `json:"author_email"`
+	AuthorDisplayName  string   `json:"author_display_name"`
+	RMPEncKey          string   `json:"rmp_enc_key"`
+	MMEncKey           string   `json:"mm_enc_key"`
+	AgentDEK           string   `json:"agent_dek"`
+	CentroidSetVersion string   `json:"centroid_set_version"`
 }
 
 func ParseManifestJSON(raw string) (*Bundle, error) {
@@ -73,6 +76,7 @@ func ParseManifestJSON(raw string) (*Bundle, error) {
 		return nil, fmt.Errorf("console: parse manifest_json: %w", err)
 	}
 	b := &Bundle{
+		Capabilities:       m.Capabilities,
 		AgentID:            m.AgentID,
 		KeyID:              m.KeyID,
 		Dim:                m.Dim,
@@ -108,7 +112,7 @@ type InsertItem struct {
 	MMItem             []byte // EncryptClustered output
 	ClusterID          uint32
 	CentroidSetVersion string
-	SealedMetadata     string // client-sealed {"a","c"} envelope
+	SealedMetadata     string // client-sealed authenticated {"v","a","r","c"} envelope
 }
 
 // CentroidSet is the relayed IVF centroid set (runespace -> console -> here).

@@ -78,11 +78,12 @@ func (noopEncryptor) EncryptClustered([]float32) ([]byte, error) { return []byte
 
 func newResyncService(e embedder.Client, v *resyncConsole) *CaptureService {
 	return &CaptureService{
-		Console:   v,
-		Embedder:  e,
-		Encryptor: noopEncryptor{},
-		AgentID:   "agent-test",
-		AgentDEK:  bytes.Repeat([]byte{7}, 32),
+		Console:            v,
+		Embedder:           e,
+		Encryptor:          noopEncryptor{},
+		MetadataEnvelopeV2: true,
+		AgentID:            "agent-test",
+		AgentDEK:           bytes.Repeat([]byte{7}, 32),
 	}
 }
 

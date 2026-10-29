@@ -92,6 +92,14 @@ func (s *RecallService) search(ctx context.Context, vec []float32, topk int) ([]
 		if te := topKLimitErr(err); te != nil {
 			return nil, te
 		}
+		var ce *console.Error
+		if errors.As(err, &ce) && ce.Code == console.ErrConsoleDecryption.Code {
+			return nil, &domain.RuneError{
+				Code:      domain.CodeConsoleDecryption,
+				Message:   "metadata integrity check failed",
+				Retryable: false,
+			}
+		}
 		slog.Warn("recall: console search failed", "err", err)
 		return nil, fmt.Errorf("console search: %w", err)
 	}

@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -114,11 +115,11 @@ func closeAfterInterval(name string, prev, next io.Closer) {
 	}()
 }
 
-// ApplyConsoleBundle propagates per-bundle config (agent identity / KeyID) to
-// the services. Called by the boot loop after Console.GetAgentManifest.
-//
-// Under the runespace model the manifest carries no FHE keys — the console holds
-// them and does all encrypt/decrypt/seal — so this only wires non-secret config.
+// ApplyConsoleBundle propagates agent identity, per-agent metadata DEK and
+// negotiated capabilities to capture, and KeyID to lifecycle. The boot loop
+// calls it after Console.GetAgentManifest. The manifest also supplies public
+// EncKeys for client-side capture encryption; Console retains HE secret keys
+// and decrypts authorized scores and content. Recall queries remain plaintext.
 func (d *Deps) ApplyConsoleBundle(b *console.Bundle) {
 	if b == nil {
 		return
@@ -126,6 +127,7 @@ func (d *Deps) ApplyConsoleBundle(b *console.Bundle) {
 	if d.Capture != nil {
 		d.Capture.AgentID = b.AgentID
 		d.Capture.AgentDEK = b.AgentDEK
+		d.Capture.MetadataEnvelopeV2 = slices.Contains(b.Capabilities, "metadata_envelope_v2")
 		d.Capture.Author = formatAuthor(b.AuthorDisplayName, b.AuthorEmail)
 	}
 	if d.Lifecycle != nil {
@@ -167,7 +169,7 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 
 	// Write tools — state-gated.
 	mustAdd(srv, deps.Inflight, "capture",
-		"Use to remember an insight worth recalling later. Provide `insight` (the concise, self-contained knowledge that gets embedded and searched) and optionally `context` (fuller surrounding detail, stored and returned but not searched).",
+		"Use to remember an insight worth recalling later. Provide `insight` (the concise, self-contained knowledge that gets embedded and searched) and optionally `context` (fuller surrounding detail, stored and returned but not searched). Capture does not check for similar stored records; separate calls can store duplicate insights, so submit each decision once.",
 		handleCapture(deps))
 	mustAdd(srv, deps.Inflight, "recall",
 		"Use to retrieve previously captured insights relevant to a natural-language `query`. Returns the most similar records, recency-weighted.",

@@ -23,7 +23,7 @@ Most users should install the **RUNE agent integration**, not launch this binary
 - **A small MCP surface.** Capture, recall, diagnostics, and lifecycle tools are exposed over stdio JSON-RPC.
 - **Deterministic memory records.** Captures use a compact timestamp/author/insight/context schema instead of asking the storage layer to interpret conversations.
 - **Local embedding and capture encryption.** `runed` produces the embedding on the user's machine; `rune-mcp` encrypts both RMP and MM item representations with public keys supplied by the Console.
-- **Novelty and reranking policy.** Near-duplicate captures are suppressed and recall results receive recency-aware reranking.
+- **Capture and recall policy.** Capture encrypts and stores each record without a semantic novelty search. Separate capture calls may produce duplicates until explicit event idempotency is implemented. Recall results receive recency-aware reranking.
 - **Recoverable session lifecycle.** Configure, activate, deactivate, boot retry, dependency reinjection, and graceful shutdown share one state model.
 
 ## MCP tools
@@ -95,6 +95,15 @@ Useful environment overrides:
 | `RUNE_EMBEDDER_SOCKET` | Use a non-default `runed` socket. |
 | `RUNE_ENCRYPTOR_IDLE` | Control how long public-key FHE contexts remain resident after capture. |
 
+## Security and upgrade notes
+
+Stored item vectors are encrypted; recall query vectors are plaintext to Console
+and RuneSpace. Console holds HE secret keys and payload keys and can open
+authorized content. Read the [security boundary and coordinated upgrade guide](docs/security-upgrade.md)
+for pending authenticated-metadata v2 changes, legacy read policy, and the
+maintenance window required when upgrading Console before MCP clients. Existing
+installer downloads are not evidence that these pending changes are released.
+
 ## Development
 
 Go 1.26.4 or newer and the platform prerequisites inherited from [`runespace-sdk`](https://github.com/CryptoLabInc/runespace-sdk) are required.
@@ -114,7 +123,7 @@ The server uses the official Go MCP SDK and communicates over stdio. Avoid writi
 | [`cmd/rune-mcp/`](cmd/rune-mcp/) | Process wiring, stdio server, signals, and graceful exit. |
 | [`internal/mcp/`](internal/mcp/) | Tool schemas, registration, and response shaping. |
 | [`internal/service/`](internal/service/) | Capture, recall, recovery, and lifecycle orchestration. |
-| [`internal/policy/`](internal/policy/) | Novelty classification, UTF-8 limits, and recall reranking. |
+| [`internal/policy/`](internal/policy/) | Capture policy helpers, UTF-8 limits, and recall reranking. |
 | [`internal/adapters/`](internal/adapters/) | Console, `runed`, key storage, FHE, and metadata boundaries. |
 | [`internal/lifecycle/`](internal/lifecycle/) | Boot state, dependency reinjection, and shutdown coordination. |
 

@@ -39,6 +39,7 @@ var (
 	ErrConsoleUnavailable      = &Error{Code: "CONSOLE_UNAVAILABLE", Retryable: true}
 	ErrConsoleAuthFailed       = &Error{Code: "CONSOLE_AUTH_FAILED", Retryable: false}
 	ErrConsoleKeyNotFound      = &Error{Code: "CONSOLE_KEY_NOT_FOUND", Retryable: false}
+	ErrConsoleDecryption       = &Error{Code: "CONSOLE_DECRYPTION_ERROR", Retryable: false}
 	ErrConsoleInternal         = &Error{Code: "CONSOLE_INTERNAL", Retryable: true}
 	ErrConsoleTimeout          = &Error{Code: "CONSOLE_TIMEOUT", Retryable: true}
 	ErrConsolePermissionDenied = &Error{Code: "CONSOLE_PERMISSION_DENIED", Retryable: false}
@@ -67,6 +68,7 @@ var (
 //	InvalidArgument     → ErrConsoleInvalidInput     (any other bad client input)
 //	ResourceExhausted   → ErrConsoleRateLimited      (token rate limit)
 //	FailedPrecondition  → ErrConsoleWrongCentroidVersion (msg prefix "WRONG_CENTROID_VERSION": stale centroid routing)
+//	DataLoss            → ErrConsoleDecryption      (metadata integrity failure; permanent)
 //	NotFound            → ErrConsoleKeyNotFound      (server doesn't emit this today; mapped for future)
 //	Unavailable         → ErrConsoleUnavailable      (transport: network / server down)
 //	DeadlineExceeded    → ErrConsoleTimeout          (transport: client deadline)
@@ -149,6 +151,13 @@ func MapGRPCError(err error) error {
 		return &Error{
 			Code:      ErrConsoleInternal.Code,
 			Message:   st.Message(),
+			Retryable: false,
+			Cause:     err,
+		}
+	case codes.DataLoss:
+		return &Error{
+			Code:      ErrConsoleDecryption.Code,
+			Message:   "metadata integrity check failed",
 			Retryable: false,
 			Cause:     err,
 		}
