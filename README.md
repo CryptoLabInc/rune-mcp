@@ -95,6 +95,15 @@ Useful environment overrides:
 | `RUNE_EMBEDDER_SOCKET` | Use a non-default `runed` socket. |
 | `RUNE_ENCRYPTOR_IDLE` | Control how long public-key FHE contexts remain resident after capture. |
 
+## Security and upgrade notes
+
+Stored item vectors are encrypted; recall query vectors are plaintext to Console
+and RuneSpace. Console holds HE secret keys and payload keys and can open
+authorized content. Read the [security boundary and coordinated upgrade guide](docs/security-upgrade.md)
+for pending authenticated-metadata v2 changes, legacy read policy, and the
+maintenance window required when upgrading Console before MCP clients. Existing
+installer downloads are not evidence that these pending changes are released.
+
 ## Development
 
 Go 1.26.4 or newer and the platform prerequisites inherited from [`runespace-sdk`](https://github.com/CryptoLabInc/runespace-sdk) are required.
@@ -114,7 +123,7 @@ The server uses the official Go MCP SDK and communicates over stdio. Avoid writi
 | [`cmd/rune-mcp/`](cmd/rune-mcp/) | Process wiring, stdio server, signals, and graceful exit. |
 | [`internal/mcp/`](internal/mcp/) | Tool schemas, registration, and response shaping. |
 | [`internal/service/`](internal/service/) | Capture, recall, recovery, and lifecycle orchestration. |
-| [`internal/policy/`](internal/policy/) | Novelty classification, UTF-8 limits, and recall reranking. |
+| [`internal/policy/`](internal/policy/) | Capture policy helpers, UTF-8 limits, and recall reranking. |
 | [`internal/adapters/`](internal/adapters/) | Console, `runed`, key storage, FHE, and metadata boundaries. |
 | [`internal/lifecycle/`](internal/lifecycle/) | Boot state, dependency reinjection, and shutdown coordination. |
 
