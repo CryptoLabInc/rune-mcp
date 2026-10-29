@@ -115,11 +115,11 @@ func closeAfterInterval(name string, prev, next io.Closer) {
 	}()
 }
 
-// ApplyConsoleBundle propagates per-bundle config (agent identity / KeyID) to
-// the services. Called by the boot loop after Console.GetAgentManifest.
-//
-// Under the runespace model the manifest carries no FHE keys — the console holds
-// them and does all encrypt/decrypt/seal — so this only wires non-secret config.
+// ApplyConsoleBundle propagates agent identity, per-agent metadata DEK and
+// negotiated capabilities to capture, and KeyID to lifecycle. The boot loop
+// calls it after Console.GetAgentManifest. The manifest also supplies public
+// EncKeys for client-side capture encryption; Console retains HE secret keys
+// and decrypts authorized scores and content. Recall queries remain plaintext.
 func (d *Deps) ApplyConsoleBundle(b *console.Bundle) {
 	if b == nil {
 		return

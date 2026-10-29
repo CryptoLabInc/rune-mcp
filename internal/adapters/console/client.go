@@ -1,13 +1,14 @@
 // Package console is the Rune-console gRPC client.
 //
-// Under the runespace model the console holds ALL FHE keys and is the sole
-// runespace client. rune-mcp is a pure-Go client that only talks to this
-// service — it never encrypts/decrypts or touches runespace directly.
+// MCP encrypts capture vectors with public EncKeys and seals metadata with its
+// per-agent DEK. Console retains the HE secret keys and team secret, forwards
+// ciphertext inserts to runespace, and decrypts authorized scores and content.
+// Recall sends a plaintext query embedding to Console.
 //
 // Responsibility:
-//   - GetAgentManifest: fetch agent config (no keys)
-//   - Insert: send a plaintext embedding + metadata; console encrypts + seals + stores
-//   - Search: send a plaintext query; console searches + decrypts + opens metadata
+//   - GetAgentManifest: fetch agent config, public EncKeys and per-agent DEK
+//   - Insert: send encrypted vectors and authenticated metadata ciphertext
+//   - Search: send a plaintext query embedding; receive authorized opened hits
 package console
 
 import (

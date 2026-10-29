@@ -1,6 +1,6 @@
 // Package seal produces authenticated client-side metadata envelopes. The
-// Console receives only ciphertext and opens it on recall using the same
-// derived agent key and authenticated agent/record identity.
+// Console receives ciphertext, validates and opens it on insert, and opens it
+// again on recall using the same derived agent key and authenticated identity.
 package seal
 
 import (
