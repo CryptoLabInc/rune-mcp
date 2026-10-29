@@ -19,8 +19,9 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/seal"
 )
 
-// TestPipelineL3 exercises the full client-side-crypto pipeline through the
-// mcp-side clients against a LIVE local stack (runed + runeconsole + runespace):
+// TestPipelineL3 is an adapter/crypto round-trip against a LIVE local stack
+// (runed + runeconsole + runespace). It calls adapters directly, bypassing
+// CaptureService.Handle and MCP response shaping; it is not MCP-process E2E:
 //
 //	manifest → save EncKey → open encryptor (cgo)
 //	centroid relay → runed SetCentroids
@@ -141,14 +142,14 @@ func TestPipelineL3(t *testing.T) {
 	}
 	t.Logf("recall returned %d hits", len(hits))
 	for i, h := range hits {
-		t.Logf("  hit[%d] id=%s score=%.4f meta=%s", i, h.ID, h.Score, h.Metadata)
+		t.Logf("  hit[%d] id=%s score=%.4f", i, h.ID, h.Score)
 	}
 	if len(hits) == 0 {
 		t.Fatal("recall returned 0 hits")
 	}
 	found := false
 	for _, h := range hits {
-		if strings.Contains(h.Metadata, "PostgreSQL") && strings.Contains(h.Metadata, "Database choice") {
+		if h.ID == recordID && strings.Contains(h.Metadata, "PostgreSQL") && strings.Contains(h.Metadata, "Database choice") {
 			found = true
 		}
 	}
