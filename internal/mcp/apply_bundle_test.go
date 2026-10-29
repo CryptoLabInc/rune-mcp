@@ -54,3 +54,25 @@ func TestApplyConsoleBundle_NilServicesNoOp(t *testing.T) {
 	d := &mcp.Deps{} // no services
 	d.ApplyConsoleBundle(&console.Bundle{AgentID: "x"})
 }
+
+func TestApplyConsoleBundle_MetadataCapabilityPropagationAndClearing(t *testing.T) {
+	d := newDepsForApply()
+	for _, tc := range []struct {
+		raw  string
+		want bool
+	}{
+		{`{"capabilities":["metadata_envelope_v2"]}`, true},
+		{`{"capabilities":["unrelated"]}`, false},
+		{`{"capabilities":["metadata_envelope_v2"]}`, true},
+		{`{}`, false},
+	} {
+		b, err := console.ParseManifestJSON(tc.raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.ApplyConsoleBundle(b)
+		if d.Capture.MetadataEnvelopeV2 != tc.want {
+			t.Fatalf("manifest %s: capability=%v want %v", tc.raw, d.Capture.MetadataEnvelopeV2, tc.want)
+		}
+	}
+}

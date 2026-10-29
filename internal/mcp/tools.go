@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -126,6 +127,7 @@ func (d *Deps) ApplyConsoleBundle(b *console.Bundle) {
 	if d.Capture != nil {
 		d.Capture.AgentID = b.AgentID
 		d.Capture.AgentDEK = b.AgentDEK
+		d.Capture.MetadataEnvelopeV2 = slices.Contains(b.Capabilities, "metadata_envelope_v2")
 		d.Capture.Author = formatAuthor(b.AuthorDisplayName, b.AuthorEmail)
 	}
 	if d.Lifecycle != nil {

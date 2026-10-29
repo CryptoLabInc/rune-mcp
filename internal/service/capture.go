@@ -27,8 +27,9 @@ type CaptureService struct {
 	State     *lifecycle.Manager
 
 	// Injected from Console bundle at boot.
-	AgentID  string // for the seal envelope's "a" field
-	AgentDEK []byte // metadata seal key (agent_dek from manifest)
+	MetadataEnvelopeV2 bool
+	AgentID            string // for the seal envelope's "a" field
+	AgentDEK           []byte // metadata seal key (agent_dek from manifest)
 
 	// Author is the record attribution ("Display Name <email>"), wired from the
 	// console bundle.
@@ -59,6 +60,9 @@ func NewCaptureService() *CaptureService {
 // the item under the new set (fresh cluster_id + version, same id), and retry
 // exactly once.
 func (s *CaptureService) EncryptSealInsert(ctx context.Context, text, metadataJSON string) (string, error) {
+	if !s.MetadataEnvelopeV2 {
+		return "", fmt.Errorf("capture: Console does not advertise metadata_envelope_v2; upgrade Console and refresh the agent manifest before capture")
+	}
 	if s.Encryptor == nil {
 		return "", fmt.Errorf("capture: encryptor not initialized")
 	}
@@ -109,7 +113,7 @@ func (s *CaptureService) buildInsertItem(ctx context.Context, id, text, metadata
 	if err != nil {
 		return console.InsertItem{}, fmt.Errorf("encrypt clustered: %w", err)
 	}
-	sealed, err := seal.Seal(s.AgentDEK, s.AgentID, []byte(metadataJSON))
+	sealed, err := seal.SealV2(s.AgentDEK, s.AgentID, id, []byte(metadataJSON))
 	if err != nil {
 		return console.InsertItem{}, fmt.Errorf("seal metadata: %w", err)
 	}

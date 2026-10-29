@@ -5,9 +5,12 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,11 +103,16 @@ func TestCaptureHandlePrivacy(t *testing.T) {
 					t.Error("insert contains plaintext metadata")
 				}
 				var env struct {
+					V int    `json:"v"`
+					R string `json:"r"`
 					A string `json:"a"`
 					C string `json:"c"`
 				}
 				if err := json.Unmarshal([]byte(item.SealedMetadata), &env); err != nil {
 					t.Fatal(err)
+				}
+				if env.V != 2 || env.R != item.ID {
+					t.Fatalf("metadata must authenticate outer ID in v2 envelope: %+v", env)
 				}
 				if env.A != "agent-test" {
 					t.Errorf("seal agent = %q", env.A)
@@ -113,15 +121,26 @@ func TestCaptureHandlePrivacy(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(encrypted) <= aes.BlockSize {
+				if len(encrypted) < 28 {
 					t.Fatal("sealed metadata missing ciphertext")
 				}
-				block, err := aes.NewCipher(s.AgentDEK)
+				key, err := hkdf.Key(sha256.New, s.AgentDEK, nil, "rune/metadata/aes256gcm/v2", 32)
 				if err != nil {
 					t.Fatal(err)
 				}
-				plain := make([]byte, len(encrypted)-aes.BlockSize)
-				cipher.NewCTR(block, encrypted[:aes.BlockSize]).XORKeyStream(plain, encrypted[aes.BlockSize:])
+				block, err := aes.NewCipher(key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				gcm, err := cipher.NewGCM(block)
+				if err != nil {
+					t.Fatal(err)
+				}
+				aad, _ := json.Marshal([]string{"rune-metadata", "2", env.A, item.ID})
+				plain, err := gcm.Open(nil, encrypted[:12], encrypted[12:], aad)
+				if err != nil {
+					t.Fatalf("authenticate inserted metadata: %v", err)
+				}
 				var record domain.Record
 				if err := json.Unmarshal(plain, &record); err != nil {
 					t.Fatalf("open inserted metadata: %v", err)
@@ -134,5 +153,21 @@ func TestCaptureHandlePrivacy(t *testing.T) {
 				t.Errorf("insert routing = %+v", last)
 			}
 		})
+	}
+}
+
+func TestCaptureMissingMetadataCapability(t *testing.T) {
+	e := &privacyEmbedder{resyncEmbedder: &resyncEmbedder{version: "v2"}}
+	c := &privacyConsole{resyncConsole: &resyncConsole{engineVersion: "v2"}}
+	s := newResyncService(e, c.resyncConsole)
+	s.Console = c
+	// Default construction represents a server that did not negotiate v2.
+	s.MetadataEnvelopeV2 = false
+	_, err := s.EncryptSealInsert(context.Background(), "private", `{}`)
+	if err == nil || !strings.Contains(err.Error(), "metadata_envelope_v2") || !strings.Contains(strings.ToLower(err.Error()), "upgrade") {
+		t.Fatalf("want actionable capability error, got %v", err)
+	}
+	if e.routeCalls != 0 || e.singleCalls != 0 || len(c.items) != 0 || c.searchCalls != 0 {
+		t.Fatalf("capture used adapters before capability refusal")
 	}
 }

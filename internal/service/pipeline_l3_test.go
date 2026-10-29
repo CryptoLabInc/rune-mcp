@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -27,7 +28,7 @@ import (
 //	query → EmbedSingle → console.Search → opened plaintext hit
 //
 // Gated on RUNECONSOLE_ADDR (e.g. 127.0.0.1:50051). The console must be a build
-// that distributes EncKey/agent_dek (pre_encrypted capability).
+// that distributes EncKey/agent_dek (metadata_envelope_v2 capability).
 //
 //	RUNECONSOLE_ADDR=127.0.0.1:50051 RUNE_HOME=$(mktemp -d) go test ./internal/service -run PipelineL3 -v
 func TestPipelineL3(t *testing.T) {
@@ -68,6 +69,9 @@ func TestPipelineL3(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAgentManifest: %v", err)
 	}
+	if !slices.Contains(bundle.Capabilities, "metadata_envelope_v2") {
+		t.Fatal("Console must advertise metadata_envelope_v2; upgrade Console before capture")
+	}
 	keyDir, err := keymanager.SaveEncKeys(bundle.KeyID, bundle.RMPEncKey, bundle.MMEncKey)
 	if err != nil {
 		t.Fatalf("SaveEncKeys: %v", err)
@@ -102,18 +106,19 @@ func TestPipelineL3(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EncryptClustered: %v", err)
 	}
+	recordID := uuid.NewString()
 	meta, _ := json.Marshal(map[string]any{
-		"id":               "rec-db-choice",
+		"id":               recordID,
 		"title":            "Database choice",
 		"reusable_insight": insight,
 		"domain":           "architecture",
 	})
-	sealed, err := seal.Seal(bundle.AgentDEK, bundle.AgentID, meta)
+	sealed, err := seal.SealV2(bundle.AgentDEK, bundle.AgentID, recordID, meta)
 	if err != nil {
 		t.Fatalf("seal: %v", err)
 	}
 	id, err := vc.Insert(ctx, console.InsertItem{
-		ID:                 uuid.NewString(), // runespace requires a UUID item id
+		ID:                 recordID, // runespace requires a UUID item id
 		RMPItem:            rmp,
 		MMItem:             mm,
 		ClusterID:          routed.ClusterID,
