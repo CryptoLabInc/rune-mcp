@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,7 +17,6 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/seal"
 	"github.com/CryptoLabInc/rune-mcp/internal/domain"
 	"github.com/CryptoLabInc/rune-mcp/internal/lifecycle"
-	"github.com/CryptoLabInc/rune-mcp/internal/policy"
 )
 
 // CaptureService orchestrates the capture flow.
@@ -127,9 +125,9 @@ func (s *CaptureService) buildInsertItem(ctx context.Context, id, text, metadata
 
 // Handle captures one record. Called by internal/mcp/tools.go handleCapture.
 //
-// Flow: build the record → embed the insight → novelty gate on the insight
-// embedding (near-duplicate short-circuits) → seal + insert the record JSON,
-// keyed on the insight embedding → respond.
+// Flow: build the record → embed and route the insight locally → encrypt the
+// vector and seal the record JSON → insert the encrypted item → respond.
+// Capture does not measure novelty; separate calls may store duplicate records.
 func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest) (*domain.CaptureResponse, error) {
 	if s.Encryptor == nil {
 		return nil, fmt.Errorf("capture: encryptor not initialized")
@@ -140,14 +138,6 @@ func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest)
 		Author:    s.Author,
 		Insight:   req.Insight,
 		Context:   req.Context,
-	}
-
-	noveltyInfo, earlyResp, _ := s.runNoveltyCheck(ctx, record.Insight)
-	if earlyResp != nil {
-		return earlyResp, nil // near_duplicate
-	}
-	if noveltyInfo == nil {
-		noveltyInfo = &domain.NoveltyInfo{Score: 1.0, Class: "novel"}
 	}
 
 	body, err := json.Marshal(record)
@@ -163,69 +153,5 @@ func (s *CaptureService) Handle(ctx context.Context, req *domain.CaptureRequest)
 		OK:       true,
 		Captured: true,
 		RecordID: recordID,
-		Novelty:  noveltyInfo,
 	}, nil
-}
-
-// runNoveltyCheck embeds the insight, searches for near neighbors, and classifies
-// novelty. Returns novelty info + nil if capture should proceed, or a pre-built
-// response if near_duplicate (caller short-circuits). All failures are non-fatal.
-func (s *CaptureService) runNoveltyCheck(ctx context.Context, insight string) (*domain.NoveltyInfo, *domain.CaptureResponse, error) {
-	if s.Embedder == nil || s.Console == nil {
-		return &domain.NoveltyInfo{Score: 1.0, Class: "novel"}, nil, nil
-	}
-
-	vec, err := s.Embedder.EmbedSingle(ctx, insight)
-	if err != nil {
-		slog.Warn("novelty check: embed failed (non-fatal)", "err", err)
-		return &domain.NoveltyInfo{Score: 1.0, Class: "novel"}, nil, nil
-	}
-
-	hits, err := searchWithRecovery(ctx, s.State, s.Console, vec, 3)
-	if err != nil || len(hits) == 0 {
-		slog.Warn("novelty check: search failed or empty (non-fatal)", "err", err)
-		return &domain.NoveltyInfo{Score: 1.0, Class: "novel"}, nil, nil
-	}
-
-	maxSim := 0.0
-	for _, h := range hits {
-		if h.Score > maxSim {
-			maxSim = h.Score
-		}
-	}
-
-	class, score := policy.ClassifyNovelty(maxSim, policy.DefaultNoveltyThresholds)
-	noveltyInfo := &domain.NoveltyInfo{
-		Score:   score,
-		Class:   class,
-		Related: buildRelatedTop3(hits),
-	}
-
-	if class == domain.NoveltyClassNearDuplicate {
-		return noveltyInfo, &domain.CaptureResponse{
-			OK:       true,
-			Captured: false,
-			Reason:   "Near-duplicate - virtually identical insight already stored",
-			Novelty:  noveltyInfo,
-		}, nil
-	}
-
-	return noveltyInfo, nil, nil
-}
-
-func buildRelatedTop3(hits []console.Hit) []domain.RelatedRecord {
-	n := len(hits)
-	if n > 3 {
-		n = 3
-	}
-
-	records := make([]domain.RelatedRecord, n)
-	for i := 0; i < n; i++ {
-		records[i] = domain.RelatedRecord{
-			ID:         hits[i].ID,
-			Similarity: math.Round(hits[i].Score*1000) / 1000,
-		}
-	}
-
-	return records
 }

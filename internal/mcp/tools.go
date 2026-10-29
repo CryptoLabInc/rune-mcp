@@ -167,7 +167,7 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 
 	// Write tools — state-gated.
 	mustAdd(srv, deps.Inflight, "capture",
-		"Use to remember an insight worth recalling later. Provide `insight` (the concise, self-contained knowledge that gets embedded and searched) and optionally `context` (fuller surrounding detail, stored and returned but not searched).",
+		"Use to remember an insight worth recalling later. Provide `insight` (the concise, self-contained knowledge that gets embedded and searched) and optionally `context` (fuller surrounding detail, stored and returned but not searched). Capture does not check for similar stored records; separate calls can store duplicate insights, so submit each decision once.",
 		handleCapture(deps))
 	mustAdd(srv, deps.Inflight, "recall",
 		"Use to retrieve previously captured insights relevant to a natural-language `query`. Returns the most similar records, recency-weighted.",

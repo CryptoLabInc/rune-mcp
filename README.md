@@ -23,7 +23,7 @@ Most users should install the **RUNE agent integration**, not launch this binary
 - **A small MCP surface.** Capture, recall, diagnostics, and lifecycle tools are exposed over stdio JSON-RPC.
 - **Deterministic memory records.** Captures use a compact timestamp/author/insight/context schema instead of asking the storage layer to interpret conversations.
 - **Local embedding and capture encryption.** `runed` produces the embedding on the user's machine; `rune-mcp` encrypts both RMP and MM item representations with public keys supplied by the Console.
-- **Novelty and reranking policy.** Near-duplicate captures are suppressed and recall results receive recency-aware reranking.
+- **Capture and recall policy.** Capture encrypts and stores each record without a semantic novelty search. Separate capture calls may produce duplicates until explicit event idempotency is implemented. Recall results receive recency-aware reranking.
 - **Recoverable session lifecycle.** Configure, activate, deactivate, boot retry, dependency reinjection, and graceful shutdown share one state model.
 
 ## MCP tools
