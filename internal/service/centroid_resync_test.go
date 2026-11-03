@@ -77,13 +77,16 @@ func (noopEncryptor) EncryptFlat([]float32) ([]byte, error)      { return []byte
 func (noopEncryptor) EncryptClustered([]float32) ([]byte, error) { return []byte{0xBB}, nil }
 
 func newResyncService(e embedder.Client, v *resyncConsole) *CaptureService {
-	return &CaptureService{
-		Console:   v,
-		Embedder:  e,
-		Encryptor: noopEncryptor{},
-		AgentID:   "agent-test",
-		AgentDEK:  bytes.Repeat([]byte{7}, 32),
-	}
+	s := NewCaptureService()
+	s.SetDependencies(CaptureDependencies{
+		Console:      v,
+		Embedder:     e,
+		Encryptor:    noopEncryptor{},
+		Capabilities: []string{"metadata_envelope_v2"},
+		AgentID:      "agent-test",
+		AgentDEK:     bytes.Repeat([]byte{7}, 32),
+	})
+	return s
 }
 
 // C4: runed has no centroid set → resync once via the console relay,

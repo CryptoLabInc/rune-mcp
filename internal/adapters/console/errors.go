@@ -36,9 +36,11 @@ func (e *Error) Unwrap() error { return e.Cause }
 // CONSOLE_INTERNAL (and avoid retry-storming on permanent failures like a
 // role that lacks a scope).
 var (
+	ErrConsoleUpgradeRequired  = &Error{Code: "CONSOLE_UPGRADE_REQUIRED", Retryable: false}
 	ErrConsoleUnavailable      = &Error{Code: "CONSOLE_UNAVAILABLE", Retryable: true}
 	ErrConsoleAuthFailed       = &Error{Code: "CONSOLE_AUTH_FAILED", Retryable: false}
 	ErrConsoleKeyNotFound      = &Error{Code: "CONSOLE_KEY_NOT_FOUND", Retryable: false}
+	ErrConsoleDecryption       = &Error{Code: "CONSOLE_DECRYPTION_ERROR", Retryable: false}
 	ErrConsoleInternal         = &Error{Code: "CONSOLE_INTERNAL", Retryable: true}
 	ErrConsoleTimeout          = &Error{Code: "CONSOLE_TIMEOUT", Retryable: true}
 	ErrConsolePermissionDenied = &Error{Code: "CONSOLE_PERMISSION_DENIED", Retryable: false}
@@ -66,7 +68,9 @@ var (
 //	InvalidArgument     → ErrConsoleTopKExceeded     (msg contains "exceeds limit": top_k over role limit)
 //	InvalidArgument     → ErrConsoleInvalidInput     (any other bad client input)
 //	ResourceExhausted   → ErrConsoleRateLimited      (token rate limit)
+//	FailedPrecondition  → ErrConsoleUpgradeRequired (msg prefix "metadata upgrade required")
 //	FailedPrecondition  → ErrConsoleWrongCentroidVersion (msg prefix "WRONG_CENTROID_VERSION": stale centroid routing)
+//	DataLoss            → ErrConsoleDecryption      (metadata integrity failure; permanent)
 //	NotFound            → ErrConsoleKeyNotFound      (server doesn't emit this today; mapped for future)
 //	Unavailable         → ErrConsoleUnavailable      (transport: network / server down)
 //	DeadlineExceeded    → ErrConsoleTimeout          (transport: client deadline)
@@ -134,10 +138,10 @@ func MapGRPCError(err error) error {
 			Cause:     err,
 		}
 	case codes.FailedPrecondition:
-		// The console emits FailedPrecondition only for the centroid-version
-		// mismatch relay (Insert handler, "WRONG_CENTROID_VERSION: ..."). Match
-		// the prefix so an unrelated future FailedPrecondition still falls
-		// through to CONSOLE_INTERNAL instead of triggering a centroid resync.
+		// Upgrade and centroid refusals are permanent for these request bytes.
+		if strings.HasPrefix(st.Message(), "metadata upgrade required") {
+			return &Error{Code: ErrConsoleUpgradeRequired.Code, Message: "metadata format upgrade required", Retryable: false, Cause: err}
+		}
 		if strings.HasPrefix(st.Message(), "WRONG_CENTROID_VERSION") {
 			return &Error{
 				Code:      ErrConsoleWrongCentroidVersion.Code,
@@ -149,6 +153,13 @@ func MapGRPCError(err error) error {
 		return &Error{
 			Code:      ErrConsoleInternal.Code,
 			Message:   st.Message(),
+			Retryable: false,
+			Cause:     err,
+		}
+	case codes.DataLoss:
+		return &Error{
+			Code:      ErrConsoleDecryption.Code,
+			Message:   "metadata integrity check failed",
 			Retryable: false,
 			Cause:     err,
 		}

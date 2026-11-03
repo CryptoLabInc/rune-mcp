@@ -60,10 +60,7 @@ func withHint(base *domain.RuneError, hint string) *domain.RuneError {
 // ValidateCaptureRequest checks a parsed capture payload.
 //   - insight empty → ErrInvalidInput (context is optional)
 func ValidateCaptureRequest(req *domain.CaptureRequest) error {
-	if strings.TrimSpace(req.Insight) == "" {
-		return domain.ErrInvalidInput
-	}
-	return nil
+	return domain.ValidateCaptureContent(req.Insight, req.Context, "")
 }
 
 // ValidateRecallArgs checks recall tool arguments.

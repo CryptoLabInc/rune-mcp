@@ -116,10 +116,12 @@ func main() {
 	}
 
 	runErr := srv.Run(ctx, &sdkmcp.StdioTransport{})
+	// Stop in-progress boot work on EOF as well as signal shutdown.
+	cancel()
 
-	// Exit sequence: drain in-flight tool calls,
-	// close adapters (the encryptor Close releases the cgo key context), then
-	// zeroize the agent_dek. Runs on both stdin EOF and SIGTERM (either path
+	// Exit sequence: stop publication and drain in-flight tool calls. Capture
+	// leases defer adapter closure and key zeroization until their final users
+	// return, including calls that outlive the shutdown deadline. Runs on both stdin EOF and SIGTERM (either path
 	// unblocks srv.Run), and before the error exit below. Uses a fresh context:
 	// the main ctx is already cancelled on the signal path, which would skip
 	// the drain.
@@ -131,31 +133,13 @@ func main() {
 	}
 }
 
-// gracefulExit wires lifecycle.GracefulShutdown with everything the process
-// holds: the inflight tracker, the adapter closers in dependency order
-// (encryptor before its console/embedder feeds is not required — closes are
-// independent), the boot log, and the DEK to zeroize.
+// gracefulExit drains tool calls and retires the complete dependency set;
+// native handles and metadata keys remain protected by capture leases.
 func gracefulExit(deps *mcp.Deps) {
 	ctx, cancel := context.WithTimeout(context.Background(), lifecycle.ShutdownTimeout+5*time.Second)
 	defer cancel()
 
-	closers := []lifecycle.Closer{}
-	if deps.Encryptor != nil {
-		closers = append(closers, deps.Encryptor)
-	}
-	if deps.Console != nil {
-		closers = append(closers, deps.Console)
-	}
-	if deps.Embedder != nil {
-		closers = append(closers, deps.Embedder)
-	}
-	closers = append(closers, deps.State.BootLog()) // nil-receiver safe
-
-	var deks [][]byte
-	if deps.Capture != nil && deps.Capture.AgentDEK != nil {
-		deks = append(deks, deps.Capture.AgentDEK)
-	}
-	if err := lifecycle.GracefulShutdown(ctx, deps.Inflight, closers, deks...); err != nil {
+	if err := deps.Shutdown(ctx); err != nil {
 		slog.Warn("graceful shutdown incomplete", "err", err)
 	}
 }

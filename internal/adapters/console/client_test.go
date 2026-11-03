@@ -239,6 +239,7 @@ func TestMapGRPCError_CodeMatrix(t *testing.T) {
 		{codes.NotFound, "x", "CONSOLE_KEY_NOT_FOUND", false},
 		{codes.Unavailable, "x", "CONSOLE_UNAVAILABLE", true},
 		{codes.DeadlineExceeded, "x", "CONSOLE_TIMEOUT", true},
+		{codes.DataLoss, "x", "CONSOLE_DECRYPTION_ERROR", false},
 		{codes.Internal, "x", "CONSOLE_INTERNAL", true},
 		{codes.Aborted, "x", "CONSOLE_INTERNAL", true},
 	}
@@ -295,5 +296,19 @@ func TestCentroids_Relay(t *testing.T) {
 	}
 	if cs.Version != "v9" || cs.Dim != 2 || len(cs.Vectors) != 2 {
 		t.Fatalf("relay mismatch: %+v", cs)
+	}
+}
+
+func TestMapGRPCError_DataLossSanitizesMessage(t *testing.T) {
+	cause := status.Error(codes.DataLoss, "private record text must not escape")
+	var got *console.Error
+	if !errors.As(console.MapGRPCError(cause), &got) {
+		t.Fatal("expected console error")
+	}
+	if got.Message != "metadata integrity check failed" || got.Retryable {
+		t.Fatalf("unsafe integrity error: %v (retryable=%v)", got, got.Retryable)
+	}
+	if !errors.Is(got, cause) {
+		t.Fatal("original cause was not retained")
 	}
 }

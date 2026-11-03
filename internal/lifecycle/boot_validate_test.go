@@ -36,6 +36,9 @@ func TestValidateBundle(t *testing.T) {
 		{"short dek", func(b *console.Bundle) { b.AgentDEK = []byte{1, 2, 3} }, "agent_dek is 3 bytes"},
 		{"missing agent id", func(b *console.Bundle) { b.AgentID = "" }, "agent_id is empty"},
 		{"missing key id", func(b *console.Bundle) { b.KeyID = "" }, "key_id is empty"},
+		{"key id with a path separator", func(b *console.Bundle) { b.KeyID = "../keys" }, "not a single path element"},
+		{"dot-dot key id", func(b *console.Bundle) { b.KeyID = ".." }, "not a single path element"},
+		{"overlong key id", func(b *console.Bundle) { b.KeyID = strings.Repeat("k", 231) }, "key_id is 231 bytes (max 230)"},
 		{"zero dim", func(b *console.Bundle) { b.Dim = 0 }, "dim is 0"},
 	}
 	for _, tc := range cases {

@@ -24,15 +24,15 @@ import (
 // pushes it to runed. The console drops its own SDK cache when the engine
 // rejects a version (ForwardInsert), so a post-rejection fetch yields the
 // fresh set, not the stale cache.
-func (s *CaptureService) resyncCentroids(ctx context.Context) error {
-	cs, err := s.Console.Centroids(ctx)
+func resyncCentroids(ctx context.Context, d *CaptureDependencies) error {
+	cs, err := d.Console.Centroids(ctx)
 	if err != nil {
 		return fmt.Errorf("centroid resync: relay fetch: %w", err)
 	}
 	if cs == nil || cs.Version == "" || len(cs.Vectors) == 0 {
 		return fmt.Errorf("centroid resync: console relayed an empty set")
 	}
-	if err := s.Embedder.SetCentroids(ctx, cs.Version, cs.Dim, cs.Preset, cs.Vectors); err != nil {
+	if err := d.Embedder.SetCentroids(ctx, cs.Version, cs.Dim, cs.Preset, cs.Vectors); err != nil {
 		return fmt.Errorf("centroid resync: push to runed: %w", err)
 	}
 	slog.Info("capture: centroid set resynced to runed", "version", cs.Version, "nlist", len(cs.Vectors))

@@ -1,5 +1,5 @@
 // Package keymanager persists FHE key material received from Console to the
-// local rune directory so the runespace SDK can load it via OpenKeysFromFile.
+// local rune directory so the runespace SDK can load it via OpenKeys.
 //
 // Format note: EncKey.json carries a libevi key envelope (provider_meta +
 // entries — see third_party/evi/include/km/KeyEnvelope.hpp). runespace-sdk
@@ -7,16 +7,20 @@
 // same on-disk format. The Console server generated the key via
 // runespace-sdk's GenerateKeys (which calls libevi's evi_km_wrap_enc_key)
 // and forwards the file content verbatim through GetAgentManifest's
-// manifest_json. When we load it back, runespace-sdk's OpenKeysFromFile
+// manifest_json. When we load it back, runespace-sdk's OpenKeys
 // invokes evi_km_unwrap_enc_key — which expects the same envelope shape on
 // disk. We must persist bundle.RMPEncKey / bundle.MMEncKey byte-identical; any
 // re-encoding or re-wrapping will be rejected by the cgo unwrap.
 package keymanager
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/config"
 )
@@ -33,11 +37,23 @@ import (
 // any re-encoding breaks the cgo key loader. Returns the key directory. Empty
 // inputs are an error (a manifest missing either key cannot support client
 // encryption).
+//
+// The directory is content-addressed, <keyID>@<digest> (see encKeyDigest), so
+// it only ever holds this exact pair. Every Console sends the same key ID,
+// parallel sessions share ~/.rune/keys, and an Encryptor re-reads its
+// directory whenever it reloads after idle. With one directory per key ID, a
+// boot against another Console replaced the EncKey under a running session,
+// which then encrypted captures for its own Console with the other Console's
+// key. Superseded directories are left in place because another live session
+// may still reload from one.
 func SaveEncKeys(keyID string, rmpJSON, mmJSON []byte) (string, error) {
 	if len(rmpJSON) == 0 || len(mmJSON) == 0 {
 		return "", fmt.Errorf("keymanager: empty EncKey material (rmp=%d mm=%d)", len(rmpJSON), len(mmJSON))
 	}
-	keyDir, err := KeyDir(keyID)
+	if err := CheckKeyID(keyID); err != nil {
+		return "", fmt.Errorf("keymanager: %w", err)
+	}
+	keyDir, err := KeyDir(keyID + "@" + encKeyDigest(rmpJSON, mmJSON))
 	if err != nil {
 		return "", err
 	}
@@ -91,14 +107,46 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	return os.Rename(tmpName, path)
 }
 
-// KeyDir returns the per-key directory path that the runespace SDK's
-// OpenKeysFromFile expects as WithKeyPath: ~/.rune/keys/<keyID>/. The SDK
-// resolves each tier's EncKey under its subdirectory (rmp/EncKey.json,
-// mm/EncKey.json).
-func KeyDir(keyID string) (string, error) {
+// MaxKeyIDLen keeps <keyID>@<24-hex digest> within the 255-byte file-name
+// limit of the supported file systems.
+const MaxKeyIDLen = 255 - 1 - 24
+
+// CheckKeyID reports why a Console-supplied key ID cannot name a key
+// directory, or nil. The ID becomes one path element under ~/.rune/keys.
+func CheckKeyID(keyID string) error {
+	switch {
+	case keyID == "":
+		return fmt.Errorf("key_id is empty")
+	case keyID == "." || keyID == ".." || strings.ContainsAny(keyID, "/\\\x00"):
+		return fmt.Errorf("key_id %q is not a single path element", keyID)
+	case len(keyID) > MaxKeyIDLen:
+		return fmt.Errorf("key_id is %d bytes (max %d)", len(keyID), MaxKeyIDLen)
+	}
+	return nil
+}
+
+// encKeyDigest identifies one EncKey pair: the first 24 hex characters (96
+// bits) of SHA-256 over len(rmpJSON) as 8 big-endian bytes, rmpJSON, then
+// mmJSON. The length prefix keeps the boundary between the two envelopes
+// unambiguous.
+func encKeyDigest(rmpJSON, mmJSON []byte) string {
+	h := sha256.New()
+	var n [8]byte
+	binary.BigEndian.PutUint64(n[:], uint64(len(rmpJSON)))
+	h.Write(n[:])
+	h.Write(rmpJSON)
+	h.Write(mmJSON)
+	return hex.EncodeToString(h.Sum(nil))[:24]
+}
+
+// KeyDir returns ~/.rune/keys/<name>/, the directory the runespace SDK's
+// OpenKeys expects as WithKeyPath. The SDK resolves each tier's EncKey under
+// its subdirectory (rmp/EncKey.json, mm/EncKey.json) and does not use the
+// directory name. SaveEncKeys names the directory <keyID>@<digest>.
+func KeyDir(name string) (string, error) {
 	runedir, err := config.RuneDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(runedir, "keys", keyID), nil
+	return filepath.Join(runedir, "keys", name), nil
 }

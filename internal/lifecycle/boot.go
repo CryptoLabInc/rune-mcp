@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -540,7 +541,7 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	// the console; SecKey stays in the console, so this opens Enc-only.
 	//
 	// Reject a malformed bundle at the point of receipt, before the
-	// bad material overwrites the on-disk key copies or — worse — boots into
+	// bad material is written to disk or — worse — boots into
 	// active and fails far away (a missing agent_dek only surfaces at the
 	// first capture's seal step otherwise). Format-level checks only; real
 	// cryptographic validity is judged where the material is used
@@ -585,13 +586,13 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		_ = consoleClient.Close()
 		return bootRetry
 	}
-	// Share the clients only now — after every gate (capability, bundle
-	// validation, centroid guard, key save, encryptor open) has passed. The
+	slog.Info("boot: capture encryptor opened", "key_dir", filepath.Base(keyDir))
+	// Share the clients only now — after the initial gates (bundle
+	// validation, centroid guard, key save, encryptor open) have passed. The
 	// failure exits above close a client nothing else references yet, so the
 	// services keep the previous boot's still-live console client during retry
 	// windows and diagnostics stay truthful.
 	deps.InjectConsole(consoleClient)
-	deps.ApplyConsoleBundle(bundle)
 	deps.InjectEncryptor(enc)
 
 	embedderClient, err := embedder.New(embedder.ResolveSocketPath(""), embedder.Opts{
@@ -709,6 +710,9 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 			"phase", h.Phase, "bytes_done", h.BytesDone, "bytes_total", h.BytesTotal)
 		return bootWaitingBootstrap
 	}
+
+	// Publish the complete capture dependency snapshot once every boot gate passed.
+	deps.ApplyConsoleBundle(bundle)
 
 	// Self-report terminal activation so the console flips the member from
 	// invite_redeemed to online. Reached only after every configure step above
