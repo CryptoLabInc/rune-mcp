@@ -2,11 +2,8 @@ package service_test
 
 import (
 	"context"
-	"encoding/json"
 	"os"
-	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,26 +13,27 @@ import (
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/embedder"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/keymanager"
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/runespacecrypto"
-	"github.com/CryptoLabInc/rune-mcp/internal/adapters/seal"
+	"github.com/CryptoLabInc/rune-mcp/internal/domain"
+	"github.com/CryptoLabInc/rune-mcp/internal/service"
 )
 
-// TestPipelineL3 is an adapter/crypto round-trip against a LIVE local stack
-// (runed + runeconsole + runespace). It calls adapters directly, bypassing
-// CaptureService.Handle and MCP response shaping; it is not MCP-process E2E:
+// TestPipelineL3 exercises CaptureService.Handle and RecallService.Handle against
+// a LIVE disposable or freshly seeded runed + Console + RuneSpace stack. It
+// stores a real Record with a unique insight; it is not MCP-process E2E.
 //
-//	manifest → save EncKey → open encryptor (cgo)
-//	centroid relay → runed SetCentroids
-//	text → EmbedRoute → EncryptFlat/Clustered + seal → console.Insert (forward)
-//	query → EmbedSingle → console.Search → opened plaintext hit
-//
-// Gated on RUNECONSOLE_ADDR (e.g. 127.0.0.1:50051). The console must be a build
-// that distributes EncKey/agent_dek (metadata_envelope_v2 capability).
-//
-//	RUNECONSOLE_ADDR=127.0.0.1:50051 RUNE_HOME=$(mktemp -d) go test ./internal/service -run PipelineL3 -v
+// Explicit opt-in is required because this test writes persistent records:
+// RUNECONSOLE_ADDR=127.0.0.1:50051 RUNE_EMBEDDER_SOCKET=/path/runed.sock RUNE_L3_DISPOSABLE_STACK=1 go test ./internal/service -run PipelineL3 -v
 func TestPipelineL3(t *testing.T) {
 	addr := os.Getenv("RUNECONSOLE_ADDR")
 	if addr == "" {
 		t.Skip("set RUNECONSOLE_ADDR to run the live L3 pipeline test")
+	}
+	socket := os.Getenv("RUNE_EMBEDDER_SOCKET")
+	if socket == "" {
+		t.Fatal("set RUNE_EMBEDDER_SOCKET to the disposable stack's runed socket")
+	}
+	if os.Getenv("RUNE_L3_DISPOSABLE_STACK") != "1" {
+		t.Fatal("use a disposable or freshly seeded stack and set RUNE_L3_DISPOSABLE_STACK=1; this test stores a record")
 	}
 	token := os.Getenv("RUNECONSOLE_TOKEN")
 	if token == "" {
@@ -56,7 +54,7 @@ func TestPipelineL3(t *testing.T) {
 	}
 	defer vc.Close()
 
-	emb, err := embedder.New(embedder.ResolveSocketPath(""), embedder.Opts{})
+	emb, err := embedder.New(socket, embedder.Opts{})
 	if err != nil {
 		t.Fatalf("embedder.New: %v", err)
 	}
@@ -93,68 +91,35 @@ func TestPipelineL3(t *testing.T) {
 	}
 	t.Logf("centroids synced: version=%s nlist=%d", cs.Version, len(cs.Vectors))
 
-	// ── capture: embed+route → encrypt → seal → forward ──
-	insight := "The team chose PostgreSQL over MongoDB for the ledger because ACID transactions were non-negotiable. " + t.Name()
-	routed, err := emb.EmbedRoute(ctx, insight)
-	if err != nil {
-		t.Fatalf("EmbedRoute: %v", err)
-	}
-	rmp, err := enc.EncryptFlat(routed.Vector)
-	if err != nil {
-		t.Fatalf("EncryptFlat: %v", err)
-	}
-	mm, err := enc.EncryptClustered(routed.Vector)
-	if err != nil {
-		t.Fatalf("EncryptClustered: %v", err)
-	}
-	recordID := uuid.NewString()
-	meta, _ := json.Marshal(map[string]any{
-		"id":               recordID,
-		"title":            "Database choice",
-		"reusable_insight": insight,
-		"domain":           "architecture",
+	// Capture through the production service, including Record construction.
+	insight := "The team chose PostgreSQL for the ledger because ACID transactions were non-negotiable. Run " + uuid.NewString()
+	detail := "Disposable L3 integration record"
+	capture := service.NewCaptureService()
+	capture.SetDependencies(service.CaptureDependencies{
+		Console: vc, Embedder: emb, Encryptor: enc, AgentID: bundle.AgentID, AgentDEK: bundle.AgentDEK,
+		Capabilities: bundle.Capabilities, Author: "pipeline-l3",
 	})
-	sealed, err := seal.SealV2(bundle.AgentDEK, bundle.AgentID, recordID, meta)
+	result, err := capture.Handle(ctx, &domain.CaptureRequest{Insight: insight, Context: detail})
 	if err != nil {
-		t.Fatalf("seal: %v", err)
+		t.Fatalf("CaptureService.Handle: %v", err)
 	}
-	id, err := vc.Insert(ctx, console.InsertItem{
-		ID:                 recordID, // runespace requires a UUID item id
-		RMPItem:            rmp,
-		MMItem:             mm,
-		ClusterID:          routed.ClusterID,
-		CentroidSetVersion: routed.CentroidSetVersion,
-		SealedMetadata:     sealed,
-	})
+	if !result.OK || !result.Captured || result.RecordID == "" {
+		t.Fatalf("capture response: %+v", result)
+	}
+	recall := service.NewRecallService()
+	recall.Console = vc
+	recall.Embedder = emb
+	recalled, err := recall.Handle(ctx, &domain.RecallArgs{Query: insight, TopK: 5})
 	if err != nil {
-		t.Fatalf("console.Insert: %v", err)
+		t.Fatalf("RecallService.Handle: %v", err)
 	}
-	t.Logf("capture ok: id=%s (client-encrypted)", id)
-
-	// ── recall: plaintext query → console decrypts + opens ──
-	qvec, err := emb.EmbedSingle(ctx, "which database did we pick for the ledger and why?")
-	if err != nil {
-		t.Fatalf("embed query: %v", err)
-	}
-	hits, err := vc.Search(ctx, qvec, 5)
-	if err != nil {
-		t.Fatalf("console.Search: %v", err)
-	}
-	t.Logf("recall returned %d hits", len(hits))
-	for i, h := range hits {
-		t.Logf("  hit[%d] id=%s score=%.4f", i, h.ID, h.Score)
-	}
-	if len(hits) == 0 {
-		t.Fatal("recall returned 0 hits")
-	}
-	found := false
-	for _, h := range hits {
-		if h.ID == recordID && strings.Contains(h.Metadata, "PostgreSQL") && strings.Contains(h.Metadata, "Database choice") {
-			found = true
+	for _, entry := range recalled.Results {
+		if entry.RecordID == result.RecordID {
+			if entry.Insight != insight || entry.Context != detail || entry.Author != "pipeline-l3" {
+				t.Fatalf("record changed in round trip: %+v", entry)
+			}
+			return
 		}
 	}
-	if !found {
-		t.Fatal("captured record not found in recall with opened plaintext metadata")
-	}
-	_ = filepath.Separator
+	t.Fatal("captured Record not found in recall with exact opened content")
 }

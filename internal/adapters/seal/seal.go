@@ -19,7 +19,7 @@ type envelope struct {
 	V int    `json:"v"`
 	A string `json:"a"`
 	R string `json:"r"`
-	C string `json:"c"`
+	G string `json:"g"`
 }
 
 // SealV2 uses an HKDF-separated AES-256-GCM key and a fresh 12-byte nonce.
@@ -52,7 +52,7 @@ func SealV2(baseDEK []byte, agentID, recordID string, plaintext []byte) (string,
 		return "", fmt.Errorf("seal: marshal AAD: %w", err)
 	}
 	payload := gcm.Seal(nonce, nonce, plaintext, aad)
-	data, err := json.Marshal(envelope{V: 2, A: agentID, R: recordID, C: base64.StdEncoding.EncodeToString(payload)})
+	data, err := json.Marshal(envelope{V: 2, A: agentID, R: recordID, G: base64.StdEncoding.EncodeToString(payload)})
 	if err != nil {
 		return "", fmt.Errorf("seal: marshal envelope: %w", err)
 	}

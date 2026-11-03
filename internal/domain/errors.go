@@ -10,16 +10,17 @@ import "errors"
 
 // Code enum.
 const (
-	CodeInternal            = "INTERNAL_ERROR"
-	CodeConsoleConnection   = "CONSOLE_CONNECTION_ERROR"
-	CodeConsoleDecryption   = "CONSOLE_DECRYPTION_ERROR"
-	CodeRunespaceConnection = "RUNESPACE_CONNECTION_ERROR"
-	CodeRunespaceInsert     = "RUNESPACE_INSERT_ERROR"
-	CodePipelineNotReady    = "PIPELINE_NOT_READY"
-	CodeInvalidInput        = "INVALID_INPUT"
-	CodeTopKLimit           = "TOPK_LIMIT"           // top_k exceeds the console token's role limit (distinct from generic INVALID_INPUT)
-	CodeEmbedderUnreachable = "EMBEDDER_UNREACHABLE" // Go-specific
-	CodeEmptyEmbedText      = "EMPTY_EMBED_TEXT"     // dedicated code for missing embed text
+	CodeInternal               = "INTERNAL_ERROR"
+	CodeConsoleConnection      = "CONSOLE_CONNECTION_ERROR"
+	CodeConsoleUpgradeRequired = "CONSOLE_UPGRADE_REQUIRED"
+	CodeConsoleDecryption      = "CONSOLE_DECRYPTION_ERROR"
+	CodeRunespaceConnection    = "RUNESPACE_CONNECTION_ERROR"
+	CodeRunespaceInsert        = "RUNESPACE_INSERT_ERROR"
+	CodePipelineNotReady       = "PIPELINE_NOT_READY"
+	CodeInvalidInput           = "INVALID_INPUT"
+	CodeTopKLimit              = "TOPK_LIMIT"           // top_k exceeds the console token's role limit (distinct from generic INVALID_INPUT)
+	CodeEmbedderUnreachable    = "EMBEDDER_UNREACHABLE" // Go-specific
+	CodeEmptyEmbedText         = "EMPTY_EMBED_TEXT"     // dedicated code for missing embed text
 	// CodeRegistrationConsumed — a registration string's one-time handle was
 	// redeemed but persisting the resolved credentials failed afterward. The
 	// handle is spent, so retrying the same string is futile: a fresh invite is
@@ -37,18 +38,22 @@ type RuneError struct {
 
 func (e *RuneError) Error() string { return e.Message }
 
+// ConsoleUpgradeRecoveryHint gives executable refresh paths after upgrading.
+const ConsoleUpgradeRecoveryHint = "Upgrade Console and rune-mcp, then run /rune:deactivate followed by /rune:activate to refresh the agent manifest. Alternatively reconnect with /mcp or start a new session. Check diagnostics for metadata_envelope_v2 before submitting capture again."
+
 // Predefined errors.
 var (
-	ErrInternal            = &RuneError{Code: CodeInternal, Retryable: false}
-	ErrConsoleConnection   = &RuneError{Code: CodeConsoleConnection, Retryable: true}
-	ErrConsoleDecryption   = &RuneError{Code: CodeConsoleDecryption, Retryable: false}
-	ErrRunespaceConnection = &RuneError{Code: CodeRunespaceConnection, Retryable: true}
-	ErrRunespaceInsert     = &RuneError{Code: CodeRunespaceInsert, Retryable: true}
-	ErrPipelineNotReady    = &RuneError{Code: CodePipelineNotReady, Retryable: false}
-	ErrInvalidInput        = &RuneError{Code: CodeInvalidInput, Retryable: false}
-	ErrTopKLimit           = &RuneError{Code: CodeTopKLimit, Retryable: false}
-	ErrEmbedderUnreachable = &RuneError{Code: CodeEmbedderUnreachable, Retryable: true}
-	ErrEmptyEmbedText      = &RuneError{Code: CodeEmptyEmbedText, Retryable: false}
+	ErrConsoleUpgradeRequired = &RuneError{Code: CodeConsoleUpgradeRequired, Message: "Console does not support the required metadata_envelope_v2 capture format", Retryable: false, RecoveryHint: ConsoleUpgradeRecoveryHint}
+	ErrInternal               = &RuneError{Code: CodeInternal, Retryable: false}
+	ErrConsoleConnection      = &RuneError{Code: CodeConsoleConnection, Retryable: true}
+	ErrConsoleDecryption      = &RuneError{Code: CodeConsoleDecryption, Retryable: false}
+	ErrRunespaceConnection    = &RuneError{Code: CodeRunespaceConnection, Retryable: true}
+	ErrRunespaceInsert        = &RuneError{Code: CodeRunespaceInsert, Retryable: true}
+	ErrPipelineNotReady       = &RuneError{Code: CodePipelineNotReady, Retryable: false}
+	ErrInvalidInput           = &RuneError{Code: CodeInvalidInput, Retryable: false}
+	ErrTopKLimit              = &RuneError{Code: CodeTopKLimit, Retryable: false}
+	ErrEmbedderUnreachable    = &RuneError{Code: CodeEmbedderUnreachable, Retryable: true}
+	ErrEmptyEmbedText         = &RuneError{Code: CodeEmptyEmbedText, Retryable: false}
 )
 
 // MakeError wraps an error as an MCP response.

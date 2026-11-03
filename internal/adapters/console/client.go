@@ -112,7 +112,7 @@ type InsertItem struct {
 	MMItem             []byte // EncryptClustered output
 	ClusterID          uint32
 	CentroidSetVersion string
-	SealedMetadata     string // client-sealed authenticated {"v","a","r","c"} envelope
+	SealedMetadata     string // client-sealed authenticated {"v","a","r","g"} envelope
 }
 
 // CentroidSet is the relayed IVF centroid set (runespace -> console -> here).

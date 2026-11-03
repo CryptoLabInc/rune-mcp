@@ -39,12 +39,6 @@ var expectedTools = []string{
 // service nil-checks must hold.
 func newSession(t *testing.T) *sdkmcp.ClientSession {
 	t.Helper()
-	ctx := t.Context()
-
-	srv := sdkmcp.NewServer(&sdkmcp.Implementation{
-		Name:    "rune-mcp-test",
-		Version: "0.0.0-test",
-	}, nil)
 	mgr := lifecycle.NewManager()
 	cap := service.NewCaptureService()
 	cap.State = mgr
@@ -56,6 +50,13 @@ func newSession(t *testing.T) *sdkmcp.ClientSession {
 		Recall:    service.NewRecallService(),
 		Lifecycle: life,
 	}
+	return sessionWithDeps(t, deps)
+}
+
+func sessionWithDeps(t *testing.T, deps *mcp.Deps) *sdkmcp.ClientSession {
+	t.Helper()
+	ctx := t.Context()
+	srv := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "rune-mcp-test", Version: "test"}, nil)
 	if err := mcp.Register(srv, deps); err != nil {
 		t.Fatalf("Register: %v", err)
 	}

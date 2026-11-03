@@ -12,7 +12,7 @@ import (
 const agentDEKSize = 32
 
 // validateBundle reports the first format-level defect in a manifest bundle
-// ("" = ok). It runs after the capability check and before SaveEncKeys, so
+// ("" = ok). It runs before SaveEncKeys, so
 // bad material is rejected before it can overwrite the on-disk key copies.
 // Format checks only — cryptographic validity is judged where each material
 // is used (runespacecrypto.Open parses the keys; the dek proves itself at

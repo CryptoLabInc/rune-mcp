@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"slices"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -55,6 +56,17 @@ func handleRecall(deps *Deps) sdkmcp.ToolHandlerFor[domain.RecallArgs, domain.Re
 func handleDiagnostics(deps *Deps) sdkmcp.ToolHandlerFor[emptyArgs, service.DiagnosticsResult] {
 	return func(ctx context.Context, _ *sdkmcp.CallToolRequest, _ emptyArgs) (*sdkmcp.CallToolResult, service.DiagnosticsResult, error) {
 		out := deps.Lifecycle.Diagnostics(ctx)
+		if deps.Capture != nil {
+			snapshot := deps.Capture.Dependencies()
+			out.Console.Capabilities = snapshot.Capabilities
+			out.Console.MetadataEnvelopeV2 = slices.Contains(snapshot.Capabilities, "metadata_envelope_v2")
+			if !out.Console.MetadataEnvelopeV2 {
+				out.Console.CaptureRecoveryHint = domain.ConsoleUpgradeRecoveryHint
+				if out.Console.Configured {
+					out.OK = false
+				}
+			}
+		}
 		return okResult(out), *out, nil
 	}
 }

@@ -23,7 +23,7 @@ Most users should install the **RUNE agent integration**, not launch this binary
 - **A small MCP surface.** Capture, recall, diagnostics, and lifecycle tools are exposed over stdio JSON-RPC.
 - **Deterministic memory records.** Captures use a compact timestamp/author/insight/context schema instead of asking the storage layer to interpret conversations.
 - **Local embedding and capture encryption.** `runed` produces the embedding on the user's machine; `rune-mcp` encrypts both RMP and MM item representations with public keys supplied by the Console.
-- **Capture and recall policy.** Capture encrypts and stores each record without a semantic novelty search. Separate capture calls may produce duplicates until explicit event idempotency is implemented. Recall results receive recency-aware reranking.
+- **Capture and recall policy.** Capture encrypts and stores each record without a semantic novelty search. Separate capture calls can create duplicates. Transport retries reuse the original item/ID, while a new call creates a new ID; a timeout may leave the previous write outcome unknown. Do not use `recall(insight)` for deduplication, because that sends a plaintext query vector. Recall results receive recency-aware reranking.
 - **Recoverable session lifecycle.** Configure, activate, deactivate, boot retry, dependency reinjection, and graceful shutdown share one state model.
 
 ## MCP tools
@@ -58,7 +58,7 @@ Rune Console
 
 On capture, `rune-mcp` embeds the insight locally, routes it against the current centroid set, encrypts the vector into the mandatory RMP and MM forms, seals the record metadata, and sends the resulting item through the Console. The FHE secret key never enters this process.
 
-On recall, `rune-mcp` embeds the query locally and sends the query vector to the Console. The Console applies the caller's scope, executes the RuneSpace search, decrypts authorized results, and returns opened records for local reranking.
+On recall, `rune-mcp` embeds the query locally and sends the query vector to the Console. The Console requests a search filtered to the caller's scope, decrypts returned records, and returns them for local reranking. Correct scope filtering by RuneSpace remains a trust assumption; metadata authentication does not verify that filtering.
 
 ## Normal installation
 
@@ -97,12 +97,17 @@ Useful environment overrides:
 
 ## Security and upgrade notes
 
-Stored item vectors are encrypted; recall query vectors are plaintext to Console
-and RuneSpace. Console holds HE secret keys and payload keys and can open
-authorized content. Read the [security boundary and coordinated upgrade guide](docs/security-upgrade.md)
-for pending authenticated-metadata v2 changes, legacy read policy, and the
-maintenance window required when upgrading Console before MCP clients. Existing
-installer downloads are not evidence that these pending changes are released.
+Stored item vectors are encrypted; recall query vectors remain plaintext to
+Console and RuneSpace. Console operators and host root are trusted. MCP holds
+its agent's payload DEK in process memory; the HE secret keys remain in Console.
+The authenticated payload's `author` text is not a verified human identity.
+
+Read the [security boundary and coordinated upgrade guide](docs/security-upgrade.md)
+and [wire specification](docs/metadata-envelope-v2.md) for v2, generation-bound
+capture retries, legacy policy, and failure recovery. The source capture path
+removes the plaintext novelty query, but the RUNE installer still pins MCP
+v1.0.0 with its existing novelty-query behavior. These changes require a
+coordinated release and client refresh; they are not yet a released upgrade.
 
 ## Development
 
@@ -123,7 +128,7 @@ The server uses the official Go MCP SDK and communicates over stdio. Avoid writi
 | [`cmd/rune-mcp/`](cmd/rune-mcp/) | Process wiring, stdio server, signals, and graceful exit. |
 | [`internal/mcp/`](internal/mcp/) | Tool schemas, registration, and response shaping. |
 | [`internal/service/`](internal/service/) | Capture, recall, recovery, and lifecycle orchestration. |
-| [`internal/policy/`](internal/policy/) | Capture policy helpers, UTF-8 limits, and recall reranking. |
+| [`internal/policy/`](internal/policy/) | UTF-8 content limits and recall reranking; the retained novelty helper is not used by capture. |
 | [`internal/adapters/`](internal/adapters/) | Console, `runed`, key storage, FHE, and metadata boundaries. |
 | [`internal/lifecycle/`](internal/lifecycle/) | Boot state, dependency reinjection, and shutdown coordination. |
 

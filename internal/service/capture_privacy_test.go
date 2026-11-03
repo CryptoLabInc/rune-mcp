@@ -10,7 +10,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -33,13 +32,12 @@ func (e *privacyEmbedder) EmbedSingle(context.Context, string) ([]float32, error
 type privacyConsole struct {
 	*resyncConsole
 	searchCalls int
-	searchErr   error
 	items       []console.InsertItem
 }
 
 func (c *privacyConsole) Search(context.Context, []float32, int) ([]console.Hit, error) {
 	c.searchCalls++
-	return []console.Hit{{ID: "already-stored", Score: 1}}, c.searchErr
+	return []console.Hit{{ID: "already-stored", Score: 1}}, nil
 }
 func (c *privacyConsole) Insert(ctx context.Context, item console.InsertItem) (string, error) {
 	c.items = append(c.items, item)
@@ -50,19 +48,19 @@ func TestCaptureHandlePrivacy(t *testing.T) {
 	for _, tc := range []struct {
 		name                                string
 		routeVersion                        string
-		searchErr                           error
 		wantInserts, wantRoutes, wantPushes int
 	}{
-		{"ordinary", "v2", nil, 1, 1, 0},
-		{"search failure irrelevant", "v2", errors.New("search must not run"), 1, 1, 0},
-		{"centroid version retry", "v1", nil, 2, 2, 1},
-		{"cold centroid resync", "", nil, 1, 2, 1},
+		{"ordinary", "v2", 1, 1, 0},
+		{"centroid version retry", "v1", 2, 2, 1},
+		{"cold centroid resync", "", 1, 2, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := &privacyEmbedder{resyncEmbedder: &resyncEmbedder{version: tc.routeVersion}}
-			c := &privacyConsole{resyncConsole: &resyncConsole{engineVersion: "v2"}, searchErr: tc.searchErr}
+			c := &privacyConsole{resyncConsole: &resyncConsole{engineVersion: "v2"}}
 			s := newResyncService(e, c.resyncConsole)
-			s.Console = c
+			d := s.Dependencies()
+			d.Console = c
+			s.SetDependencies(d)
 			s.Now = func() time.Time { return time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC) }
 			req := &domain.CaptureRequest{Insight: "Private decision and rationale", Context: "Private supporting details"}
 			resp, err := s.Handle(context.Background(), req)
@@ -74,9 +72,6 @@ func TestCaptureHandlePrivacy(t *testing.T) {
 			}
 			if !resp.OK || !resp.Captured || resp.RecordID == "" {
 				t.Fatalf("capture did not succeed: %+v", resp)
-			}
-			if resp.Novelty != nil {
-				t.Errorf("unmeasured novelty reported: %+v", resp.Novelty)
 			}
 			raw, err := json.Marshal(resp)
 			if err != nil {
@@ -106,7 +101,7 @@ func TestCaptureHandlePrivacy(t *testing.T) {
 					V int    `json:"v"`
 					R string `json:"r"`
 					A string `json:"a"`
-					C string `json:"c"`
+					C string `json:"g"`
 				}
 				if err := json.Unmarshal([]byte(item.SealedMetadata), &env); err != nil {
 					t.Fatal(err)
@@ -124,7 +119,7 @@ func TestCaptureHandlePrivacy(t *testing.T) {
 				if len(encrypted) < 28 {
 					t.Fatal("sealed metadata missing ciphertext")
 				}
-				key, err := hkdf.Key(sha256.New, s.AgentDEK, nil, "rune/metadata/aes256gcm/v2", 32)
+				key, err := hkdf.Key(sha256.New, s.Dependencies().AgentDEK, nil, "rune/metadata/aes256gcm/v2", 32)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -160,14 +155,36 @@ func TestCaptureMissingMetadataCapability(t *testing.T) {
 	e := &privacyEmbedder{resyncEmbedder: &resyncEmbedder{version: "v2"}}
 	c := &privacyConsole{resyncConsole: &resyncConsole{engineVersion: "v2"}}
 	s := newResyncService(e, c.resyncConsole)
-	s.Console = c
+	d := s.Dependencies()
+	d.Console = c
+	s.SetDependencies(d)
 	// Default construction represents a server that did not negotiate v2.
-	s.MetadataEnvelopeV2 = false
+	d.Capabilities = nil
+	s.SetDependencies(d)
 	_, err := s.EncryptSealInsert(context.Background(), "private", `{}`)
-	if err == nil || !strings.Contains(err.Error(), "metadata_envelope_v2") || !strings.Contains(strings.ToLower(err.Error()), "upgrade") {
+	var re *domain.RuneError
+	if !errors.As(err, &re) || re.Code != domain.CodeConsoleUpgradeRequired || re.Retryable || re.RecoveryHint == "" {
 		t.Fatalf("want actionable capability error, got %v", err)
 	}
 	if e.routeCalls != 0 || e.singleCalls != 0 || len(c.items) != 0 || c.searchCalls != 0 {
 		t.Fatalf("capture used adapters before capability refusal")
+	}
+}
+
+func TestCaptureRejectsOversizedAuthorBeforeEmbedding(t *testing.T) {
+	e := &privacyEmbedder{resyncEmbedder: &resyncEmbedder{version: "v2"}}
+	c := &privacyConsole{resyncConsole: &resyncConsole{engineVersion: "v2"}}
+	s := newResyncService(e, c.resyncConsole)
+	d := s.Dependencies()
+	d.Console = c
+	d.Author = string(bytes.Repeat([]byte{'x'}, domain.MaxAuthorBytes+1))
+	s.SetDependencies(d)
+	_, err := s.Handle(t.Context(), &domain.CaptureRequest{Insight: "valid"})
+	var re *domain.RuneError
+	if !errors.As(err, &re) || re.Code != domain.CodeInvalidInput {
+		t.Fatalf("oversized author error: %v", err)
+	}
+	if e.routeCalls != 0 || e.singleCalls != 0 || len(c.items) != 0 || c.searchCalls != 0 {
+		t.Fatal("invalid content used adapters")
 	}
 }

@@ -17,7 +17,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"slices"
+	"sync"
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -35,6 +35,8 @@ import (
 // Until boot completes, write tools fail with PIPELINE_NOT_READY through
 // CheckState; read-only tools (diagnostics) can run pre-active.
 type Deps struct {
+	adapterMu sync.Mutex
+	closed    bool
 	Console   console.Client
 	Embedder  embedder.Client
 	Encryptor lifecycle.Encryptor
@@ -50,69 +52,132 @@ type Deps struct {
 	Inflight *lifecycle.InflightTracker
 }
 
-// TODO: revert this to 5s once closeAfterInterval is replaced with refcount/sync.WaitGroup
-// (var, not const, so tests can shrink the interval.)
+// Retain a grace period for existing recall/diagnostic calls after capture
+// generations drain. Capture lifetime itself is protected by leases.
 var staleClientCloseTime = 30 * time.Second
 
 func (d *Deps) InjectConsole(client console.Client) {
+	d.adapterMu.Lock()
+	defer d.adapterMu.Unlock()
+	if d.closed {
+		if client != nil {
+			_ = (&captureProtectedCloser{capture: d.Capture, resource: client}).Close()
+		}
+		return
+	}
 	prev := d.Console
 	d.Console = client
-	if d.Capture != nil {
-		d.Capture.Console = client
-	}
 	if d.Recall != nil {
 		d.Recall.Console = client
 	}
 	if d.Lifecycle != nil {
 		d.Lifecycle.Console = client
 	}
-	closeAfterInterval("console", prev, client)
+	d.closeAfterInterval("console", prev, client)
 }
 
 func (d *Deps) InjectEncryptor(enc lifecycle.Encryptor) {
-	prev := d.Encryptor
-	if d.Capture != nil {
-		d.Capture.Encryptor = enc
+	d.adapterMu.Lock()
+	defer d.adapterMu.Unlock()
+	if d.closed {
+		if enc != nil {
+			_ = (&captureProtectedCloser{capture: d.Capture, resource: enc}).Close()
+		}
+		return
 	}
+	prev := d.Encryptor
 	d.Encryptor = enc
 	// The replaced encryptor wraps a cgo (libevi) key context the GC cannot
 	// reclaim — drain in-flight captures, then Close it, same as the console /
 	// embedder injectors above. Without this every re-boot cycle (console
 	// restart, boot retry, reload_pipelines) leaks one native key context.
-	closeAfterInterval("encryptor", prev, enc)
+	d.closeAfterInterval("encryptor", prev, enc)
 }
 
 func (d *Deps) InjectEmbedder(client embedder.Client) {
+	d.adapterMu.Lock()
+	defer d.adapterMu.Unlock()
+	if d.closed {
+		if client != nil {
+			_ = (&captureProtectedCloser{capture: d.Capture, resource: client}).Close()
+		}
+		return
+	}
 	prev := d.Embedder
 	d.Embedder = client
-	if d.Capture != nil {
-		d.Capture.Embedder = client
-	}
 	if d.Recall != nil {
 		d.Recall.Embedder = client
 	}
 	if d.Lifecycle != nil {
 		d.Lifecycle.SetEmbedder(client)
 	}
-	closeAfterInterval("embedder", prev, client)
+	d.closeAfterInterval("embedder", prev, client)
 }
 
-// Reserve Close() on a replaced client after a period to drain concurrent
-// in-flight gRPCs against the old connection
-//
-// TODO: A proper fix would track every calls on the old client via refcount or
-// sync.WaitGroup and Close()
-func closeAfterInterval(name string, prev, next io.Closer) {
+// Defer retirement until no capture generation can use the replaced adapter.
+// The fallback grace period covers the existing recall/diagnostic lifetimes.
+func (d *Deps) closeAfterInterval(name string, prev, next io.Closer) {
 	if prev == nil || prev == next {
 		return
 	}
+	delay := staleClientCloseTime
+	retire := func() {
+		go func() {
+			time.Sleep(delay)
+			if err := prev.Close(); err != nil {
+				slog.Warn("close replaced adapter client", "name", name, "err", err)
+			}
+		}()
+	}
+	if d.Capture != nil {
+		d.Capture.AfterCaptureDrain(prev, retire)
+	} else {
+		retire()
+	}
+}
 
-	go func() {
-		time.Sleep(staleClientCloseTime)
-		if err := prev.Close(); err != nil {
-			slog.Warn("close replaced adapter client", "name", name, "err", err)
+// Shutdown excludes late boot injection, unpublishes capture generations, and
+// drains tool calls. A timed-out capture still owns its native handles until it
+// returns; its adapter closure and DEK clearing remain deferred by the lease.
+func (d *Deps) Shutdown(ctx context.Context) error {
+	d.adapterMu.Lock()
+	if d.closed {
+		d.adapterMu.Unlock()
+		return nil
+	}
+	d.closed = true
+	resources := []io.Closer{d.Encryptor, d.Console, d.Embedder}
+	d.adapterMu.Unlock()
+	if d.Capture != nil {
+		d.Capture.Shutdown()
+	}
+	closers := []lifecycle.Closer{}
+	for _, resource := range resources {
+		if resource != nil {
+			closers = append(closers, &captureProtectedCloser{capture: d.Capture, resource: resource})
 		}
-	}()
+	}
+	if d.State != nil {
+		closers = append(closers, d.State.BootLog())
+	}
+	return lifecycle.GracefulShutdown(ctx, d.Inflight, closers)
+}
+
+type captureProtectedCloser struct {
+	capture  *service.CaptureService
+	resource io.Closer
+}
+
+func (c *captureProtectedCloser) Close() error {
+	if c.capture == nil {
+		return c.resource.Close()
+	}
+	c.capture.AfterCaptureDrain(c.resource, func() {
+		if err := c.resource.Close(); err != nil {
+			slog.Warn("close drained capture adapter", "err", err)
+		}
+	})
+	return nil
 }
 
 // ApplyConsoleBundle propagates agent identity, per-agent metadata DEK and
@@ -121,25 +186,34 @@ func closeAfterInterval(name string, prev, next io.Closer) {
 // EncKeys for client-side capture encryption; Console retains HE secret keys
 // and decrypts authorized scores and content. Recall queries remain plaintext.
 func (d *Deps) ApplyConsoleBundle(b *console.Bundle) {
+	d.adapterMu.Lock()
+	defer d.adapterMu.Unlock()
+	if d.closed {
+		return
+	}
 	if b == nil {
 		return
 	}
 	if d.Capture != nil {
-		d.Capture.AgentID = b.AgentID
-		d.Capture.AgentDEK = b.AgentDEK
-		d.Capture.MetadataEnvelopeV2 = slices.Contains(b.Capabilities, "metadata_envelope_v2")
-		d.Capture.Author = formatAuthor(b.AuthorDisplayName, b.AuthorEmail)
+		d.Capture.SetDependencies(service.CaptureDependencies{
+			Console: d.Console, Embedder: d.Embedder, Encryptor: d.Encryptor,
+			AgentID: b.AgentID, AgentDEK: b.AgentDEK, Capabilities: b.Capabilities,
+			Author: formatAuthor(b.AuthorDisplayName, b.AuthorEmail),
+		})
 	}
 	if d.Lifecycle != nil {
 		d.Lifecycle.KeyID = b.KeyID
 	}
 }
 
-// formatAuthor renders record attribution: "Display Name <email>" when a
-// display name is present, else the bare email, else "".
+// formatAuthor renders record attribution: "Display Name <email>" when
+// both are present, else the nonempty display name or email, else "".
 func formatAuthor(displayName, email string) string {
-	if displayName != "" {
+	if displayName != "" && email != "" {
 		return fmt.Sprintf("%s <%s>", displayName, email)
+	}
+	if displayName != "" {
+		return displayName
 	}
 	return email
 }
@@ -169,10 +243,10 @@ func Register(srv *sdkmcp.Server, deps *Deps) (err error) {
 
 	// Write tools — state-gated.
 	mustAdd(srv, deps.Inflight, "capture",
-		"Use to remember an insight worth recalling later. Provide `insight` (the concise, self-contained knowledge that gets embedded and searched) and optionally `context` (fuller surrounding detail, stored and returned but not searched). Capture does not check for similar stored records; separate calls can store duplicate insights, so submit each decision once.",
+		"Use to remember an insight worth recalling later. Provide `insight` (the concise, self-contained knowledge that gets embedded and searched) and optionally `context` (fuller surrounding detail, stored and returned but not searched). Capture does not check for similar stored records; separate calls can store duplicate insights, so submit each decision once. Never call recall with the proposed insight to check duplicates: recall sends its query embedding in plaintext and would expose the capture embedding.",
 		handleCapture(deps))
 	mustAdd(srv, deps.Inflight, "recall",
-		"Use to retrieve previously captured insights relevant to a natural-language `query`. Returns the most similar records, recency-weighted.",
+		"Use to retrieve previously captured insights relevant to a natural-language `query`. Returns the most similar records, recency-weighted. Do not use recall(insight) as a duplicate check before capture; recall sends a plaintext query embedding.",
 		handleRecall(deps))
 	// Read / diagnostic tools — bypass state gate.
 	mustAdd(srv, deps.Inflight, "diagnostics",

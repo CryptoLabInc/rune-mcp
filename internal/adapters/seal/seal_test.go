@@ -61,7 +61,7 @@ func TestSealV2FreshNonceAndEnvelope(t *testing.T) {
 		V int    `json:"v"`
 		A string `json:"a"`
 		R string `json:"r"`
-		C string `json:"c"`
+		C string `json:"g"`
 	}
 	if err = json.Unmarshal([]byte(first), &env); err != nil {
 		t.Fatal(err)

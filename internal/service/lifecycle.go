@@ -93,11 +93,14 @@ type EnvInfo struct {
 //	branch on .kind to fast-fail without manual probing. Nil
 //	when boot has succeeded or no attempt has been made yet.
 type ConsoleInfo struct {
-	Configured    bool              `json:"configured"`
-	Healthy       bool              `json:"healthy"`
-	Endpoint      string            `json:"endpoint,omitempty"`
-	Error         string            `json:"error,omitempty"`
-	LastBootError *domain.BootError `json:"last_boot_error,omitempty"`
+	Capabilities        []string          `json:"capabilities"`
+	MetadataEnvelopeV2  bool              `json:"metadata_envelope_v2"`
+	CaptureRecoveryHint string            `json:"capture_recovery_hint,omitempty"`
+	Configured          bool              `json:"configured"`
+	Healthy             bool              `json:"healthy"`
+	Endpoint            string            `json:"endpoint,omitempty"`
+	Error               string            `json:"error,omitempty"`
+	LastBootError       *domain.BootError `json:"last_boot_error,omitempty"`
 }
 
 // KeysInfo — key custody status. In the runespace model the console is the sole

@@ -585,13 +585,12 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		_ = consoleClient.Close()
 		return bootRetry
 	}
-	// Share the clients only now — after every gate (capability, bundle
-	// validation, centroid guard, key save, encryptor open) has passed. The
+	// Share the clients only now — after the initial gates (bundle
+	// validation, centroid guard, key save, encryptor open) have passed. The
 	// failure exits above close a client nothing else references yet, so the
 	// services keep the previous boot's still-live console client during retry
 	// windows and diagnostics stay truthful.
 	deps.InjectConsole(consoleClient)
-	deps.ApplyConsoleBundle(bundle)
 	deps.InjectEncryptor(enc)
 
 	embedderClient, err := embedder.New(embedder.ResolveSocketPath(""), embedder.Opts{
@@ -709,6 +708,9 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 			"phase", h.Phase, "bytes_done", h.BytesDone, "bytes_total", h.BytesTotal)
 		return bootWaitingBootstrap
 	}
+
+	// Publish the complete capture dependency snapshot once every boot gate passed.
+	deps.ApplyConsoleBundle(bundle)
 
 	// Self-report terminal activation so the console flips the member from
 	// invite_redeemed to online. Reached only after every configure step above

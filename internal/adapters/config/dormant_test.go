@@ -305,6 +305,7 @@ func TestSave_EnsuresDirIfMissing(t *testing.T) {
 // Sanity: error messages from MarkDormant / Save mention the package prefix
 // so callers can grep / wrap appropriately.
 func TestSave_ErrorContainsPackagePrefix(t *testing.T) {
+	withTempHome(t)
 	// Force a write error: pass an invalid path that resolves outside any
 	// writable dir. We can do this by using SaveToPath directly with a
 	// directory path (so WriteFile fails).
