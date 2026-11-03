@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/CryptoLabInc/rune-mcp/internal/adapters/console"
+	"github.com/CryptoLabInc/rune-mcp/internal/adapters/keymanager"
 )
 
 // agentDEKSize is the seal contract (adapters/seal: AES-256, exactly 32
@@ -12,8 +13,9 @@ import (
 const agentDEKSize = 32
 
 // validateBundle reports the first format-level defect in a manifest bundle
-// ("" = ok). It runs before SaveEncKeys, so
-// bad material is rejected before it can overwrite the on-disk key copies.
+// ("" = ok). It runs before SaveEncKeys, so bad material is rejected before
+// it reaches disk, and a key_id that cannot name a key directory is reported
+// as a manifest defect rather than a local write failure.
 // Format checks only — cryptographic validity is judged where each material
 // is used (runespacecrypto.Open parses the keys; the dek proves itself at
 // seal/open time).
@@ -31,6 +33,9 @@ func validateBundle(b *console.Bundle) string {
 		return "manifest defect: key_id is empty"
 	case b.Dim <= 0:
 		return fmt.Sprintf("manifest defect: dim is %d (expected > 0)", b.Dim)
+	}
+	if err := keymanager.CheckKeyID(b.KeyID); err != nil {
+		return "manifest defect: " + err.Error()
 	}
 	return ""
 }

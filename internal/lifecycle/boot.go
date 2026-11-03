@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -540,7 +541,7 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 	// the console; SecKey stays in the console, so this opens Enc-only.
 	//
 	// Reject a malformed bundle at the point of receipt, before the
-	// bad material overwrites the on-disk key copies or — worse — boots into
+	// bad material is written to disk or — worse — boots into
 	// active and fails far away (a missing agent_dek only surfaces at the
 	// first capture's seal step otherwise). Format-level checks only; real
 	// cryptographic validity is judged where the material is used
@@ -585,6 +586,7 @@ func bootOnce(ctx context.Context, m *Manager, deps BootAdapterInjector, attempt
 		_ = consoleClient.Close()
 		return bootRetry
 	}
+	slog.Info("boot: capture encryptor opened", "key_dir", filepath.Base(keyDir))
 	// Share the clients only now — after the initial gates (bundle
 	// validation, centroid guard, key save, encryptor open) have passed. The
 	// failure exits above close a client nothing else references yet, so the

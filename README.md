@@ -84,6 +84,8 @@ Configuration lives below `~/.rune/`:
 └── logs/             # optional runtime and boot logs
 ```
 
+`keys/` holds one `<key id>@<digest>` directory per Console key set. Each session keeps reading the directory its own boot wrote, so older directories are not removed automatically. A `keys/<key id>/` directory without a digest was written by an earlier release and can be deleted once no older rune-mcp process is running.
+
 Console tokens are stored in the OS keyring when configured that way; file-based token storage remains supported for environments without a usable keyring. Files are created with user-only permissions.
 
 Useful environment overrides:
